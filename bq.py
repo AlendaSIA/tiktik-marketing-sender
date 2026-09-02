@@ -76,6 +76,31 @@ def load_snapshot_from_gcs(uri: str) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Weekly assignment - built here, by us, at the start of every run
+# --------------------------------------------------------------------------- #
+def build_assignment() -> int:
+    """Rebuild contact_weekly_assignment, then assert its two invariants.
+
+    One row per person per week, and no suppressed address in it. Both are checked here
+    rather than trusted, because a silent violation is a duplicate or an unwanted send.
+    """
+    query(f"CALL {C.SP_ASSIGNMENT}()")
+    dupes = scalar(f"""
+        SELECT COUNT(*) - COUNT(DISTINCT CONCAT(CAST(week_start AS STRING), '|', master_key))
+        FROM {C.T_ASSIGNMENT}
+    """)
+    if dupes:
+        raise RuntimeError(f"assignment invariant: {dupes} duplicate person-week rows")
+    leaked = scalar(f"""
+        SELECT COUNTIF(a.email IN (SELECT email FROM {C.T_SUPPRESSION}))
+        FROM {C.T_ASSIGNMENT} a
+    """)
+    if leaked:
+        raise RuntimeError(f"assignment invariant: {leaked} suppressed addresses in the assignment")
+    return int(scalar(f"SELECT COUNT(*) FROM {C.T_ASSIGNMENT}"))
+
+
+# --------------------------------------------------------------------------- #
 # The plan
 # --------------------------------------------------------------------------- #
 PLAN_SQL = f"""
