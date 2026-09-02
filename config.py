@@ -29,6 +29,12 @@ SENDER_NAME = os.environ.get("SENDER_NAME", "tiktik.lv")
 
 # --- snapshot refresh -------------------------------------------------------
 REFRESH_SNAPSHOT = os.environ.get("REFRESH_SNAPSHOT", "true").lower() != "false"
+
+# --- weekly assignment ------------------------------------------------------
+# The sender OWNS this refresh. A table nobody rebuilds goes stale and reads as current,
+# which is the failure this whole build exists to remove.
+BUILD_ASSIGNMENT = os.environ.get("BUILD_ASSIGNMENT", "true").lower() != "false"
+SP_ASSIGNMENT = f"`{PROJECT}.{CONTROL}.sp_build_contact_weekly_assignment`"
 SNAPSHOT_GCS_URI = os.environ.get(
     "SNAPSHOT_GCS_URI",
     "gs://jaunais-za-aizv04022026-iso-tools/brevo/contacts_snapshot_latest.ndjson",
