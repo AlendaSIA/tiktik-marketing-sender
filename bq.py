@@ -225,10 +225,22 @@ def write_run_report(report: dict):
 # Coverage / orphan report - the gate for enabling sending
 # --------------------------------------------------------------------------- #
 COVERAGE_SQL = f"""
+-- Two different things are measured here, and they are NOT the same gate.
+--
+--   * assignment_*  = the thing we actually send. Marketing was right on 2026-09-02: a gate
+--     that measures the pre-assignment path is decoration. duplicate_sends over
+--     customer_lifecycle counts people who hold two mailable addresses, which the assignment
+--     then resolves to one row. It is a useful health number; it is not a send-blocker.
+--   * list3 / orphans_mailable = coverage of the weekly akcija LIST, which this job does not
+--     send. Reported always; blocks only if GATE_ON_ORPHANS is on (see main.step5_gate).
 WITH l3 AS (SELECT email FROM {C.T_SNAPSHOT} WHERE 3 IN UNNEST(list_ids)),
 cl AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, master_key FROM {C.T_LIFECYCLE}),
 sup AS (SELECT DISTINCT email FROM {C.T_SUPPRESSION}),
-sendable AS (SELECT * FROM cl WHERE email NOT IN (SELECT email FROM sup))
+sendable AS (SELECT * FROM cl WHERE email NOT IN (SELECT email FROM sup)),
+asg AS (
+  SELECT master_key, email, week_start FROM {C.T_ASSIGNMENT}
+  WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+)
 SELECT
   (SELECT COUNT(*) FROM l3) AS list3_total,
   (SELECT COUNTIF(email IN (SELECT email FROM cl)) FROM l3) AS list3_in_engine,
@@ -236,7 +248,10 @@ SELECT
               AND email NOT IN (SELECT email FROM sup)) FROM l3) AS orphans_mailable,
   (SELECT COUNT(*) FROM sendable) AS sendable_rows,
   (SELECT COUNT(DISTINCT master_key) FROM sendable) AS sendable_people,
-  (SELECT COUNT(*) - COUNT(DISTINCT master_key) FROM sendable) AS duplicate_sends
+  (SELECT COUNT(*) - COUNT(DISTINCT master_key) FROM sendable) AS multi_address_people,
+  (SELECT COUNT(*) FROM asg) AS assignment_people,
+  (SELECT COUNT(*) - COUNT(DISTINCT master_key) FROM asg) AS duplicate_sends,
+  (SELECT COUNTIF(email IN (SELECT email FROM sup)) FROM asg) AS assignment_suppressed
 """
 
 
