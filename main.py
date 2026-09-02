@@ -7,6 +7,7 @@ What this job guarantees, and where each guarantee is enforced
 -------------------------------------------------------------
 G1  IDENTITY_STALE   identity older than IDENTITY_MAX_AGE_H -> abort            (step 1)
 G2  SUPPRESSION_FRESH the contact snapshot is refreshed here, then asserted     (step 2)
+G3a ASSIGNMENT     rebuilt here every run; one row per person per week, none suppressed (step 4)
 G3  ONE_PER_PERSON   the plan holds at most one row per master_key -> else abort(step 4)
 G4  NO_SUPPRESSED    plan INTERSECT suppression = 0 -> else abort               (step 4)
 G5  FREQUENCY        <= MAX_EMAILS_PER_WEEK per person, >= MIN_DAYS_BETWEEN     (plan SQL)
@@ -88,6 +89,9 @@ def step3_coverage():
 
 
 def step4_plan():
+    if C.BUILD_ASSIGNMENT and bq.table_exists(C.T_ASSIGNMENT):
+        n = bq.build_assignment()
+        log.info("ASSIGNMENT_REBUILT people=%s", n)
     if not bq.table_exists(C.T_ASSIGNMENT):
         log.warning("NO_ASSIGNMENT: %s does not exist yet - reporting only, nothing to send",
                     C.T_ASSIGNMENT)
