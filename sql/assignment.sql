@@ -14,9 +14,13 @@
 -- Priority: order recovery > upsell-on-order > welcome (buyer) > sign-up welcome >
 --           reorder > winback > lost wave > educational > akcija
 --
--- Two slots are deliberately NOT implemented rather than faked:
+-- Three slots are deliberately NOT active rather than faked:
 --   * order recovery - success_attribution carries no e-mail and cannot be matched to
 --     checkout_attempts reliably; that match is its own build.
+--   * upsell-on-order - DISABLED 2026-09-02 (Raivis via Marketing). Not a window problem:
+--     it promises adding an item to an open order, which Fulfilment has not confirmed is
+--     possible or at what cost, and orders ship in 0-2 business days. Re-enable the
+--     commented branch below once Fulfilment answers.
 --   * sign-up welcome - non-buyers are not in customer_lifecycle at all, so they have no
 --     master_key and cannot appear here. That is step 6 (Marketing).
 
@@ -70,9 +74,10 @@ BEGIN
     DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)) AS week_start,
     a.master_key,
     a.email,
+    -- upsell_on_order is DISABLED. To re-enable, restore this branch at the top of both CASEs:
+    --   WHEN a.last_order IS NOT NULL
+    --    AND DATE_DIFF(CURRENT_DATE(), a.last_order, DAY) <= 7  THEN 'upsell_on_order' / 'upsell_1'
     CASE
-      WHEN a.last_order IS NOT NULL
-       AND DATE_DIFF(CURRENT_DATE(), a.last_order, DAY) <= 7        THEN 'upsell_on_order'
       WHEN a.next_email_type LIKE 'welcome%'                        THEN 'welcome_buyer'
       WHEN a.next_email_type LIKE 'reorder%'                        THEN 'reorder'
       WHEN a.next_email_type LIKE 'winback%'                        THEN 'winback'
@@ -81,8 +86,6 @@ BEGIN
       ELSE 'akcija'
     END AS track,
     CASE
-      WHEN a.last_order IS NOT NULL
-       AND DATE_DIFF(CURRENT_DATE(), a.last_order, DAY) <= 7        THEN 'upsell_1'
       WHEN a.next_email_type LIKE 'welcome%'
         OR a.next_email_type LIKE 'reorder%'
         OR a.next_email_type LIKE 'winback%'
@@ -93,13 +96,9 @@ BEGIN
     -- Only the educational catalog carries Brevo template ids today. Lifecycle e-mails have
     -- no template mapping anywhere in BigQuery, and the akcija is a LIST CAMPAIGN, not a
     -- per-person send - so NULL for the akcija is correct, not a gap to be filled.
-    CASE
-      WHEN a.last_order IS NULL OR DATE_DIFF(CURRENT_DATE(), a.last_order, DAY) > 7
-       THEN IF(a.next_email_type LIKE 'welcome%' OR a.next_email_type LIKE 'reorder%'
-               OR a.next_email_type LIKE 'winback%' OR a.next_email_type = 'lost_quarterly',
-               NULL, SAFE_CAST(e.edu_template_id AS INT64))
-      ELSE NULL
-    END AS template_id,
+    IF(a.next_email_type LIKE 'welcome%' OR a.next_email_type LIKE 'reorder%'
+       OR a.next_email_type LIKE 'winback%' OR a.next_email_type = 'lost_quarterly',
+       NULL, SAFE_CAST(e.edu_template_id AS INT64)) AS template_id,
     CONCAT(a.address_reason, ' | stage=', a.lifecycle_stage,
            ' | next=', IFNULL(a.next_email_type, 'none'),
            ' | edu=', IFNULL(e.info_track, 'none')) AS chosen_because,
