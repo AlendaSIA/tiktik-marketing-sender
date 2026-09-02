@@ -23,9 +23,12 @@ MIN_DAYS_BETWEEN = int(os.environ.get("MIN_DAYS_BETWEEN", "2"))
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() != "false"
 ALLOW_SEND = os.environ.get("ALLOW_SEND", "false").lower() == "true"
 SEND_LIMIT = int(os.environ.get("SEND_LIMIT", "0"))  # 0 = no cap
-# Blocks sending on akcija-LIST coverage, which this job does not send. Defaults on because
-# Marketing specified it; it cannot reach 0 before the non-buyer path (step 6) exists.
-GATE_ON_ORPHANS = os.environ.get("GATE_ON_ORPHANS", "true").lower() != "false"
+# Orphan coverage is NOT this job's gate (Marketing, 2026-09-02). An orphan is by definition
+# someone the engine does not know, so the sender never mails one - the gate measured nothing
+# this job does. It moved to where orphans actually receive mail: the weekly akcija campaign,
+# which does not go out unless every list-3 address is either in the engine or a known
+# non-buyer with a defined state. Here it stays a REPORTED number on every run.
+GATE_ON_ORPHANS = os.environ.get("GATE_ON_ORPHANS", "false").lower() == "true"
 BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "info@tiktik.lv")
 SENDER_NAME = os.environ.get("SENDER_NAME", "tiktik.lv")
