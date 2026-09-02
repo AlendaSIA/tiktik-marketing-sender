@@ -1,0 +1,13 @@
+# BUILD ONLY. Deployment is a separate, explicit command - see README.
+#
+# The predecessor repo (tiktik-marketing-sync) carried a deploy step whose unquoted
+# META_AUDIENCE_MAP={...} was brace-expanded by bash, so `gcloud run jobs deploy` died with
+# "unrecognized arguments". Keeping deploy out of the build removes that whole class of
+# failure and keeps env changes reviewable.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-t", "europe-west1-docker.pkg.dev/$PROJECT_ID/jobs/tiktik-marketing-sender:$SHORT_SHA", "."]
+images:
+  - "europe-west1-docker.pkg.dev/$PROJECT_ID/jobs/tiktik-marketing-sender:$SHORT_SHA"
+options:
+  logging: CLOUD_LOGGING_ONLY
