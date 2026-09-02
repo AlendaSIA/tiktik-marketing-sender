@@ -144,11 +144,21 @@ def step5_gate(plan, cov):
     if plan is None:
         log.error("REFUSING TO SEND: no assignment table")
         return False
-    if cov["orphans_mailable"] != 0:
-        log.error("REFUSING TO SEND: orphans_mailable=%s (must be 0)", cov["orphans_mailable"])
-        return False
+    # Blockers measured on the ASSIGNMENT - the thing we actually send.
     if cov["duplicate_sends"] != 0:
-        log.error("REFUSING TO SEND: duplicate_sends=%s (must be 0)", cov["duplicate_sends"])
+        log.error("REFUSING TO SEND: duplicate_sends=%s in the assignment (must be 0)",
+                  cov["duplicate_sends"])
+        return False
+    if cov["assignment_suppressed"] != 0:
+        log.error("REFUSING TO SEND: assignment_suppressed=%s (must be 0)",
+                  cov["assignment_suppressed"])
+        return False
+    # Coverage of the weekly akcija LIST, which this job does not send. Kept as a blocker
+    # because Marketing specified it, but note it cannot reach 0 before the non-buyer path
+    # exists - set GATE_ON_ORPHANS=false to send before then.
+    if C.GATE_ON_ORPHANS and cov["orphans_mailable"] != 0:
+        log.error("REFUSING TO SEND: orphans_mailable=%s (must be 0, or set GATE_ON_ORPHANS=false)",
+                  cov["orphans_mailable"])
         return False
     if not C.BREVO_API_KEY:
         log.error("REFUSING TO SEND: BREVO_API_KEY is not set")
