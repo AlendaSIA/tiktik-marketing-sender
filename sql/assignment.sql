@@ -31,6 +31,16 @@
 --     business_marts.lead_welcome_queue (built 2026-09-04, track 'signup_welcome'); it is
 --     a SEPARATE series with a separate goal - the lead's first order - and carries
 --     lead_source so a second generator does not merge into the hygiene-plan series.
+--
+-- TEMPLATE MAPPING (changed 2026-09-04). template_id is resolved from
+-- mkt_control.email_template_map, joined on the email_type decided below. That view already
+-- unions the manual lifecycle map with business_marts.info_email_catalog, so reading it is
+-- reading the single source; reading the catalog directly here was the second source, and it
+-- is what let 598 people be planned against templates Brevo had switched off. The old
+-- hardcoded NULL for welcome/reorder/winback/lost is gone: it was never a check, and it
+-- would have kept reorder_1 (107) and winback_1 (163) unsendable for good. Whether a mapped
+-- template may actually be used is NOT decided here - the sender's plan asks track_enabled
+-- and brevo_template_status.
 
 CREATE OR REPLACE PROCEDURE `jaunais-za-aizv04022026.mkt_control.sp_build_contact_weekly_assignment`()
 BEGIN
@@ -51,12 +61,12 @@ BEGIN
   FROM `jaunais-za-aizv04022026.business_marts.customer_lifecycle`
   WHERE lifecycle_stage != 'blocked';
 
+  -- Only the queue is needed here now. The template id used to be joined in from
+  -- info_email_catalog at this point; it is resolved once, from email_template_map, at the
+  -- end of this procedure instead.
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.mkt_control._assign_edu` AS
-  SELECT LOWER(TRIM(q.email)) AS email, q.info_track, q.next_info_code,
-         c.brevo_template_id AS edu_template_id
+  SELECT LOWER(TRIM(q.email)) AS email, q.info_track, q.next_info_code
   FROM `jaunais-za-aizv04022026.business_marts.info_email_queue` q
-  LEFT JOIN `jaunais-za-aizv04022026.business_marts.info_email_catalog` c
-    ON c.code = q.next_info_code AND c.active
   WHERE q.next_info_code IS NOT NULL;
 
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.mkt_control._assign_addr` AS
@@ -89,7 +99,7 @@ BEGIN
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
   PARTITION BY week_start AS
   WITH base AS (
-    SELECT a.*, e.info_track, e.next_info_code, e.edu_template_id,
+    SELECT a.*, e.info_track, e.next_info_code,
       -- WELCOME GATE (Raivis, 2026-09-04). Entry is the FIRST ORDER, on or after the moment
       -- the welcome_buyer track first went live. Deliberately NOT orders = 1: a new buyer who
       -- orders twice in their first fortnight is still a new buyer.
@@ -109,43 +119,53 @@ BEGIN
               WHERE track = 'welcome_buyer'), 'Europe/Riga')) AS welcome_ok
     FROM `jaunais-za-aizv04022026.mkt_control._assign_addr` a
     LEFT JOIN `jaunais-za-aizv04022026.mkt_control._assign_edu` e ON e.email = a.email
+  ),
+  assigned AS (
+    SELECT
+      DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)) AS week_start,
+      b.master_key,
+      b.email,
+      -- upsell_on_order is DISABLED. To re-enable, restore this branch at the top of both CASEs:
+      --   WHEN b.last_order IS NOT NULL
+      --    AND DATE_DIFF(CURRENT_DATE(), b.last_order, DAY) <= 7  THEN 'upsell_on_order' / 'upsell_1'
+      CASE
+        WHEN b.welcome_ok                                             THEN 'welcome_buyer'
+        WHEN b.next_email_type LIKE 'reorder%'                        THEN 'reorder'
+        WHEN b.next_email_type LIKE 'winback%'                        THEN 'winback'
+        WHEN b.next_email_type = 'lost_quarterly'                     THEN 'lost_wave'
+        WHEN b.next_info_code IS NOT NULL                             THEN 'educational'
+        ELSE 'akcija'
+      END AS track,
+      CASE
+        WHEN b.welcome_ok                                             THEN b.next_email_type
+        WHEN b.next_email_type LIKE 'reorder%'
+          OR b.next_email_type LIKE 'winback%'
+          OR b.next_email_type = 'lost_quarterly'                     THEN b.next_email_type
+        WHEN b.next_info_code IS NOT NULL                             THEN b.next_info_code
+        ELSE 'akcija_weekly'
+      END AS email_type,
+      CONCAT(b.address_reason, ' | stage=', b.lifecycle_stage,
+             ' | next=', IFNULL(b.next_email_type, 'none'),
+             ' | edu=', IFNULL(b.info_track, 'none'),
+             ' | welcome_gate=', IF(b.next_email_type LIKE 'welcome%',
+                                    IF(b.welcome_ok, 'pass', 'pre_launch'), 'n/a')) AS chosen_because
+    FROM base b
   )
+  -- ONE mapping, resolved once, from the view that already is the single source. No dedupe
+  -- here on purpose: a duplicate email_type in the map would multiply rows, and
+  -- build_assignment()'s person-week invariant raises on exactly that. Loud beats averaged.
   SELECT
-    DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)) AS week_start,
-    b.master_key,
-    b.email,
-    -- upsell_on_order is DISABLED. To re-enable, restore this branch at the top of both CASEs:
-    --   WHEN b.last_order IS NOT NULL
-    --    AND DATE_DIFF(CURRENT_DATE(), b.last_order, DAY) <= 7  THEN 'upsell_on_order' / 'upsell_1'
-    CASE
-      WHEN b.welcome_ok                                             THEN 'welcome_buyer'
-      WHEN b.next_email_type LIKE 'reorder%'                        THEN 'reorder'
-      WHEN b.next_email_type LIKE 'winback%'                        THEN 'winback'
-      WHEN b.next_email_type = 'lost_quarterly'                     THEN 'lost_wave'
-      WHEN b.next_info_code IS NOT NULL                             THEN 'educational'
-      ELSE 'akcija'
-    END AS track,
-    CASE
-      WHEN b.welcome_ok                                             THEN b.next_email_type
-      WHEN b.next_email_type LIKE 'reorder%'
-        OR b.next_email_type LIKE 'winback%'
-        OR b.next_email_type = 'lost_quarterly'                     THEN b.next_email_type
-      WHEN b.next_info_code IS NOT NULL                             THEN b.next_info_code
-      ELSE 'akcija_weekly'
-    END AS email_type,
-    -- Only the educational catalog carries Brevo template ids today. Lifecycle e-mails have
-    -- no template mapping anywhere in BigQuery, and the akcija is a LIST CAMPAIGN, not a
-    -- per-person send - so NULL for the akcija is correct, not a gap to be filled.
-    IF(b.welcome_ok OR b.next_email_type LIKE 'reorder%'
-       OR b.next_email_type LIKE 'winback%' OR b.next_email_type = 'lost_quarterly',
-       NULL, SAFE_CAST(b.edu_template_id AS INT64)) AS template_id,
-    CONCAT(b.address_reason, ' | stage=', b.lifecycle_stage,
-           ' | next=', IFNULL(b.next_email_type, 'none'),
-           ' | edu=', IFNULL(b.info_track, 'none'),
-           ' | welcome_gate=', IF(b.next_email_type LIKE 'welcome%',
-                                  IF(b.welcome_ok, 'pass', 'pre_launch'), 'n/a')) AS chosen_because,
+    a.week_start,
+    a.master_key,
+    a.email,
+    a.track,
+    a.email_type,
+    m.template_id,
+    a.chosen_because,
     CURRENT_TIMESTAMP() AS built_at
-  FROM base b;
+  FROM assigned a
+  LEFT JOIN `jaunais-za-aizv04022026.mkt_control.email_template_map` m
+    ON m.email_type = a.email_type;
 
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_cl`;
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_edu`;
