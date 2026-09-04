@@ -15,6 +15,13 @@ BQ_LOCATION = os.environ.get("BQ_LOCATION", "EU")
 IDENTITY_MAX_AGE_H = float(os.environ.get("IDENTITY_MAX_AGE_H", "36"))
 SUPPRESSION_MAX_AGE_H = float(os.environ.get("SUPPRESSION_MAX_AGE_H", "26"))
 
+# Freshness of the Brevo template mirror (mkt_control.brevo_template_status), which is
+# written by blk-brevo-contacts-snapshot at 06:30. 36 h is the same threshold
+# track_send_readiness uses, so the two never disagree about what "stale" means.
+# This is NOT decoration: that scheduler had never run successfully before 2026-09-04,
+# and a mirror that quietly freezes reads as current. A stale mirror BLOCKS.
+TEMPLATE_STATUS_MAX_AGE_H = float(os.environ.get("TEMPLATE_STATUS_MAX_AGE_H", "36"))
+
 # --- frequency rules (identity rule b: per PERSON, not per address) ---------
 MAX_EMAILS_PER_WEEK = int(os.environ.get("MAX_EMAILS_PER_WEEK", "2"))
 MIN_DAYS_BETWEEN = int(os.environ.get("MIN_DAYS_BETWEEN", "2"))
@@ -60,5 +67,17 @@ T_SEND_LOG = t(MARTS, "email_send_log")
 T_ASSIGNMENT = t(MARTS, "contact_weekly_assignment")
 T_SEND_PLAN = t(CONTROL, "send_plan")
 T_RUN_REPORT = t(CONTROL, "sender_run_report")
+
+# The three control surfaces the sender must obey. Before 2026-09-04 it read NONE of them,
+# which is how 598 rows on nine switched-off tracks, all pointing at templates Brevo had
+# deactivated the day before, came out of the plan as SEND.
+#   T_TRACK_ENABLED    - Raivis' per-track switch. Nothing sends on a track that is off.
+#   T_TEMPLATE_MAP     - the ONE email_type -> template_id mapping. It is a VIEW that already
+#                        unions the manual lifecycle table with info_email_catalog, so reading
+#                        it does not create a second source; reading the catalog directly did.
+#   T_TEMPLATE_STATUS  - the Brevo mirror: is_active + checked_at, 84 templates per run.
+T_TRACK_ENABLED = t(CONTROL, "track_enabled")
+T_TEMPLATE_MAP = t(CONTROL, "email_template_map")
+T_TEMPLATE_STATUS = t(CONTROL, "brevo_template_status")
 
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"
