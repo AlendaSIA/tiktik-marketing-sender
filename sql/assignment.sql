@@ -2,6 +2,11 @@
 -- Exactly one row per master_key per week. Called by the sender at the start of every run
 -- (bq.build_assignment), so the refresh has an owner.
 --
+-- ⚠ TWO WRITERS. bq.build_assignment() runs `CALL sp_build_contact_weekly_assignment()`; it
+-- does NOT re-create the procedure from this file. So this file and the live BigQuery
+-- routine are two independent copies of the same object, and a change to either alone
+-- drifts. Change both in the same pass, always. Last synchronised 2026-09-04.
+--
 -- Staged in three steps on purpose: customer_lifecycle sits on a deep view stack, and
 -- joining it twice inside one statement is what pushed info_email_queue over the BigQuery
 -- planner limit on 2026-09-02 ("too many subqueries or query is too complex").
@@ -22,14 +27,27 @@
 --     possible or at what cost, and orders ship in 0-2 business days. Re-enable the
 --     commented branch below once Fulfilment answers.
 --   * sign-up welcome - non-buyers are not in customer_lifecycle at all, so they have no
---     master_key and cannot appear here. That is step 6 (Marketing).
+--     master_key and cannot appear here. Its own queue is
+--     business_marts.lead_welcome_queue (built 2026-09-04, track 'signup_welcome'); it is
+--     a SEPARATE series with a separate goal - the lead's first order - and carries
+--     lead_source so a second generator does not merge into the hygiene-plan series.
 
 CREATE OR REPLACE PROCEDURE `jaunais-za-aizv04022026.mkt_control.sp_build_contact_weekly_assignment`()
 BEGIN
 
+  -- Launch stamp, WRITE-ONCE (Raivis, 2026-09-04). The welcome gate is "first order on or
+  -- after the moment the track went live", so that moment has to survive a rollback. H3
+  -- rollback is enabled=FALSE and re-enabling is expected; if the stamp were rewritten on
+  -- re-enable, everyone whose first order fell inside the disabled window would sit before
+  -- the new date and never receive welcome - silently, with no error anywhere. Hence
+  -- first_enabled_at is set only while it is NULL, and enabled_at may move freely.
+  UPDATE `jaunais-za-aizv04022026.mkt_control.track_enabled`
+  SET first_enabled_at = COALESCE(enabled_at, CURRENT_TIMESTAMP())
+  WHERE enabled AND first_enabled_at IS NULL;
+
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.mkt_control._assign_cl` AS
   SELECT master_key, LOWER(TRIM(email)) AS email, lifecycle_stage, next_email_type,
-         last_order, days_since_last, language, segment
+         first_order, last_order, days_since_last, language, segment
   FROM `jaunais-za-aizv04022026.business_marts.customer_lifecycle`
   WHERE lifecycle_stage != 'blocked';
 
@@ -70,41 +88,64 @@ BEGIN
 
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
   PARTITION BY week_start AS
+  WITH base AS (
+    SELECT a.*, e.info_track, e.next_info_code, e.edu_template_id,
+      -- WELCOME GATE (Raivis, 2026-09-04). Entry is the FIRST ORDER, on or after the moment
+      -- the welcome_buyer track first went live. Deliberately NOT orders = 1: a new buyer who
+      -- orders twice in their first fortnight is still a new buyer.
+      -- The backlog is not sent at all - not the 1 331 rows welcome_queue showed, not the 310
+      -- of them that were genuine first-time buyers. The track therefore starts EMPTY and
+      -- fills from the next order: measured 27-44 new buyers a week over the nine weeks to
+      -- 31.08., averaging 33. One empty week is the correct state, not a fault.
+      -- No "has never received marketing" condition, and that is deliberate: with a separate
+      -- lead welcome (signup_welcome) a converted lead HAS received marketing, and excluding
+      -- them here would silence buyer-welcome for exactly the people the lead flow produced.
+      (a.next_email_type LIKE 'welcome%'
+       AND a.first_order IS NOT NULL
+       AND (SELECT first_enabled_at FROM `jaunais-za-aizv04022026.mkt_control.track_enabled`
+            WHERE track = 'welcome_buyer') IS NOT NULL
+       AND a.first_order >= DATE(
+             (SELECT first_enabled_at FROM `jaunais-za-aizv04022026.mkt_control.track_enabled`
+              WHERE track = 'welcome_buyer'), 'Europe/Riga')) AS welcome_ok
+    FROM `jaunais-za-aizv04022026.mkt_control._assign_addr` a
+    LEFT JOIN `jaunais-za-aizv04022026.mkt_control._assign_edu` e ON e.email = a.email
+  )
   SELECT
     DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)) AS week_start,
-    a.master_key,
-    a.email,
+    b.master_key,
+    b.email,
     -- upsell_on_order is DISABLED. To re-enable, restore this branch at the top of both CASEs:
-    --   WHEN a.last_order IS NOT NULL
-    --    AND DATE_DIFF(CURRENT_DATE(), a.last_order, DAY) <= 7  THEN 'upsell_on_order' / 'upsell_1'
+    --   WHEN b.last_order IS NOT NULL
+    --    AND DATE_DIFF(CURRENT_DATE(), b.last_order, DAY) <= 7  THEN 'upsell_on_order' / 'upsell_1'
     CASE
-      WHEN a.next_email_type LIKE 'welcome%'                        THEN 'welcome_buyer'
-      WHEN a.next_email_type LIKE 'reorder%'                        THEN 'reorder'
-      WHEN a.next_email_type LIKE 'winback%'                        THEN 'winback'
-      WHEN a.next_email_type = 'lost_quarterly'                     THEN 'lost_wave'
-      WHEN e.next_info_code IS NOT NULL                             THEN 'educational'
+      WHEN b.welcome_ok                                             THEN 'welcome_buyer'
+      WHEN b.next_email_type LIKE 'reorder%'                        THEN 'reorder'
+      WHEN b.next_email_type LIKE 'winback%'                        THEN 'winback'
+      WHEN b.next_email_type = 'lost_quarterly'                     THEN 'lost_wave'
+      WHEN b.next_info_code IS NOT NULL                             THEN 'educational'
       ELSE 'akcija'
     END AS track,
     CASE
-      WHEN a.next_email_type LIKE 'welcome%'
-        OR a.next_email_type LIKE 'reorder%'
-        OR a.next_email_type LIKE 'winback%'
-        OR a.next_email_type = 'lost_quarterly'                     THEN a.next_email_type
-      WHEN e.next_info_code IS NOT NULL                             THEN e.next_info_code
+      WHEN b.welcome_ok                                             THEN b.next_email_type
+      WHEN b.next_email_type LIKE 'reorder%'
+        OR b.next_email_type LIKE 'winback%'
+        OR b.next_email_type = 'lost_quarterly'                     THEN b.next_email_type
+      WHEN b.next_info_code IS NOT NULL                             THEN b.next_info_code
       ELSE 'akcija_weekly'
     END AS email_type,
     -- Only the educational catalog carries Brevo template ids today. Lifecycle e-mails have
     -- no template mapping anywhere in BigQuery, and the akcija is a LIST CAMPAIGN, not a
     -- per-person send - so NULL for the akcija is correct, not a gap to be filled.
-    IF(a.next_email_type LIKE 'welcome%' OR a.next_email_type LIKE 'reorder%'
-       OR a.next_email_type LIKE 'winback%' OR a.next_email_type = 'lost_quarterly',
-       NULL, SAFE_CAST(e.edu_template_id AS INT64)) AS template_id,
-    CONCAT(a.address_reason, ' | stage=', a.lifecycle_stage,
-           ' | next=', IFNULL(a.next_email_type, 'none'),
-           ' | edu=', IFNULL(e.info_track, 'none')) AS chosen_because,
+    IF(b.welcome_ok OR b.next_email_type LIKE 'reorder%'
+       OR b.next_email_type LIKE 'winback%' OR b.next_email_type = 'lost_quarterly',
+       NULL, SAFE_CAST(b.edu_template_id AS INT64)) AS template_id,
+    CONCAT(b.address_reason, ' | stage=', b.lifecycle_stage,
+           ' | next=', IFNULL(b.next_email_type, 'none'),
+           ' | edu=', IFNULL(b.info_track, 'none'),
+           ' | welcome_gate=', IF(b.next_email_type LIKE 'welcome%',
+                                  IF(b.welcome_ok, 'pass', 'pre_launch'), 'n/a')) AS chosen_because,
     CURRENT_TIMESTAMP() AS built_at
-  FROM `jaunais-za-aizv04022026.mkt_control._assign_addr` a
-  LEFT JOIN `jaunais-za-aizv04022026.mkt_control._assign_edu` e ON e.email = a.email;
+  FROM base b;
 
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_cl`;
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_edu`;
