@@ -11,10 +11,23 @@ G3a ASSIGNMENT     rebuilt here every run; one row per person per week, none sup
 G3  ONE_PER_PERSON   the plan holds at most one row per master_key -> else abort(step 4)
 G4  NO_SUPPRESSED    plan INTERSECT suppression = 0 -> else abort               (step 4)
 G5  FREQUENCY        <= MAX_EMAILS_PER_WEEK per person, >= MIN_DAYS_BETWEEN     (plan SQL)
-G6  SEND_TIME_RECHECK every message re-checks the person against suppression    (step 6)
+G6  SEND_TIME_RECHECK every message re-checks person AND template               (step 6)
 G7  PER_MESSAGE_LOG  one row per message, real timestamp and message id         (step 6)
 G8  DRY_RUN default  sending needs DRY_RUN=false AND ALLOW_SEND=true AND a
                      clean plan; anything else reports and exits 0              (step 5)
+
+WHAT A DRY RUN CAN AND CANNOT PROVE - read this before quoting a number
+-----------------------------------------------------------------------
+A dry run proves G1, G2, G3a, G3, G4 and the G8 gate. That is five guarantees plus the
+gate, and the run on 2026-09-04 was first reported as six. It was not.
+
+G5 is NOT proven by a dry run and was never proven by one. The plan's history CTE reads
+email_send_log WHERE master_key IS NOT NULL AND send_status = 'sent'; measured on
+2026-09-04 that table holds 22 585 rows, 14 560 of them 'sent', last one 2026-06-09, and
+not a single row carries a master_key. So the CTE returns nothing for everyone, always,
+and frequency=0 means "there is no history", not "the guard held". G5 becomes real only
+once this job's own log rows exist - i.e. after the first real send, together with G6
+and G7, which live solely on the sending path.
 
 Exit codes: 0 = ran and reported. 1 = a guard failed. A guard failure is a real failure and
 must stay visible - "a signal that is always on is not a signal".
@@ -33,6 +46,16 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("sender")
 
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
+
+# Verdicts that mean "the letter itself is not sendable", as opposed to "this person is not
+# to be mailed". Kept in one place so the log, the report and any later dashboard agree.
+TEMPLATE_BLOCKED = (
+    "NO_TEMPLATE",
+    "TEMPLATE_NOT_SENDABLE",
+    "TEMPLATE_STATUS_UNKNOWN",
+    "TEMPLATE_STATUS_STALE",
+    "TEMPLATE_INACTIVE_IN_BREVO",
+)
 
 
 class GuardFailure(RuntimeError):
@@ -60,6 +83,10 @@ def step2_refresh_suppression():
 
     The refresh is part of sending, not a separate job: suppression that is not refreshed
     by the thing about to send is suppression nobody notices going stale.
+
+    Since 2026-09-02 the refresh belongs to blk-brevo-contacts-snapshot instead, so that this
+    job can hold no Brevo credential at all. Deployments therefore set REFRESH_SNAPSHOT=false;
+    with the default true and no key, this step aborts by design.
     """
     if C.REFRESH_SNAPSHOT:
         if not C.BREVO_API_KEY:
@@ -107,6 +134,7 @@ def step4_plan():
         "email_type": r["email_type"],
         "template_id": r["template_id"],
         "decision": r["decision"],
+        "decision_if_enabled": r["decision_if_enabled"],
         "lifecycle_stage": r["lifecycle_stage"],
         "full_name": r["full_name"],
         "gender_greeting": r["gender_greeting"],
@@ -126,11 +154,15 @@ def step4_plan():
         raise GuardFailure(f"ONE_PER_PERSON violated: {dupes} duplicate master_key rows in the plan")
     if any(p["decision"] == "SUPPRESSED" for p in sendable):
         raise GuardFailure("NO_SUPPRESSED violated: a suppressed row survived into the send set")
-    log.info("PLAN rows=%s send=%s suppressed=%s frequency=%s other=%s",
-             len(plan), len(sendable),
+    track_off = sum(1 for p in plan if p["decision"] == "TRACK_OFF")
+    # Counted on decision_if_enabled deliberately: while every track is off, counting template
+    # problems on `decision` would report zero of them and hide the real state.
+    template_blocked = sum(1 for p in plan if p["decision_if_enabled"] in TEMPLATE_BLOCKED)
+    log.info("PLAN rows=%s send=%s track_off=%s template_blocked=%s suppressed=%s frequency=%s other=%s",
+             len(plan), len(sendable), track_off, template_blocked,
              sum(1 for p in plan if p["decision"] == "SUPPRESSED"),
              sum(1 for p in plan if str(p["decision"]).startswith("FREQUENCY")),
-             sum(1 for p in plan if p["decision"] in ("NO_TEMPLATE", "NOT_IN_LIFECYCLE")))
+             sum(1 for p in plan if p["decision"] == "NOT_IN_LIFECYCLE"))
     bq.write_send_plan(RUN_ID, plan)
     return plan
 
@@ -167,16 +199,22 @@ def step5_gate(plan, cov):
 
 
 def step6_send(plan):
-    sent, skipped, failed = 0, 0, 0
+    sent, skipped, skipped_template, failed = 0, 0, 0, 0
     log_rows = []
     for p in [x for x in plan if x["decision"] == "SEND"]:
         if C.SEND_LIMIT and sent >= C.SEND_LIMIT:
             log.info("SEND_LIMIT %s reached", C.SEND_LIMIT)
             break
-        # G6 - the plan may be minutes old; consent may not be.
-        if bq.recheck(p["email"], p["master_key"]):
+        # G6 - the plan may be minutes old; consent may not be, and neither may the template.
+        reason = bq.recheck(p["email"], p["master_key"], p["template_id"])
+        if reason == "SUPPRESSED_AT_SEND_TIME":
             skipped += 1
             log.info("SKIP_AT_SEND_TIME %s (%s)", p["email"], p["master_key"])
+            continue
+        if reason:
+            skipped_template += 1
+            log.warning("SKIP_TEMPLATE_AT_SEND_TIME %s template=%s reason=%s",
+                        p["email"], p["template_id"], reason)
             continue
         params = {
             "greeting": p["gender_greeting"],
@@ -220,8 +258,9 @@ def step6_send(plan):
             bq.write_send_log(log_rows)
             log_rows = []
     bq.write_send_log(log_rows)
-    log.info("SEND_DONE sent=%s skipped_at_send_time=%s failed=%s", sent, skipped, failed)
-    return sent, skipped, failed
+    log.info("SEND_DONE sent=%s skipped_at_send_time=%s skipped_template=%s failed=%s",
+             sent, skipped, skipped_template, failed)
+    return sent, skipped, skipped_template, failed
 
 
 def main() -> int:
@@ -236,12 +275,16 @@ def main() -> int:
         plan = step4_plan()
         report["plan_rows"] = len(plan) if plan else 0
         report["plan_send"] = sum(1 for p in (plan or []) if p["decision"] == "SEND")
+        report["plan_track_off"] = sum(1 for p in (plan or []) if p["decision"] == "TRACK_OFF")
+        report["plan_template_blocked"] = sum(
+            1 for p in (plan or []) if p["decision_if_enabled"] in TEMPLATE_BLOCKED)
 
         if step5_gate(plan, cov):
-            sent, skipped, failed = step6_send(plan)
-            report.update(sent=sent, skipped_at_send_time=skipped, failed=failed)
+            sent, skipped, skipped_template, failed = step6_send(plan)
+            report.update(sent=sent, skipped_at_send_time=skipped,
+                          skipped_template_inactive=skipped_template, failed=failed)
         else:
-            report.update(sent=0, skipped_at_send_time=0, failed=0)
+            report.update(sent=0, skipped_at_send_time=0, skipped_template_inactive=0, failed=0)
 
         report["status"] = "ok"
         report["finished_at"] = _now().isoformat()
