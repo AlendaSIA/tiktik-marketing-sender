@@ -109,16 +109,33 @@ def step2_refresh_suppression():
     return age
 
 
+def step2b_assignment():
+    """Rebuild the assignment BEFORE anything measures it.
+
+    Until 2026-09-07 this lived inside step4_plan, i.e. AFTER step3_coverage. Every
+    assignment_* number in the run report therefore described the PREVIOUS run - and on the
+    first run of a new ISO week it described an EMPTY set, because COVERAGE_SQL filters
+    week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY)). Both blockers in step5_gate
+    (duplicate_sends, assignment_suppressed) read those numbers, so every Monday they were
+    guaranteed 0. A guard that is always open is not a guard.
+    """
+    if C.BUILD_ASSIGNMENT and bq.table_exists(C.T_ASSIGNMENT):
+        n = bq.build_assignment()
+        log.info("ASSIGNMENT_REBUILT people=%s", n)
+
+
 def step3_coverage():
     cov = bq.coverage()
     log.info("COVERAGE %s", cov)
+    if cov.get("duplicate_sends") or cov.get("assignment_suppressed"):
+        log.error("UNCLEAN_RUN duplicate_sends=%s assignment_suppressed=%s",
+                  cov.get("duplicate_sends"), cov.get("assignment_suppressed"))
     return cov
 
 
 def step4_plan():
-    if C.BUILD_ASSIGNMENT and bq.table_exists(C.T_ASSIGNMENT):
-        n = bq.build_assignment()
-        log.info("ASSIGNMENT_REBUILT people=%s", n)
+    # The assignment rebuild used to live here; it now runs in step2b_assignment, BEFORE
+    # coverage measures it. Do not move it back.
     if not bq.table_exists(C.T_ASSIGNMENT):
         log.warning("NO_ASSIGNMENT: %s does not exist yet - reporting only, nothing to send",
                     C.T_ASSIGNMENT)
@@ -270,6 +287,7 @@ def main() -> int:
     try:
         report["identity_age_h"] = step1_identity_guard()
         report["snapshot_age_h"] = step2_refresh_suppression()
+        step2b_assignment()
         cov = step3_coverage()
         report.update({k: v for k, v in cov.items()})
         plan = step4_plan()
