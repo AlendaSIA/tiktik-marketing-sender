@@ -5,7 +5,20 @@
 -- ⚠ TWO WRITERS. bq.build_assignment() runs `CALL sp_build_contact_weekly_assignment()`; it
 -- does NOT re-create the procedure from this file. So this file and the live BigQuery
 -- routine are two independent copies of the same object, and a change to either alone
--- drifts. Change both in the same pass, always. Last synchronised 2026-09-04.
+-- drifts. Change both in the same pass, always. Last synchronised 2026-09-08.
+--
+-- ⚠ THIS TABLE IS REPLACED, NOT APPENDED (noted 2026-09-08). The statement below is
+-- CREATE OR REPLACE TABLE, so every run rebuilds the table from this procedure's own SELECT
+-- list. Three consequences, all easy to trip over:
+--   1. A column added from outside - by ALTER TABLE, from a job, from a conversation - is
+--      gone at the next run. It must be produced HERE or it does not exist for long. This
+--      was found the hard way: send_date and written_by were ALTERed in on 2026-09-08 and
+--      would have disappeared without a single error anywhere.
+--   2. Column descriptions do not survive a CTAS either, hence the ALTER COLUMN block at
+--      the end. Documentation that a rebuild erases is documentation nobody can rely on.
+--   3. The table holds the CURRENT WEEK ONLY. PARTITION BY week_start therefore has exactly
+--      one partition, and there is no assignment history in here. Anything that needs
+--      history reads mkt_control.campaign_audience_snapshot, which is append-only.
 --
 -- Staged in three steps on purpose: customer_lifecycle sits on a deep view stack, and
 -- joining it twice inside one statement is what pushed info_email_queue over the BigQuery
@@ -97,7 +110,9 @@ BEGIN
     ORDER BY (engaged > 0) DESC, last_event_ts DESC NULLS LAST, is_freshest_email DESC, email) = 1;
 
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
-  PARTITION BY week_start AS
+  PARTITION BY week_start
+  OPTIONS(description="The SENDING grain: exactly one row per master_key per week - which track owns the person, and which single address we send to. Written ONLY by mkt_control.sp_build_contact_weekly_assignment (single writer, see written_by). REPLACED on every run, so it holds the current week only and carries no history; read mkt_control.campaign_audience_snapshot for that. Uniqueness of (week_start, master_key) is asserted after every build via mkt_control.assignment_grain_violation and fails the run like UNCLEAN_RUN - a BigQuery primary key would not enforce it.")
+  AS
   WITH base AS (
     SELECT a.*, e.info_track, e.next_info_code,
       -- WELCOME GATE (Raivis, 2026-09-04). Entry is the FIRST ORDER, on or after the moment
@@ -162,10 +177,29 @@ BEGIN
     a.email_type,
     m.template_id,
     a.chosen_because,
-    CURRENT_TIMESTAMP() AS built_at
+    CURRENT_TIMESTAMP() AS built_at,
+    -- Which of the week's sending days this person's letter rides on. NOT decided here:
+    -- this procedure owns WHO gets WHAT, never WHEN it goes out. NULL is a real state -
+    -- "not yet slotted" - and is filled by the campaign layer. Created here rather than
+    -- ALTERed in afterwards because this statement replaces the table every run.
+    CAST(NULL AS DATE) AS send_date,
+    -- Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. It names the
+    -- PROCEDURE, not the job: the job CALLs and the procedure writes, and marking the caller
+    -- would put the marker one level away from the thing it marks.
+    'sp_build_contact_weekly_assignment' AS written_by
   FROM assigned a
   LEFT JOIN `jaunais-za-aizv04022026.mkt_control.email_template_map` m
     ON m.email_type = a.email_type;
+
+  -- CREATE TABLE AS SELECT cannot carry column descriptions, and the statement above
+  -- replaces the table on every run, so they are re-applied here. Without this block the
+  -- documentation lives exactly until the next run.
+  ALTER TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
+    ALTER COLUMN send_date SET OPTIONS(description="Which of the week's sending days this person's letter rides on. NULL = not yet slotted, which is a real state and not a missing value. Filled by the campaign layer; the assignment procedure does not decide sending days. Does NOT change the grain: (week_start, master_key) stays unique."),
+    ALTER COLUMN written_by SET OPTIONS(description="Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. Always 'sp_build_contact_weekly_assignment'. Any other value means something other than the single writer has written this table, which is a defect and not a variation."),
+    ALTER COLUMN built_at SET OPTIONS(description="When this run rebuilt the table. Every row of a build shares it, because the whole table is replaced in one statement."),
+    ALTER COLUMN email_type SET OPTIONS(description="THE variant axis. internal_label in mkt_control.utm_dictionary is populated from this and never from track - from track the winback rungs collapse into one label. Known PARTIAL as of 2026-09-08: 13 values against ~20 planned campaigns; welcome_1..6, signup_welcome, active_xsell, reorder_2, winback_2 and winback_3 have no email_type yet and are created by the ladder-step work."),
+    ALTER COLUMN track SET OPTIONS(description="Which track owns the person this week. Context only - never the variant name. Note lost_wave is a TRACK whose email_type is lost_quarterly.");
 
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_cl`;
   DROP TABLE IF EXISTS `jaunais-za-aizv04022026.mkt_control._assign_edu`;
