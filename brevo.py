@@ -1,4 +1,4 @@
-"""Brevo access: contact-state snapshot refresh, and transactional sending.
+"""Brevo access: contact-state snapshot refresh, and the retired transactional sender.
 
 Why the snapshot lives here and not in a separate job
 -----------------------------------------------------
@@ -8,6 +8,13 @@ invisible: 3 457 blocklisted contacts, of which 2 350 were still mailable by us.
 has to be refreshed by whoever is about to send, otherwise the suppression list silently
 rots and reads as covered - the same failure the fix was for. So the sender refreshes it
 at the start of every run and asserts its freshness afterwards.
+
+The transactional path is RETIRED (2026-09-08)
+----------------------------------------------
+PART C of `_email-A-Z-2026-09.md` replaced per-person transactional sending with campaigns
+on 2026-09-07. Until 2026-09-08 that decision was enforced only by DRY_RUN, ALLOW_SEND and
+an empty BREVO_API_KEY - configuration, not code. `send_transactional` now refuses at the
+call site, unconditionally. See the note on that function.
 """
 import csv
 import io
@@ -24,6 +31,18 @@ API = "https://api.brevo.com/v3"
 
 class BrevoError(RuntimeError):
     pass
+
+
+class RetiredPathError(RuntimeError):
+    """A code path retired by decision, which must never execute.
+
+    Deliberately NOT a subclass of BrevoError, and that distinction carries real weight.
+    BrevoError means "Brevo refused this message", and a caller is entitled to catch one,
+    count it and carry on to the next person. This means "this mechanism no longer exists",
+    and catching it per message would convert a single structural refusal into one quiet
+    failure row per person - a run that reports 6 153 failures and still exits 0. Callers
+    must let it through.
+    """
 
 
 def _request(method, path, key, payload=None, timeout=60):
@@ -131,15 +150,31 @@ def _ddmmyyyy(value):
 
 
 # --------------------------------------------------------------------------- #
-# Transactional send
+# Transactional send - RETIRED 2026-09-08, kept readable, cannot execute
 # --------------------------------------------------------------------------- #
-def send_transactional(key, to_email, to_name, template_id, params, tags):
-    """Send one message. Returns the Brevo messageId.
+RETIRED_REASON = (
+    "send_transactional is RETIRED. PART C of _email-A-Z-2026-09.md (2026-09-07) replaced "
+    "per-person transactional sending with campaigns. This function refuses unconditionally "
+    "and is not re-enabled by DRY_RUN, ALLOW_SEND or BREVO_API_KEY - the retirement is in the "
+    "code because three environment variables are not a guard. If campaigns need a sender, "
+    "build it as a campaign; do not revive this."
+)
 
-    One call per message on purpose: the log must carry a real per-message timestamp and
-    message id. A batch call that stamps 7 668 rows with one timestamp is what made the
-    June history unreadable, and it is explicitly disallowed here.
+
+def send_transactional(key, to_email, to_name, template_id, params, tags):
+    """RETIRED 2026-09-08. Raises RetiredPathError, always, before touching the network.
+
+    Retired rather than deleted, per the registry rule: the implementation below stays
+    readable as history and is unreachable by construction. Do not move the raise down to
+    make it conditional - a condition is what this commit removed.
+
+    The original contract, for the record: one call per message on purpose, because the log
+    must carry a real per-message timestamp and message id. A batch call that stamped 7 668
+    rows with one timestamp is what made the June 2026 history unreadable.
     """
+    raise RetiredPathError(f"{RETIRED_REASON} (attempted to={to_email} template={template_id})")
+
+    # --- retired implementation, unreachable; kept as history ---------------- #
     payload = {
         "to": [{"email": to_email, "name": to_name or to_email}],
         "templateId": int(template_id),
