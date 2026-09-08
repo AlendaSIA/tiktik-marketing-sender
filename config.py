@@ -3,6 +3,10 @@
 Safety defaults are deliberate: DRY_RUN starts true and ALLOW_SEND starts false, so a
 misconfigured deployment reports instead of sending. Turning both off is the only way to
 send, and the gate in main.py additionally refuses unless the plan is clean.
+
+Note since 2026-09-08: those defaults are no longer the last line of defence for the
+per-person transactional path. That path is retired IN CODE (brevo.send_transactional
+raises unconditionally), because three environment variables are not a guard.
 """
 import os
 
@@ -79,5 +83,17 @@ T_RUN_REPORT = t(CONTROL, "sender_run_report")
 T_TRACK_ENABLED = t(CONTROL, "track_enabled")
 T_TEMPLATE_MAP = t(CONTROL, "email_template_map")
 T_TEMPLATE_STATUS = t(CONTROL, "brevo_template_status")
+
+# Guard views. The invariant is DEFINED in the view and read from it - the job does not
+# carry a second copy of the condition, because two definitions of one invariant can
+# disagree in silence and the one that decides the run is not the one anybody queries.
+#   T_GRAIN_GUARD      - one row per violation of one-email-owner-per-person-per-week.
+#                        Empty is the only acceptable state after a build.
+#   T_STALE_PLANNED    - snapshot rows still 'planned' after their send_date. Reported,
+#                        never auto-closed: closing on age alone marks a late-dispatched
+#                        person unserved and mails them the same letter again next week.
+T_GRAIN_GUARD = t(CONTROL, "assignment_grain_violation")
+T_STALE_PLANNED = t(CONTROL, "snapshot_stale_planned")
+T_AUDIENCE_SNAPSHOT = t(CONTROL, "campaign_audience_snapshot")
 
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"
