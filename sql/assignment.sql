@@ -32,6 +32,20 @@
 -- Priority: order recovery > upsell-on-order > welcome (buyer) > sign-up welcome >
 --           reorder > winback > lost wave > educational > akcija
 --
+-- SENDING DAY (added 2026-09-08). This procedure decides send_date as well as the variant.
+-- It has to: a column filled later by a second component is a second writer to the one
+-- table whose whole value is being written once and asserted unique - the shape
+-- brevo_list_id had the same morning. And Raivis' approval is a DAY-AHEAD report of the
+-- whole day's batch behind one button, so a batch only known at dispatch time makes his
+-- own approval design unbuildable.
+--   send_date = week_start + mkt_control.variant_send_day.day_offset for this email_type.
+-- variant_send_day is a control table owned by Marketing and read here, the same shape as
+-- track_enabled and email_template_map, so the policy arrives as ROWS and changes without a
+-- deploy. While it is empty the fallback is offset 1 - the week's first sending day - and
+-- that fallback is a PLACEHOLDER, not a decision: chosen_because ends in
+-- send_day=default_first_sending_day or send_day=variant_send_day_map so a date nobody
+-- chose is visible per row instead of inferred from an empty table.
+--
 -- Three slots are deliberately NOT active rather than faked:
 --   * order recovery - success_attribution carries no e-mail and cannot be matched to
 --     checkout_attempts reliably; that match is its own build.
@@ -111,7 +125,7 @@ BEGIN
 
   CREATE OR REPLACE TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
   PARTITION BY week_start
-  OPTIONS(description="The SENDING grain: exactly one row per master_key per week - which track owns the person, and which single address we send to. Written ONLY by mkt_control.sp_build_contact_weekly_assignment (single writer, see written_by). REPLACED on every run, so it holds the current week only and carries no history; read mkt_control.campaign_audience_snapshot for that. Uniqueness of (week_start, master_key) is asserted after every build via mkt_control.assignment_grain_violation and fails the run like UNCLEAN_RUN - a BigQuery primary key would not enforce it.")
+  OPTIONS(description="The SENDING grain: exactly one row per master_key per week - which track owns the person, which single address we send to, and which of the week's sending days the letter rides on. Written ONLY by mkt_control.sp_build_contact_weekly_assignment (single writer, see written_by). REPLACED on every run, so it holds the current week only and carries no history; read mkt_control.campaign_audience_snapshot for that. Uniqueness of (week_start, master_key) is asserted after every build via mkt_control.assignment_grain_violation and fails the run like UNCLEAN_RUN - a BigQuery primary key would not enforce it.")
   AS
   WITH base AS (
     SELECT a.*, e.info_track, e.next_info_code,
@@ -167,8 +181,9 @@ BEGIN
     FROM base b
   )
   -- ONE mapping, resolved once, from the view that already is the single source. No dedupe
-  -- here on purpose: a duplicate email_type in the map would multiply rows, and
-  -- build_assignment()'s person-week invariant raises on exactly that. Loud beats averaged.
+  -- here on purpose - on either join: a duplicate email_type in the template map or in the
+  -- send-day map would multiply rows, and build_assignment()'s person-week invariant raises
+  -- on exactly that. Loud beats averaged.
   SELECT
     a.week_start,
     a.master_key,
@@ -176,26 +191,27 @@ BEGIN
     a.track,
     a.email_type,
     m.template_id,
-    a.chosen_because,
+    CONCAT(a.chosen_because, ' | send_day=',
+           IF(v.day_offset IS NULL, 'default_first_sending_day', 'variant_send_day_map')) AS chosen_because,
     CURRENT_TIMESTAMP() AS built_at,
-    -- Which of the week's sending days this person's letter rides on. NOT decided here:
-    -- this procedure owns WHO gets WHAT, never WHEN it goes out. NULL is a real state -
-    -- "not yet slotted" - and is filled by the campaign layer. Created here rather than
-    -- ALTERed in afterwards because this statement replaces the table every run.
-    CAST(NULL AS DATE) AS send_date,
+    -- The week's sending day for this variant. Offset 1 (Tuesday) is the fallback while
+    -- variant_send_day has no row for the variant; chosen_because says which applied.
+    DATE_ADD(a.week_start, INTERVAL COALESCE(v.day_offset, 1) DAY) AS send_date,
     -- Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. It names the
     -- PROCEDURE, not the job: the job CALLs and the procedure writes, and marking the caller
     -- would put the marker one level away from the thing it marks.
     'sp_build_contact_weekly_assignment' AS written_by
   FROM assigned a
   LEFT JOIN `jaunais-za-aizv04022026.mkt_control.email_template_map` m
-    ON m.email_type = a.email_type;
+    ON m.email_type = a.email_type
+  LEFT JOIN `jaunais-za-aizv04022026.mkt_control.variant_send_day` v
+    ON v.email_type = a.email_type;
 
   -- CREATE TABLE AS SELECT cannot carry column descriptions, and the statement above
   -- replaces the table on every run, so they are re-applied here. Without this block the
   -- documentation lives exactly until the next run.
   ALTER TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
-    ALTER COLUMN send_date SET OPTIONS(description="Which of the week's sending days this person's letter rides on. NULL = not yet slotted, which is a real state and not a missing value. Filled by the campaign layer; the assignment procedure does not decide sending days. Does NOT change the grain: (week_start, master_key) stays unique."),
+    ALTER COLUMN send_date SET OPTIONS(description="Which of the week's sending days this person's letter rides on. Decided HERE, by the single writer, so the day-ahead batch is knowable a week in advance and no second component writes this table. Value = week_start + mkt_control.variant_send_day.day_offset for the row's email_type; while that map has no row for a variant the fallback is the week's first sending day (offset 1, Tuesday). The fallback is a PLACEHOLDER, not a decision - chosen_because says which of the two produced the date."),
     ALTER COLUMN written_by SET OPTIONS(description="Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. Always 'sp_build_contact_weekly_assignment'. Any other value means something other than the single writer has written this table, which is a defect and not a variation."),
     ALTER COLUMN built_at SET OPTIONS(description="When this run rebuilt the table. Every row of a build shares it, because the whole table is replaced in one statement."),
     ALTER COLUMN email_type SET OPTIONS(description="THE variant axis. internal_label in mkt_control.utm_dictionary is populated from this and never from track - from track the winback rungs collapse into one label. Known PARTIAL as of 2026-09-08: 13 values against ~20 planned campaigns; welcome_1..6, signup_welcome, active_xsell, reorder_2, winback_2 and winback_3 have no email_type yet and are created by the ladder-step work."),
