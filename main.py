@@ -15,6 +15,7 @@ G6  SEND_TIME_RECHECK every message re-checks person AND template               
 G7  PER_MESSAGE_LOG  one row per message, real timestamp and message id         (step 6)
 G8  DRY_RUN default  sending needs DRY_RUN=false AND ALLOW_SEND=true AND a
                      clean plan; anything else reports and exits 0              (step 5)
+G9  RETIRED_PATH     the transactional sender refuses in code, not in config    (step 6)
 
 WHAT A DRY RUN CAN AND CANNOT PROVE - read this before quoting a number
 -----------------------------------------------------------------------
@@ -28,6 +29,14 @@ not a single row carries a master_key. So the CTE returns nothing for everyone, 
 and frequency=0 means "there is no history", not "the guard held". G5 becomes real only
 once this job's own log rows exist - i.e. after the first real send, together with G6
 and G7, which live solely on the sending path.
+
+G9 (2026-09-08): PART C retired per-person transactional sending in favour of campaigns.
+Until then the retirement was enforced by DRY_RUN, ALLOW_SEND and an empty BREVO_API_KEY -
+configuration, which is the class of guard found wrong four times in the week of 01.-07.09
+on jobs whose status read green. brevo.send_transactional now refuses at the call site
+regardless of configuration, and step6_send does NOT swallow that refusal: see the comment
+there, because catching it per message is how one structural abort becomes 6 153 quiet
+failure rows and a run that still exits 0.
 
 Exit codes: 0 = ran and reported. 1 = a guard failed. A guard failure is a real failure and
 must stay visible - "a signal that is always on is not a signal".
@@ -247,6 +256,15 @@ def step6_send(plan):
                 C.BREVO_API_KEY, p["email"], p["full_name"], p["template_id"], params,
                 tags=[p["email_type"], p["track"], f"run:{RUN_ID}"])
             status = "sent"
+        except brevo.RetiredPathError as e:
+            # G9. This must be caught BEFORE the generic handler below and must abort the
+            # run. The generic handler exists so that one bad message cannot kill a run -
+            # correct for "Brevo refused this message", catastrophic here: a retired
+            # MECHANISM would be swallowed once per person, producing 6 153 quiet 'failed'
+            # rows with status=ok and exit 0. That is a green run that wrote nothing, which
+            # is the failure this whole build exists to remove. Do not merge these two
+            # handlers, and do not reorder them.
+            raise GuardFailure(f"RETIRED_SEND_PATH: {e}") from e
         except Exception as e:  # noqa: BLE001 - one bad message must not kill the run
             failed += 1
             message_id = None
