@@ -83,14 +83,32 @@ def build_assignment() -> int:
 
     One row per person per week, and no suppressed address in it. Both are checked here
     rather than trusted, because a silent violation is a duplicate or an unwanted send.
+
+    The grain invariant is READ FROM ITS VIEW rather than restated here. Until 2026-09-08
+    this function held its own copy of the duplicate condition, which meant the definition
+    that decided the run was not the definition anyone queried when asking whether the
+    assignment was clean - and the two could drift apart without a word. The view also
+    catches NULL_MASTER_KEY, which the old inline count could not see at all.
     """
     query(f"CALL {C.SP_ASSIGNMENT}()")
-    dupes = scalar(f"""
-        SELECT COUNT(*) - COUNT(DISTINCT CONCAT(CAST(week_start AS STRING), '|', master_key))
-        FROM {C.T_ASSIGNMENT}
+
+    violations = query(f"""
+        SELECT violation, CAST(week_start AS STRING) AS week_start,
+               IFNULL(master_key, '<null>') AS master_key,
+               rows_for_person_week, IFNULL(email_types, '') AS email_types
+        FROM {C.T_GRAIN_GUARD}
+        ORDER BY rows_for_person_week DESC
+        LIMIT 5
     """)
-    if dupes:
-        raise RuntimeError(f"assignment invariant: {dupes} duplicate person-week rows")
+    if violations:
+        total = int(scalar(f"SELECT COUNT(*) FROM {C.T_GRAIN_GUARD}"))
+        sample = "; ".join(
+            f"{v['violation']} {v['week_start']}/{v['master_key']}"
+            f" rows={v['rows_for_person_week']} types={v['email_types']}"
+            for v in violations)
+        raise RuntimeError(
+            f"assignment invariant: {total} row(s) in {C.T_GRAIN_GUARD}. Sample: {sample}")
+
     leaked = scalar(f"""
         SELECT COUNTIF(a.email IN (SELECT email FROM {C.T_SUPPRESSION}))
         FROM {C.T_ASSIGNMENT} a
@@ -295,6 +313,62 @@ def write_run_report(report: dict):
     errors = client().insert_rows_json(C.T_RUN_REPORT.strip("`"), [report])
     if errors:
         raise RuntimeError(f"sender_run_report insert failed: {errors[:3]}")
+
+
+# --------------------------------------------------------------------------- #
+# Campaign audience snapshot - the dispatch FACT the serviced marker is derived from
+# --------------------------------------------------------------------------- #
+def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
+                            written_by: str = "tiktik-marketing-sender"):
+    """Freeze who this campaign is for, BEFORE dispatch, at dispatch_state='planned'.
+
+    The whole point of the table: the serviced marker and the ladder steps read the
+    dispatch fact recorded here, never list membership. A campaign that fails to send
+    therefore marks nobody as served, which is the failure this replaced - a person losing
+    their rung to a letter that never arrived.
+
+    Written before, completed after. If the run dies in between, the row stays 'planned'
+    and mkt_control.snapshot_stale_planned reports it. It is NOT closed automatically:
+    see stale_planned().
+    """
+    if not rows:
+        return 0
+    payload = [{
+        "snapshot_id": snapshot_id,
+        "built_at": r["built_at"],
+        "week_start": r["week_start"],
+        "send_date": send_date,
+        "utm_campaign": r.get("utm_campaign"),
+        "email_type": r["email_type"],
+        "track": r["track"],
+        "brevo_list_id": r.get("brevo_list_id"),
+        "brevo_campaign_id": r.get("brevo_campaign_id"),
+        "brevo_message_id": r.get("brevo_message_id"),
+        "master_key": r["master_key"],
+        "email": r["email"],
+        "template_id": r.get("template_id"),
+        "dispatch_state": r.get("dispatch_state", "planned"),
+        "dispatched_at": r.get("dispatched_at"),
+        "dispatch_error": r.get("dispatch_error"),
+        "written_by": written_by,
+    } for r in rows]
+    errors = client().insert_rows_json(C.T_AUDIENCE_SNAPSHOT.strip("`"), payload)
+    if errors:
+        raise RuntimeError(f"campaign_audience_snapshot insert failed: {errors[:3]}")
+    return len(payload)
+
+
+def stale_planned() -> int:
+    """How many snapshot rows are still 'planned' after their send_date.
+
+    Reported on every run and never acted on here. Closing such a row on age alone would
+    mark a late-dispatched person unserved, and they would receive the same letter again
+    next week - the serviced marker's own failure arriving from the other side. Closing
+    requires reconciling against Brevo first (see the view's reconcile_route), which
+    belongs to whatever dispatches campaigns, not to a counter.
+    """
+    n = scalar(f"SELECT SUM(planned_rows) FROM {C.T_STALE_PLANNED}")
+    return int(n or 0)
 
 
 # --------------------------------------------------------------------------- #
