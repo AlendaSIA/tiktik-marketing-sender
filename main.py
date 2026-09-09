@@ -16,6 +16,8 @@ G7  PER_MESSAGE_LOG  one row per message, real timestamp and message id         
 G8  DRY_RUN default  sending needs DRY_RUN=false AND ALLOW_SEND=true AND a
                      clean plan; anything else reports and exits 0              (step 5)
 G9  RETIRED_PATH     the transactional sender refuses in code, not in config    (step 6)
+SNAP PLANNED_AUDIENCE who is slated for which letter on which day, frozen before
+                     dispatch and read by the day-ahead approval e-mail       (step 4b)
 
 WHAT A DRY RUN CAN AND CANNOT PROVE - read this before quoting a number
 -----------------------------------------------------------------------
@@ -193,6 +195,51 @@ def step4_plan():
     return plan
 
 
+def step4b_planned_snapshot(plan):
+    """Freeze the week's audience as 'planned' rows, and report what was written.
+
+    This is the object Raivis' day-ahead approval e-mail reads (PART E): the planned rows for
+    tomorrow's send_date, with chosen_because printed as the criteria that selected those
+    people. It is therefore a dependency of the button, not a nicety of the run report.
+
+    It writes the SEND rows only, and it writes them in a dry run as well - both reasons are
+    argued in bq.write_planned_snapshot, because both are the kind of decision that gets
+    quietly reversed by someone tidying up.
+
+    Returns (written, stale, default_day). Zero written is a REPORTED state, never a silent
+    one: this node has been bitten four times in one week by a job that was green and did
+    nothing, and every one of them was found because a person happened to look.
+    """
+    default_day = bq.default_day_rows()
+    if default_day:
+        log.warning("DEFAULT_SENDING_DAY_USED rows=%s - a variant has no mkt_control."
+                    "variant_send_day row and fell to the placeholder (Thursday)", default_day)
+
+    if plan is None:
+        log.warning("SNAPSHOT_SKIPPED: no assignment table, so there is no audience to freeze")
+        return 0, bq.stale_planned(), default_day
+
+    sendable = [p for p in plan if p["decision"] == "SEND"]
+    written = bq.write_planned_snapshot(RUN_ID, [p["master_key"] for p in sendable])
+
+    if written == 0:
+        # Say WHY, with the number. "0 rows" and "0 rows because every track is switched off"
+        # are the same line to a machine and completely different lines to a person.
+        track_off = sum(1 for p in plan if p["decision"] == "TRACK_OFF")
+        log.warning("SNAPSHOT_WROTE_NOTHING plan_rows=%s track_off=%s - nothing is slated to "
+                    "go out, so nothing was frozen. Expected while every track is off; a "
+                    "defect the moment one is on.", len(plan), track_off)
+    else:
+        log.info("SNAPSHOT_PLANNED written=%s snapshot_id=%s", written, RUN_ID)
+
+    stale = bq.stale_planned()
+    if stale:
+        log.warning("STALE_PLANNED rows=%s - planned rows outlived their send_date. Reported "
+                    "only; closing them on age alone would mark a late-dispatched person "
+                    "unserved and mail them the same letter again next week.", stale)
+    return written, stale, default_day
+
+
 def step5_gate(plan, cov):
     """Sending is the exception, not the default."""
     if C.DRY_RUN or not C.ALLOW_SEND:
@@ -314,6 +361,11 @@ def main() -> int:
         report["plan_track_off"] = sum(1 for p in (plan or []) if p["decision"] == "TRACK_OFF")
         report["plan_template_blocked"] = sum(
             1 for p in (plan or []) if p["decision_if_enabled"] in TEMPLATE_BLOCKED)
+
+        written, stale, default_day = step4b_planned_snapshot(plan)
+        report["snapshot_planned_written"] = written
+        report["stale_planned"] = stale
+        report["assignment_default_day_rows"] = default_day
 
         if step5_gate(plan, cov):
             sent, skipped, skipped_template, failed = step6_send(plan)

@@ -358,6 +358,107 @@ def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
     return len(payload)
 
 
+PLANNED_SNAPSHOT_SQL = f"""
+-- Re-derive THIS WEEK's planned audience, in one transaction, so a reader never sees the
+-- table half-emptied. The job runs every night against the same week, so an append-only
+-- write would multiply a person by seven before the week is out; DELETE-then-INSERT is what
+-- makes the nightly run idempotent.
+--
+-- The DELETE is narrow on purpose. It removes only rows that are still 'planned', carry no
+-- Brevo id in either direction, and were written by THIS writer. A row a campaign has already
+-- claimed or dispatched is therefore untouchable here, and the dispatch fact - which is the
+-- whole reason the table exists - can never be deleted by a planning run.
+--
+-- FOR WHOEVER BUILDS THE CAMPAIGN LAYER (plan Phase 4): claim your rows by stamping
+-- brevo_campaign_id (or moving them off 'planned') in the same statement that hands them to a
+-- campaign. Between reading a planned row and stamping it, this DELETE may remove it.
+BEGIN TRANSACTION;
+
+DELETE FROM {C.T_AUDIENCE_SNAPSHOT}
+WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+  AND dispatch_state = 'planned'
+  AND brevo_campaign_id IS NULL
+  AND brevo_message_id IS NULL
+  AND written_by = @written_by;
+
+INSERT INTO {C.T_AUDIENCE_SNAPSHOT}
+  (snapshot_id, built_at, week_start, send_date, utm_campaign, email_type, track,
+   brevo_list_id, brevo_campaign_id, brevo_message_id, master_key, email, template_id,
+   chosen_because, dispatch_state, dispatched_at, dispatch_error, written_by)
+SELECT
+  @snapshot_id, CURRENT_TIMESTAMP(), a.week_start, a.send_date,
+  NULL, a.email_type, a.track,
+  NULL, NULL, NULL, a.master_key, a.email, a.template_id,
+  a.chosen_because, 'planned', NULL, NULL, @written_by
+FROM {C.T_ASSIGNMENT} a
+JOIN UNNEST(@master_keys) AS mk ON mk = a.master_key
+WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY));
+
+COMMIT TRANSACTION;
+"""
+
+
+def write_planned_snapshot(snapshot_id: str, master_keys: list,
+                           written_by: str = "tiktik-marketing-sender") -> int:
+    """Freeze who is slated for which letter on which day, at dispatch_state='planned'.
+
+    WHICH ROWS. Exactly the people the plan decided SEND for. Not the whole assignment: a
+    TRACK_OFF row is not going out, and recording it as 'planned' would leave a row that
+    nothing can ever dispatch or reconcile. mkt_control.snapshot_stale_planned would then
+    report every row in the table forever, and a signal that is always on is no signal - the
+    same failure this node has already met on `status: partial`.
+
+    WHY IT RUNS IN A DRY RUN TOO. DRY_RUN governs SENDING, not planning. The day-ahead
+    approval e-mail (PART E) reads exactly these rows for tomorrow's send_date and prints
+    chosen_because as the criteria, so if the planning write waited for a live send there
+    would be nothing to approve and therefore no path to a live send.
+
+    WHERE THE COLUMNS COME FROM, and it is two sources on purpose. The DECISION comes from
+    the plan (one definition of who may go, in PLAN_SQL); the DAY and the CRITERIA come from
+    contact_weekly_assignment, which is their single writer. Re-deriving either here would
+    create the second definition this node keeps removing.
+
+    Returns the number of rows actually in the table for this snapshot_id - read back, not
+    assumed. A master_key in the plan with no assignment row would otherwise vanish silently.
+    """
+    if not master_keys:
+        return 0
+    from google.cloud.bigquery import ArrayQueryParameter as A
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    query(PLANNED_SNAPSHOT_SQL, [
+        P("snapshot_id", "STRING", snapshot_id),
+        P("written_by", "STRING", written_by),
+        A("master_keys", "STRING", master_keys),
+    ])
+    written = int(scalar(
+        f"SELECT COUNT(*) FROM {C.T_AUDIENCE_SNAPSHOT} WHERE snapshot_id = @snapshot_id",
+        [P("snapshot_id", "STRING", snapshot_id)]) or 0)
+    if written != len(master_keys):
+        raise RuntimeError(
+            f"snapshot write disagrees with the plan: {len(master_keys)} people decided SEND, "
+            f"{written} rows written for snapshot_id={snapshot_id}. A plan row with no "
+            f"assignment row for this week is a contradiction between two objects that are "
+            f"built from each other, not a rounding difference.")
+    return written
+
+
+def default_day_rows() -> int:
+    """How many of this week's assignment rows got their day from the PLACEHOLDER, not the map.
+
+    Reported on every run next to rows written and grain violations. chosen_because makes the
+    reason readable per row, but a trace nobody queries is not a signal; this is the number
+    that surfaces without anyone writing SQL. Non-zero means a variant is being sent without
+    Marketing having chosen its day - since 2026-09-09 that lands on Thursday rather than the
+    commercial day, which makes it survivable, not correct.
+    """
+    n = scalar(f"""
+        SELECT COUNTIF(chosen_because LIKE '%send_day=default_first_sending_day%')
+        FROM {C.T_ASSIGNMENT}
+        WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+    """)
+    return int(n or 0)
+
+
 def stale_planned() -> int:
     """How many snapshot rows are still 'planned' after their send_date.
 

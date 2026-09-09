@@ -25,3 +25,26 @@ CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.sender_run_repor
   plan_rows INT64, plan_send INT64,
   sent INT64, skipped_at_send_time INT64, failed INT64
 ) PARTITION BY DATE(started_at);
+
+-- Applied 2026-09-09, with main.py step4b (the planned-audience write).
+--
+-- campaign_audience_snapshot was created live on 2026-09-08 without a criteria column. PART E
+-- then specified that the day-ahead approval e-mail prints WHY each person is in the campaign,
+-- and the only place that string exists is contact_weekly_assignment.chosen_because - a table
+-- that is CREATE OR REPLACEd every run and holds the current week only. Reading the criteria
+-- from there at approval time would work for about a day and then quietly answer for the
+-- wrong week, so the string is frozen into the row it explains.
+--
+-- These ALTERs are durable, unlike the ones tried on contact_weekly_assignment on 2026-09-08:
+-- nothing re-creates these two tables. The snapshot is append-only plus a narrow DELETE of
+-- unclaimed planned rows, and the run report is insert-only.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.campaign_audience_snapshot`
+  ADD COLUMN IF NOT EXISTS chosen_because STRING;
+
+-- Three numbers the run report could not carry. The first two are the run's own output; the
+-- third is the one that says a variant is going out on a day nobody chose. Reporting the
+-- STATUS instead of the COUNT is how four green runs that wrote nothing survived a week.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
+  ADD COLUMN IF NOT EXISTS snapshot_planned_written    INT64,
+  ADD COLUMN IF NOT EXISTS stale_planned               INT64,
+  ADD COLUMN IF NOT EXISTS assignment_default_day_rows INT64;

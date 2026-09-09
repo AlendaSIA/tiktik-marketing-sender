@@ -5,7 +5,7 @@
 -- ⚠ TWO WRITERS. bq.build_assignment() runs `CALL sp_build_contact_weekly_assignment()`; it
 -- does NOT re-create the procedure from this file. So this file and the live BigQuery
 -- routine are two independent copies of the same object, and a change to either alone
--- drifts. Change both in the same pass, always. Last synchronised 2026-09-08.
+-- drifts. Change both in the same pass, always. Last synchronised 2026-09-09.
 --
 -- ⚠ THIS TABLE IS REPLACED, NOT APPENDED (noted 2026-09-08). The statement below is
 -- CREATE OR REPLACE TABLE, so every run rebuilds the table from this procedure's own SELECT
@@ -41,10 +41,18 @@
 --   send_date = week_start + mkt_control.variant_send_day.day_offset for this email_type.
 -- variant_send_day is a control table owned by Marketing and read here, the same shape as
 -- track_enabled and email_template_map, so the policy arrives as ROWS and changes without a
--- deploy. While it is empty the fallback is offset 1 - the week's first sending day - and
--- that fallback is a PLACEHOLDER, not a decision: chosen_because ends in
+-- deploy. When a variant has no row the fallback is offset 3 - Thursday - and that fallback
+-- is a PLACEHOLDER, not a decision: chosen_because ends in
 -- send_day=default_first_sending_day or send_day=variant_send_day_map so a date nobody
 -- chose is visible per row instead of inferred from an empty table.
+--
+-- WHY THE PLACEHOLDER IS OFFSET 3 AND NOT OFFSET 1 (changed 2026-09-09). It used to be
+-- Tuesday, which is the COMMERCIAL day - reorder, winback, lost. A variant with no map row is
+-- almost always a NEW one, so a forgotten row would have put a brand-new letter on the money
+-- day silently, and the only trace would have been a chosen_because value nobody reads. That
+-- is the wrong direction for a default: defaults belong on the harmless side of the decision
+-- they stand in for. Thursday is additionally already the correct day for every future
+-- educational category, whose theme is derived but whose sending day was not.
 --
 -- Three slots are deliberately NOT active rather than faked:
 --   * order recovery - success_attribution carries no e-mail and cannot be matched to
@@ -194,9 +202,10 @@ BEGIN
     CONCAT(a.chosen_because, ' | send_day=',
            IF(v.day_offset IS NULL, 'default_first_sending_day', 'variant_send_day_map')) AS chosen_because,
     CURRENT_TIMESTAMP() AS built_at,
-    -- The week's sending day for this variant. Offset 1 (Tuesday) is the fallback while
-    -- variant_send_day has no row for the variant; chosen_because says which applied.
-    DATE_ADD(a.week_start, INTERVAL COALESCE(v.day_offset, 1) DAY) AS send_date,
+    -- The week's sending day for this variant. Offset 3 (Thursday, the low-intent day) is
+    -- the fallback while variant_send_day has no row for the variant; chosen_because says
+    -- which applied. Deliberately NOT the commercial day - see the header note of 2026-09-09.
+    DATE_ADD(a.week_start, INTERVAL COALESCE(v.day_offset, 3) DAY) AS send_date,
     -- Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. It names the
     -- PROCEDURE, not the job: the job CALLs and the procedure writes, and marking the caller
     -- would put the marker one level away from the thing it marks.
@@ -211,7 +220,7 @@ BEGIN
   -- replaces the table on every run, so they are re-applied here. Without this block the
   -- documentation lives exactly until the next run.
   ALTER TABLE `jaunais-za-aizv04022026.business_marts.contact_weekly_assignment`
-    ALTER COLUMN send_date SET OPTIONS(description="Which of the week's sending days this person's letter rides on. Decided HERE, by the single writer, so the day-ahead batch is knowable a week in advance and no second component writes this table. Value = week_start + mkt_control.variant_send_day.day_offset for the row's email_type; while that map has no row for a variant the fallback is the week's first sending day (offset 1, Tuesday). The fallback is a PLACEHOLDER, not a decision - chosen_because says which of the two produced the date."),
+    ALTER COLUMN send_date SET OPTIONS(description="Which of the week's sending days this person's letter rides on. Decided HERE, by the single writer, so the day-ahead batch is knowable a week in advance and no second component writes this table. Value = week_start + mkt_control.variant_send_day.day_offset for the row's email_type; while that map has no row for a variant the fallback is offset 3, Thursday. The fallback is a PLACEHOLDER, not a decision - chosen_because says which of the two produced the date. It points at Thursday and not at Tuesday on purpose (2026-09-09): Tuesday is the commercial day, and a variant nobody mapped is almost always a new one, so the harmless day is the correct place for a default to stand."),
     ALTER COLUMN written_by SET OPTIONS(description="Single-writer marker, same rule as mkt_control.utm_dictionary.added_by. Always 'sp_build_contact_weekly_assignment'. Any other value means something other than the single writer has written this table, which is a defect and not a variation."),
     ALTER COLUMN built_at SET OPTIONS(description="When this run rebuilt the table. Every row of a build shares it, because the whole table is replaced in one statement."),
     ALTER COLUMN email_type SET OPTIONS(description="THE variant axis. internal_label in mkt_control.utm_dictionary is populated from this and never from track - from track the winback rungs collapse into one label. Known PARTIAL as of 2026-09-08: 13 values against ~20 planned campaigns; welcome_1..6, signup_welcome, active_xsell, reorder_2, winback_2 and winback_3 have no email_type yet and are created by the ladder-step work."),
