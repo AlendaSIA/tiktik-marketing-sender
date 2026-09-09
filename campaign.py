@@ -191,8 +191,21 @@ def template_is_active(template_id: int) -> bool:
     return bool(template(template_id).get("isActive"))
 
 
+# THE CLOSING BRACES ARE DELIBERATELY NOT MATCHED, and that cost a scan to learn.
+#
+# The first version required `}}` immediately after the attribute name. Live template 35 renders
+#   {{ contact.SVEICIENS | default : "Sveiki" }}
+#   {{ contact.XSELL_GROUP | default : "papira preces" | lower }}
+# so every reference carrying a Liquid filter was invisible, and the scan reported welcome_1 as
+# rendering ZERO attributes. A welcome letter that personalises nothing is not plausible, which is
+# the only reason anyone looked - the "implausibly low count is worth a human's eye" note in
+# template_attributes did the work it was written for, on its first real run.
+#
+# It is the GROUP_CODE lesson a second time in one day, in my own code: a check that only sees the
+# shape somebody thought of. So the name is captured from the opening `{{ contact.` and everything
+# after it is somebody else's business.
 _ATTR_REFS = (
-    re.compile(r"\{\{\s*contact\.([A-Z0-9_]+)\s*\}\}"),
+    re.compile(r"\{\{\s*contact\.([A-Z0-9_]+)"),
     re.compile(r"%([A-Z][A-Z0-9_]{1,})%"),          # legacy Brevo personalisation
 )
 

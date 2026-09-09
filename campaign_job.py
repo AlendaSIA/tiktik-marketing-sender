@@ -180,8 +180,12 @@ def main() -> int:
 
         r["refusals"] = " | ".join(refusals)
         r["status"] = "refused" if refusals else "ok"
-        r["note"] = ("This layer creates drafts only; send_now() raises unconditionally. "
-                     "Nothing here can reach a customer.")
+        # APPEND, never overwrite. The first version assigned here and clobbered the note each mode
+        # had just written, so the template scan reported the boilerplate instead of its own count -
+        # the run said nothing about what it had actually done.
+        r["note"] = ((r.get("note") + " | ") if r.get("note") else "") + (
+            "This layer creates drafts only; send_now() raises unconditionally. "
+            "Nothing here can reach a customer.")
     except (C.TemplateInactive, C.TemplateUsesUnapprovedAttribute, C.ListNotAllowed,
             C.EmptyAudience) as e:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
