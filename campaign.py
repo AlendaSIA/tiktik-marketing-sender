@@ -59,6 +59,20 @@ class SendRefused(RuntimeError):
     """A send was attempted without an approval row. Deliberately outside BrevoError."""
 
 
+class TemplateUsesDiscount(RuntimeError):
+    """The template still renders a discount attribute. Raivis struck those on 2026-09-07."""
+
+
+# Raivis retired discount codes on 2026-09-07: offers live in the customer's own replenisher link
+# with a deadline and a margin, never as a percentage. Eleven educational templates still carried
+# XSELL_CODE / XSELL_PCT with 10 % hardcoded when Marketing checked on 09.09.
+#
+# THE REASON THIS IS ENFORCED HERE AND NOT BY THE PERSON EDITING THE TEMPLATES: a rule kept by
+# somebody remembering to strip eleven templates is a rule that comes back the first time a
+# twelfth is copied from an old one. A rule kept by the code that builds the campaign does not.
+DISCOUNT_ATTRIBUTES = ("XSELL_CODE", "XSELL_PCT", "NEXT_DISCOUNT_CODE", "NEXT_DISCOUNT_PCT")
+
+
 _key_cache = None
 
 
@@ -127,6 +141,23 @@ def effective_audience(list_id: int) -> int:
                if SUPPRESSION_LIST_ID not in (c.get("listIds") or []))
 
 
+def template(template_id: int):
+    return _call("GET", f"/smtp/templates/{template_id}")
+
+
+def template_discount_attributes(template_id: int):
+    """Which retired discount attributes this template still renders. Empty is the good answer."""
+    t = template(template_id)
+    blob = (t.get("htmlContent") or "") + " " + (t.get("subject") or "")
+    return [a for a in DISCOUNT_ATTRIBUTES if a in blob]
+
+
+def contact_attributes(email: str) -> dict:
+    """The contact's real attribute values, for substituting into links before checking them."""
+    import urllib.parse
+    return _call("GET", f"/contacts/{urllib.parse.quote(email)}").get("attributes", {}) or {}
+
+
 def campaign(campaign_id: int, statistics: str = "campaignStats"):
     return _call("GET", f"/emailCampaigns/{campaign_id}?statistics={statistics}")
 
@@ -188,6 +219,12 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
             f"list {list_id} is not in the hard allowlist {sorted(ALLOWED_LIST_IDS)}. Until Raivis' "
             f"first approval, this layer may address only a list whose entire membership is his own "
             f"address. Widening it is a code change, on purpose.")
+    still_discounting = template_discount_attributes(template_id)
+    if still_discounting:
+        raise TemplateUsesDiscount(
+            f"template {template_id} still renders {', '.join(still_discounting)}. Raivis retired "
+            f"discount codes on 2026-09-07; a campaign built from this template would print an "
+            f"offer he has withdrawn. Strip the attribute from the template, not this check.")
     reachable = effective_audience(list_id)
     if reachable == 0:
         raise EmptyAudience(
@@ -213,7 +250,20 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
 _HREF = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 
 
-def check_links(campaign_id: int):
+_PLACEHOLDER = re.compile(r"\{\{\s*(?:contact\.)?([A-Z0-9_]+)\s*\}\}")
+
+
+def substitute(text: str, attributes: dict) -> str:
+    """Replace {{ contact.X }} with the contact's real value. Unknown names are left alone.
+
+    Left alone rather than blanked on purpose: a placeholder nobody can fill has to stay visible as
+    a placeholder, or the link check passes on a URL that will be broken for every real reader.
+    """
+    return _PLACEHOLDER.sub(
+        lambda m: str(attributes.get(m.group(1), m.group(0))), text or "")
+
+
+def check_links(campaign_id: int, as_contact: str = None):
     """Every link in the campaign's HTML must answer 200 before the campaign may be scheduled.
 
     Two classes, and conflating them is how a broken link survives a green check. A STATIC link is
@@ -222,9 +272,14 @@ def check_links(campaign_id: int):
     needs a test send to the allowlisted list, which is the second stage.
     """
     html = campaign(campaign_id).get("htmlContent") or ""
+    attrs = contact_attributes(as_contact) if as_contact else {}
     static, dynamic = [], []
     for href in set(_HREF.findall(html)):
-        (dynamic if ("{{" in href or "{%" in href) else static).append(href)
+        resolved = substitute(href, attrs)
+        # A link is only checkable once its placeholders carry real values. This is why the check
+        # is run AS a contact: the 24.08 breakage lived inside the substituted part of the URL and
+        # is invisible in the template's own HTML.
+        (dynamic if ("{{" in resolved or "{%" in resolved) else static).append(resolved)
     ok, failed = [], []
     for url in sorted(static):
         if not url.lower().startswith("http"):
