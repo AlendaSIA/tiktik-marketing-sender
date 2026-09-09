@@ -67,6 +67,20 @@ class TemplateUsesDiscount(RuntimeError):
     """Kept for the annotation only; it is no longer a gate. See DISCOUNT_ATTRIBUTES."""
 
 
+class TemplateUsesParams(RuntimeError):
+    """The template renders Liquid `params.*`, which are ALWAYS empty in a campaign.
+
+    params fill only through the transactional API. In a campaign every one of them resolves to
+    nothing, so the template renders a blank where the value should be. Template 20 is the case
+    that taught this: its headline reads "Speciala atlaide - {{ params.xsell_group }}
+    -{{ params.xsell_pct }}% ar kodu {{ params.xsell_code }}", and that headline is NOT inside a
+    conditional. Sent as a campaign it advertises a discount with no discount in it.
+
+    A stronger guard than the attribute allowlist, and a different question: the allowlist asks
+    whether a field is allowed, this asks whether it can ever have a value here at all.
+    """
+
+
 class TemplateInactive(RuntimeError):
     """Brevo will not build a campaign from an inactive template.
 
@@ -205,9 +219,25 @@ def template_is_active(template_id: int) -> bool:
 # shape somebody thought of. So the name is captured from the opening `{{ contact.` and everything
 # after it is somebody else's business.
 _ATTR_REFS = (
-    re.compile(r"\{\{\s*contact\.([A-Z0-9_]+)"),
+    re.compile(r"\{\{\s*contact\.([A-Za-z0-9_]+)"),
     re.compile(r"%([A-Z][A-Z0-9_]{1,})%"),          # legacy Brevo personalisation
 )
+
+# A SECOND NAMESPACE, and missing it is how two honest scans disagreed on 2026-09-09.
+#
+# Data & analytics counted 14 templates carrying XSELL_CODE / XSELL_PCT. This layer's scan found
+# none. Both were right about what they measured: the references are `params.xsell_code` and
+# `params.xsell_pct` - LOWERCASE, and in the `params` namespace, not `contact`. Reading the raw
+# HTML of template 20 settled it in one look, which is exactly why the instruction was to read the
+# HTML rather than to trust either parser.
+#
+# It also rules out the third and most alarming possibility that was on the table - that deleting
+# the Brevo attributes had silently changed what a template resolves to without changing its HTML.
+# It did not, and could not have: params are not contact attributes.
+#
+# Both `{{ params.x }}` and `{% if params.x %}` are caught, and the dotted path is kept whole
+# (`products.0.final`), because the discount lives in the tail of it.
+_PARAM_REF = re.compile(r"params\.([A-Za-z0-9_.]+)")
 
 
 def template_attributes(template_id: int):
@@ -224,6 +254,13 @@ def template_attributes(template_id: int):
     for rx in _ATTR_REFS:
         found.update(rx.findall(blob))
     return sorted(found)
+
+
+def template_params(template_id: int):
+    """Liquid `params.*` references. Any of them makes the template unusable as a campaign."""
+    t = template(template_id)
+    blob = (t.get("htmlContent") or "") + " " + (t.get("subject") or "")
+    return sorted({m.rstrip(".") for m in _PARAM_REF.findall(blob)})
 
 
 def discount_shaped_pairs(attributes):
@@ -318,6 +355,14 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
             f"Brevo reports this as HTTP 405 method_not_allowed, which is why this is checked "
             f"before the call rather than read out of the error. Activating a template is "
             f"template work and belongs to Marketing, not here.")
+    params = template_params(template_id)
+    if params:
+        raise TemplateUsesParams(
+            f"template {template_id} references {len(params)} Liquid param(s): "
+            f"{', '.join(params[:8])}{' ...' if len(params) > 8 else ''}. params fill only through "
+            f"the transactional API and are ALWAYS empty in a campaign, so every one of these "
+            f"renders as a blank. Rewrite them as contact attributes or remove the block; this "
+            f"check cannot be widened, because the value genuinely does not exist here.")
     rendered = template_attributes(template_id)
     unapproved = [a for a in rendered if a not in approved_attributes]
     if unapproved:

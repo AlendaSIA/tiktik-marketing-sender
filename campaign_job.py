@@ -93,6 +93,14 @@ def main() -> int:
             for tid in ids:
                 t = C.template(tid)
                 attrs = C.template_attributes(tid)
+                params = C.template_params(tid)
+                block = []
+                if params:
+                    block.append("USES_PARAMS_ALWAYS_EMPTY_IN_CAMPAIGN")
+                if not t.get("isActive"):
+                    block.append("INACTIVE_IN_BREVO")
+                if [a for a in attrs if a not in approved]:
+                    block.append("ATTRIBUTE_NOT_APPROVED")
                 rows.append({
                     "checked_at": started.isoformat(), "run_id": RUN_ID, "template_id": tid,
                     "template_name": (t.get("name") or "")[:200],
@@ -100,6 +108,8 @@ def main() -> int:
                     "attributes": ",".join(attrs), "attribute_count": len(attrs),
                     "unapproved": ",".join(a for a in attrs if a not in approved),
                     "discount_shaped_pairs": ",".join(C.discount_shaped_pairs(attrs)),
+                    "params_referenced": ",".join(params),
+                    "blocking": ",".join(block),
                 })
             if rows:
                 errs = bigquery.Client(project=PROJECT).insert_rows_json(
@@ -108,7 +118,9 @@ def main() -> int:
                     raise RuntimeError(f"template_attribute_usage insert failed: {errs[:2]}")
             r["note"] = (f"scanned {len(rows)} template(s); "
                          f"{sum(1 for x in rows if x['unapproved'])} render something outside the "
-                         f"approved set of {len(approved)}")
+                         f"approved set of {len(approved)}; "
+                         f"{sum(1 for x in rows if x['params_referenced'])} reference params, which "
+                         f"are always empty in a campaign")
             log.info("TEMPLATE_SCAN %s", r["note"])
         if found:
             refusals.append(f"TemplateUsesDiscount:{','.join(found)}")
@@ -186,8 +198,8 @@ def main() -> int:
         r["note"] = ((r.get("note") + " | ") if r.get("note") else "") + (
             "This layer creates drafts only; send_now() raises unconditionally. "
             "Nothing here can reach a customer.")
-    except (C.TemplateInactive, C.TemplateUsesUnapprovedAttribute, C.ListNotAllowed,
-            C.EmptyAudience) as e:
+    except (C.TemplateInactive, C.TemplateUsesParams, C.TemplateUsesUnapprovedAttribute,
+            C.ListNotAllowed, C.EmptyAudience) as e:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
         # and it must land in the report with its reason rather than as a stack trace.
         r.update(status="refused", refusals=f"{type(e).__name__}: {str(e)[:600]}")
