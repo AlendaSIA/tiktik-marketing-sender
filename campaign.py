@@ -63,6 +63,15 @@ class TemplateUsesDiscount(RuntimeError):
     """The template still renders a discount attribute. Raivis struck those on 2026-09-07."""
 
 
+class TemplateInactive(RuntimeError):
+    """Brevo will not build a campaign from an inactive template.
+
+    Brevo answers this with HTTP 405 method_not_allowed, which is a wrong status for a semantic
+    refusal and sends the reader looking for a bad URL or a bad verb. Measured on 2026-09-09
+    against template 20. Checked here first so the failure says what is actually wrong.
+    """
+
+
 # Raivis retired discount codes on 2026-09-07: offers live in the customer's own replenisher link
 # with a deadline and a margin, never as a percentage. Eleven educational templates still carried
 # XSELL_CODE / XSELL_PCT with 10 % hardcoded when Marketing checked on 09.09.
@@ -145,6 +154,16 @@ def template(template_id: int):
     return _call("GET", f"/smtp/templates/{template_id}")
 
 
+def template_is_active(template_id: int) -> bool:
+    """Read Brevo directly, not mkt_control.brevo_template_status.
+
+    The mirror is refreshed at 06:30 and was 8 h old when this was written; a campaign is built
+    NOW. The mirror is the right source for planning a week and the wrong source for the moment a
+    campaign is created, and this is the moment.
+    """
+    return bool(template(template_id).get("isActive"))
+
+
 def template_discount_attributes(template_id: int):
     """Which retired discount attributes this template still renders. Empty is the good answer."""
     t = template(template_id)
@@ -201,7 +220,7 @@ def credit_headroom() -> int:
 
 
 def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_campaign: str,
-                 reply_to: str = "info@tiktik.lv") -> int:
+                 reply_to: str = "info@tiktik.lv") -> int:  # noqa: PLR0913
     """Create the campaign as a DRAFT. Never scheduled, never sent, from here.
 
     The draft has to exist BEFORE the approval e-mail, not after: the node's hard rule is that no
@@ -219,6 +238,12 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
             f"list {list_id} is not in the hard allowlist {sorted(ALLOWED_LIST_IDS)}. Until Raivis' "
             f"first approval, this layer may address only a list whose entire membership is his own "
             f"address. Widening it is a code change, on purpose.")
+    if not template_is_active(template_id):
+        raise TemplateInactive(
+            f"template {template_id} is inactive in Brevo, so no campaign can be built from it. "
+            f"Brevo reports this as HTTP 405 method_not_allowed, which is why this is checked "
+            f"before the call rather than read out of the error. Activating a template is "
+            f"template work and belongs to Marketing, not here.")
     still_discounting = template_discount_attributes(template_id)
     if still_discounting:
         raise TemplateUsesDiscount(
@@ -238,9 +263,17 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
         "replyTo": reply_to,
         "templateId": template_id,
         "recipients": {"listIds": [list_id], "exclusionListIds": [SUPPRESSION_LIST_ID]},
-        "utmCampaign": utm_campaign,
         "inlineImageActivation": False,
     }
+    # utmCampaign IS DELIBERATELY NOT SENT, and this reverses what I wrote this morning about
+    # campaign 164. Brevo's own field documentation says utmCampaign accepts "only alphanumeric
+    # characters and spaces" - so `2026-w37-papildinam` CANNOT be stored there at all. Campaign
+    # 164's `2026 09 cimdi un ada` was not sloppiness; it was the only shape the field accepts.
+    #
+    # Setting a spaces-variant would create a SECOND utm_campaign value for one campaign, which is
+    # the defect this whole UTM contract exists to prevent. So the slug lives where we control it
+    # completely - in the links - and check_links asserts every href carries it. The campaign name
+    # carries the slug for a human reading the Brevo UI.
     created = _call("POST", "/emailCampaigns", payload)
     log.info("DRAFT_CREATED id=%s list=%s reachable=%s utm=%s",
              created.get("id"), list_id, reachable, utm_campaign)
@@ -263,7 +296,7 @@ def substitute(text: str, attributes: dict) -> str:
         lambda m: str(attributes.get(m.group(1), m.group(0))), text or "")
 
 
-def check_links(campaign_id: int, as_contact: str = None):
+def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None):
     """Every link in the campaign's HTML must answer 200 before the campaign may be scheduled.
 
     Two classes, and conflating them is how a broken link survives a green check. A STATIC link is
@@ -291,7 +324,14 @@ def check_links(campaign_id: int, as_contact: str = None):
                 (ok if r.status == 200 else failed).append((url, r.status))
         except Exception as e:  # noqa: BLE001
             failed.append((url, repr(e)))
-    return {"ok": ok, "failed": failed, "dynamic_unresolved": sorted(dynamic)}
+    # Because the campaign-level utmCampaign field cannot hold our slug shape (see create_draft),
+    # the links are the ONLY place the slug exists. A link without it is a click nobody can
+    # attribute afterwards, which is the same hole the June send left behind.
+    missing_utm = []
+    if expect_utm:
+        missing_utm = sorted(u for u, _ in ok if f"utm_campaign={expect_utm}" not in u)
+    return {"ok": ok, "failed": failed, "dynamic_unresolved": sorted(dynamic),
+            "missing_utm": missing_utm}
 
 
 def send_now(campaign_id: int, send_date: str, approval_lookup):

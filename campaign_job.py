@@ -71,13 +71,16 @@ def main() -> int:
                     list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID,
                     utm_campaign=os.environ.get("TEST_UTM", "2026-w37-tests"))
                 r["draft_campaign_id"] = cid
-                links = C.check_links(cid, as_contact=TEST_CONTACT)
+                links = C.check_links(cid, as_contact=TEST_CONTACT,
+                                      expect_utm=os.environ.get("TEST_UTM", "2026-w37-tests"))
                 r["links_ok"] = len(links["ok"])
                 r["links_failed"] = len(links["failed"])
                 r["links_unresolved"] = len(links["dynamic_unresolved"])
                 if links["failed"]:
                     refusals.append("LinksNot200:" + "; ".join(
                         f"{u} -> {s}" for u, s in links["failed"][:5]))
+                if links.get("missing_utm"):
+                    refusals.append("LinksWithoutOurUtm:" + "; ".join(links["missing_utm"][:5]))
                 if links["dynamic_unresolved"]:
                     refusals.append("PlaceholdersUnresolved:" +
                                     "; ".join(links["dynamic_unresolved"][:5]))
@@ -88,6 +91,11 @@ def main() -> int:
         r["status"] = "refused" if refusals else "ok"
         r["note"] = ("This layer creates drafts only; send_now() raises unconditionally. "
                      "Nothing here can reach a customer.")
+    except (C.TemplateInactive, C.TemplateUsesDiscount, C.ListNotAllowed,
+            C.EmptyAudience) as e:
+        # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
+        # and it must land in the report with its reason rather than as a stack trace.
+        r.update(status="refused", refusals=f"{type(e).__name__}: {str(e)[:600]}")
     except C.CredentialUnavailable as e:
         r.update(status="credential_unavailable", error=str(e)[:900])
     except Exception as e:  # noqa: BLE001
