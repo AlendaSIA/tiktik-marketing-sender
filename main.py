@@ -52,6 +52,7 @@ import uuid
 import config as C
 import bq
 import brevo
+import utm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("sender")
@@ -206,7 +207,7 @@ def step4b_planned_snapshot(plan):
     argued in bq.write_planned_snapshot, because both are the kind of decision that gets
     quietly reversed by someone tidying up.
 
-    Returns (written, stale, default_day). Zero written is a REPORTED state, never a silent
+    Returns the run-report counts as a dict. Zero written is a REPORTED state, never a silent
     one: this node has been bitten four times in one week by a job that was green and did
     nothing, and every one of them was found because a person happened to look.
     """
@@ -217,10 +218,32 @@ def step4b_planned_snapshot(plan):
 
     if plan is None:
         log.warning("SNAPSHOT_SKIPPED: no assignment table, so there is no audience to freeze")
-        return 0, bq.stale_planned(), default_day
+        return {"written": 0, "stale": bq.stale_planned(), "default_day": default_day,
+                "utm_slugs_emitted": 0, "utm_dictionary_rows": 0,
+                "utm_slug_not_derivable": 0}
 
     sendable = [p for p in plan if p["decision"] == "SEND"]
-    written = bq.write_planned_snapshot(RUN_ID, [p["master_key"] for p in sendable])
+
+    # The slug is emitted HERE, at planning time, and not by whatever dispatches later. PART E
+    # prints "the UTM slug the campaign will emit" a day BEFORE the send, so a slug first known
+    # at dispatch cannot appear on the report Raivis approves.
+    try:
+        slugs = [utm.slug(p["week_start"], p["email_type"], p["language"]) for p in sendable]
+    except utm.UnknownVariantTheme as e:
+        raise GuardFailure(f"UTM_THEME_MISSING {e}") from e
+
+    written = bq.write_planned_snapshot(
+        RUN_ID, [p["master_key"] for p in sendable], slugs)
+
+    not_derivable = sum(1 for s in slugs if s is None)
+    if not_derivable:
+        log.info("UTM_SLUG_PER_CAMPAIGN rows=%s - brand-rotation variants whose theme "
+                 "Marketing names per campaign, not a gap", not_derivable)
+    pairs = sorted({(s, p["email_type"]) for s, p in zip(slugs, sendable) if s})
+    dict_rows = bq.write_utm_dictionary(pairs)
+    if pairs:
+        log.info("UTM_EMITTED slugs=%s dictionary_rows=%s sample=%s",
+                 len(pairs), dict_rows, [s for s, _ in pairs[:5]])
 
     if written == 0:
         # Say WHY, with the number. "0 rows" and "0 rows because every track is switched off"
@@ -237,7 +260,9 @@ def step4b_planned_snapshot(plan):
         log.warning("STALE_PLANNED rows=%s - planned rows outlived their send_date. Reported "
                     "only; closing them on age alone would mark a late-dispatched person "
                     "unserved and mail them the same letter again next week.", stale)
-    return written, stale, default_day
+    return {"written": written, "stale": stale, "default_day": default_day,
+            "utm_slugs_emitted": len(pairs), "utm_dictionary_rows": dict_rows,
+            "utm_slug_not_derivable": not_derivable}
 
 
 def step5_gate(plan, cov):
@@ -362,10 +387,13 @@ def main() -> int:
         report["plan_template_blocked"] = sum(
             1 for p in (plan or []) if p["decision_if_enabled"] in TEMPLATE_BLOCKED)
 
-        written, stale, default_day = step4b_planned_snapshot(plan)
-        report["snapshot_planned_written"] = written
-        report["stale_planned"] = stale
-        report["assignment_default_day_rows"] = default_day
+        snap = step4b_planned_snapshot(plan)
+        report["snapshot_planned_written"] = snap["written"]
+        report["stale_planned"] = snap["stale"]
+        report["assignment_default_day_rows"] = snap["default_day"]
+        report["utm_slugs_emitted"] = snap["utm_slugs_emitted"]
+        report["utm_dictionary_rows"] = snap["utm_dictionary_rows"]
+        report["utm_slug_not_derivable"] = snap["utm_slug_not_derivable"]
 
         if step5_gate(plan, cov):
             sent, skipped, skipped_template, failed = step6_send(plan)

@@ -387,18 +387,25 @@ INSERT INTO {C.T_AUDIENCE_SNAPSHOT}
    chosen_because, dispatch_state, dispatched_at, dispatch_error, written_by)
 SELECT
   @snapshot_id, CURRENT_TIMESTAMP(), a.week_start, a.send_date,
-  NULL, a.email_type, a.track,
+  p.utm_campaign, a.email_type, a.track,
   NULL, NULL, NULL, a.master_key, a.email, a.template_id,
   a.chosen_because, 'planned', NULL, NULL, @written_by
 FROM {C.T_ASSIGNMENT} a
-JOIN UNNEST(@master_keys) AS mk ON mk = a.master_key
+-- The two arrays are ONE list split in two, paired by position: WITH OFFSET is what makes
+-- that pairing explicit rather than hoped for. A struct array would read better and is the
+-- one place this driver's parameter support is worth not relying on.
+JOIN (
+  SELECT mk AS master_key, uc AS utm_campaign
+  FROM UNNEST(@master_keys) AS mk WITH OFFSET o
+  JOIN UNNEST(@utm_campaigns) AS uc WITH OFFSET o2 ON o = o2
+) p ON p.master_key = a.master_key
 WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY));
 
 COMMIT TRANSACTION;
 """
 
 
-def write_planned_snapshot(snapshot_id: str, master_keys: list,
+def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: list,
                            written_by: str = "tiktik-marketing-sender") -> int:
     """Freeze who is slated for which letter on which day, at dispatch_state='planned'.
 
@@ -421,6 +428,11 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list,
     Returns the number of rows actually in the table for this snapshot_id - read back, not
     assumed. A master_key in the plan with no assignment row would otherwise vanish silently.
     """
+    if len(master_keys) != len(utm_campaigns):
+        raise RuntimeError(
+            f"master_keys ({len(master_keys)}) and utm_campaigns ({len(utm_campaigns)}) are "
+            f"one list split in two and must stay the same length; they are paired by "
+            f"position in the SQL below.")
     if not master_keys:
         return 0
     from google.cloud.bigquery import ArrayQueryParameter as A
@@ -429,6 +441,7 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list,
         P("snapshot_id", "STRING", snapshot_id),
         P("written_by", "STRING", written_by),
         A("master_keys", "STRING", master_keys),
+        A("utm_campaigns", "STRING", utm_campaigns),
     ])
     written = int(scalar(
         f"SELECT COUNT(*) FROM {C.T_AUDIENCE_SNAPSHOT} WHERE snapshot_id = @snapshot_id",
@@ -439,6 +452,73 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list,
             f"{written} rows written for snapshot_id={snapshot_id}. A plan row with no "
             f"assignment row for this week is a contradiction between two objects that are "
             f"built from each other, not a rounding difference.")
+    return written
+
+
+UTM_DICTIONARY_SQL = f"""
+-- Per-slug DELETE then INSERT, and the DELETE is NULL-safe on utm_content because the
+-- whole-campaign row IS the row where utm_content is NULL. The declared primary key on
+-- (utm_campaign, utm_content) is informational in BigQuery and enforces nothing, so a
+-- retried run or a rebuilt slug would otherwise duplicate silently - and a carelessly
+-- written NOT EXISTS never matches a NULL, which is how the duplicate would survive review.
+--
+-- Scoped to utm_content IS NULL on purpose. The per-link rows ('hero', 'pap-1', ...) belong
+-- to the campaign layer, which knows the template; deleting them here would make this a
+-- second writer of somebody else's rows rather than the single writer of its own.
+BEGIN TRANSACTION;
+
+DELETE FROM {C.T_UTM_DICTIONARY}
+WHERE utm_content IS NULL
+  AND utm_campaign IN UNNEST(@slugs);
+
+INSERT INTO {C.T_UTM_DICTIONARY}
+  (utm_campaign, utm_content, channel, internal_label, internal_campaign, added_at, added_by, notes)
+SELECT s, NULL, 'email', l, NULL, CURRENT_TIMESTAMP(), @added_by,
+       'Whole-campaign decode row, emitted at planning time. internal_campaign stays NULL '
+       'until a Brevo campaign exists; the per-link rows are written by the campaign layer.'
+FROM UNNEST(@slugs) AS s WITH OFFSET o
+JOIN UNNEST(@labels) AS l WITH OFFSET o2 ON o = o2;
+
+COMMIT TRANSACTION;
+"""
+
+
+def write_utm_dictionary(slug_label_pairs: list,
+                         added_by: str = "tiktik-marketing-sender") -> int:
+    """Write one decode row per emitted slug: utm_campaign -> which variant it really is.
+
+    A slug with no dictionary row is a slug nobody can read afterwards, and the pre-send check
+    treats a missing row as a blocker rather than a warning. Writing it at PLANNING time means
+    the blocker is satisfied by construction instead of remembered.
+
+    internal_label is the email_type and never the track: from the track, winback_1, winback_2
+    and winback_3 collapse into one label and the rungs become unreadable in exactly the
+    report that was supposed to tell them apart.
+
+    added_by names THIS writer, per the single-writer rule. The contract's literal
+    'campaign-layer' was written when one component was expected to own the whole table; the
+    split is now by KEY - whole-campaign row here, per-link rows there - so two names are
+    correct and one row still has one writer.
+    """
+    if not slug_label_pairs:
+        return 0
+    from google.cloud.bigquery import ArrayQueryParameter as A
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    slugs = [s for s, _ in slug_label_pairs]
+    labels = [l for _, l in slug_label_pairs]
+    query(UTM_DICTIONARY_SQL, [
+        P("added_by", "STRING", added_by),
+        A("slugs", "STRING", slugs),
+        A("labels", "STRING", labels),
+    ])
+    written = int(scalar(
+        f"SELECT COUNT(*) FROM {C.T_UTM_DICTIONARY} "
+        f"WHERE utm_content IS NULL AND utm_campaign IN UNNEST(@slugs)",
+        [A("slugs", "STRING", slugs)]) or 0)
+    if written != len(slugs):
+        raise RuntimeError(
+            f"utm_dictionary write disagrees with itself: {len(slugs)} slugs emitted, "
+            f"{written} whole-campaign rows present afterwards.")
     return written
 
 

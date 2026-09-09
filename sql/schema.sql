@@ -48,3 +48,9 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
   ADD COLUMN IF NOT EXISTS snapshot_planned_written    INT64,
   ADD COLUMN IF NOT EXISTS stale_planned               INT64,
   ADD COLUMN IF NOT EXISTS assignment_default_day_rows INT64;
+
+-- Applied 2026-09-09 with utm.py (slug emission at planning time).
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
+  ADD COLUMN IF NOT EXISTS utm_slugs_emitted      INT64,
+  ADD COLUMN IF NOT EXISTS utm_dictionary_rows    INT64,
+  ADD COLUMN IF NOT EXISTS utm_slug_not_derivable INT64;

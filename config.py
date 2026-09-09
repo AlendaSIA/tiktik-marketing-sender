@@ -96,4 +96,12 @@ T_GRAIN_GUARD = t(CONTROL, "assignment_grain_violation")
 T_STALE_PLANNED = t(CONTROL, "snapshot_stale_planned")
 T_AUDIENCE_SNAPSHOT = t(CONTROL, "campaign_audience_snapshot")
 
+# The decode table for every utm_campaign we emit. Two writers on two DIFFERENT keys, which is
+# not the same thing as two writers on one row: the sender owns the whole-campaign row
+# (utm_content IS NULL, "which variant is this slug"), the campaign layer owns the per-link
+# rows (utm_content = 'hero', 'pap-1', ...). The declared primary key on
+# (utm_campaign, utm_content) is INFORMATIONAL in BigQuery and stops no duplicate, so every
+# write is an explicit per-slug DELETE then INSERT, NULL-safe on utm_content.
+T_UTM_DICTIONARY = t(CONTROL, "utm_dictionary")
+
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"
