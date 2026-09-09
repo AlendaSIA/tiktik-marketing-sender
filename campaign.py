@@ -107,9 +107,11 @@ class TemplateInactive(RuntimeError):
 # refusal stays testable without a warehouse, and - the part that matters - forgetting to pass it
 # is a TypeError rather than a silent pass.
 #
-# DISCOUNT_ATTRIBUTES NOW DECIDES NOTHING. It only labels a refusal for the person reading it, so
-# that "GROUP_CODE is not approved" and "XSELL_PCT is not approved, and it is a known discount
-# field" read differently. Never gate on it again.
+# DISCOUNT_ATTRIBUTES IS THE SECOND LAYER, subordinate and never the primary one. It cannot catch a
+# field nobody imagined - that is what the params refusal and the allowlist are for - but it CAN
+# catch a mistake in the allowlist itself, which is the one failure those two cannot see. If someone
+# approves XSELL_PCT by hand, this still refuses. Order matters: params first, allowlist second,
+# this last, and it is never asked to do the job of either.
 DISCOUNT_ATTRIBUTES = ("XSELL_CODE", "XSELL_PCT", "NEXT_DISCOUNT_CODE", "NEXT_DISCOUNT_PCT",
                        "GROUP_CODE", "GROUP2_CODE")
 
@@ -377,6 +379,18 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
                f"can hide as a price." if pairs else "")
             + " Approve the attribute in mkt_control.template_attribute_allowlist or strip it from "
               "the template; do not widen this check.")
+
+    # SECOND LAYER. Reached only when every rendered attribute IS approved, so it exists to catch a
+    # wrong allowlist rather than an unlisted field. A known discount name refuses even with an
+    # approval behind it, because approving one is far more likely to be a slip than a decision.
+    known_discount = [a for a in rendered if a in DISCOUNT_ATTRIBUTES]
+    if known_discount:
+        raise TemplateUsesDiscount(
+            f"template {template_id} renders {', '.join(known_discount)}, which are known discount "
+            f"fields, and they are approved in the allowlist. Refusing anyway: Raivis retired "
+            f"discount codes on 2026-09-07, so an approval on one of these is far more likely to be "
+            f"a slip than a decision. Remove the allowlist row, or remove this name from "
+            f"DISCOUNT_ATTRIBUTES deliberately and say why in the commit.")
     reachable = effective_audience(list_id)
     if reachable == 0:
         raise EmptyAudience(

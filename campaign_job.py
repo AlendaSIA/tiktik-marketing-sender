@@ -199,7 +199,7 @@ def main() -> int:
             "This layer creates drafts only; send_now() raises unconditionally. "
             "Nothing here can reach a customer.")
     except (C.TemplateInactive, C.TemplateUsesParams, C.TemplateUsesUnapprovedAttribute,
-            C.ListNotAllowed, C.EmptyAudience) as e:
+            C.TemplateUsesDiscount, C.ListNotAllowed, C.EmptyAudience) as e:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
         # and it must land in the report with its reason rather than as a stack trace.
         r.update(status="refused", refusals=f"{type(e).__name__}: {str(e)[:600]}")
