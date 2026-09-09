@@ -44,6 +44,26 @@ def _write(report: dict):
         log.info("REPORT_WRITTEN %s", json.dumps(report, default=str))
 
 
+def _approved_attributes():
+    """The approved attribute set. FAIL-CLOSED: unreadable or empty means nothing is approved.
+
+    Read from BigQuery when this identity may run queries, and from APPROVED_ATTRIBUTES otherwise -
+    the campaign layer's service account holds dataset WRITER but not bigquery.jobs.create as of
+    2026-09-09. A guard that cannot read its own allowlist must refuse, never wave things through.
+    """
+    env = os.environ.get("APPROVED_ATTRIBUTES", "").strip()
+    if env:
+        return {a.strip() for a in env.split(",") if a.strip()}
+    try:
+        rows = bq.query(
+            f"SELECT attribute FROM `{PROJECT}.mkt_control.template_attribute_allowlist` "
+            f"WHERE approved")
+        return {r["attribute"] for r in rows}
+    except Exception as e:  # noqa: BLE001
+        log.warning("ALLOWLIST_UNREADABLE %r - refusing everything, the safe direction", e)
+        return set()
+
+
 def _params(send_date, email_type):
     from google.cloud.bigquery import ScalarQueryParameter as P
     return [P("d", "DATE", send_date), P("t", "STRING", email_type)]
@@ -63,8 +83,33 @@ def main() -> int:
         log.info("PREFLIGHT credits=%s audience(list %s)=%s",
                  r["brevo_credits"], TEST_LIST_ID, r["computed_audience"])
 
+        approved = _approved_attributes()
         found = C.template_discount_attributes(TEST_TEMPLATE_ID)
         r["template_discount_attrs"] = ",".join(found)
+
+        if mode == "template-scan":
+            ids = [int(x) for x in os.environ.get("TEMPLATE_IDS", "").split(",") if x.strip()]
+            rows = []
+            for tid in ids:
+                t = C.template(tid)
+                attrs = C.template_attributes(tid)
+                rows.append({
+                    "checked_at": started.isoformat(), "run_id": RUN_ID, "template_id": tid,
+                    "template_name": (t.get("name") or "")[:200],
+                    "is_active": bool(t.get("isActive")),
+                    "attributes": ",".join(attrs), "attribute_count": len(attrs),
+                    "unapproved": ",".join(a for a in attrs if a not in approved),
+                    "discount_shaped_pairs": ",".join(C.discount_shaped_pairs(attrs)),
+                })
+            if rows:
+                errs = bigquery.Client(project=PROJECT).insert_rows_json(
+                    f"{PROJECT}.mkt_control.template_attribute_usage", rows)
+                if errs:
+                    raise RuntimeError(f"template_attribute_usage insert failed: {errs[:2]}")
+            r["note"] = (f"scanned {len(rows)} template(s); "
+                         f"{sum(1 for x in rows if x['unapproved'])} render something outside the "
+                         f"approved set of {len(approved)}")
+            log.info("TEMPLATE_SCAN %s", r["note"])
         if found:
             refusals.append(f"TemplateUsesDiscount:{','.join(found)}")
 
@@ -111,6 +156,7 @@ def main() -> int:
                 refusals.append("EmptyAudience")
             if not refusals:
                 cid = C.create_draft(
+                    approved_attributes=approved,
                     name=f"[TEST {started:%Y-%m-%d}] campaign layer draft, list {TEST_LIST_ID}",
                     subject="Tests — kampanu slanis (melnraksts, netiek sutits)",
                     list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID,
@@ -136,7 +182,7 @@ def main() -> int:
         r["status"] = "refused" if refusals else "ok"
         r["note"] = ("This layer creates drafts only; send_now() raises unconditionally. "
                      "Nothing here can reach a customer.")
-    except (C.TemplateInactive, C.TemplateUsesDiscount, C.ListNotAllowed,
+    except (C.TemplateInactive, C.TemplateUsesUnapprovedAttribute, C.ListNotAllowed,
             C.EmptyAudience) as e:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
         # and it must land in the report with its reason rather than as a stack trace.

@@ -59,8 +59,12 @@ class SendRefused(RuntimeError):
     """A send was attempted without an approval row. Deliberately outside BrevoError."""
 
 
+class TemplateUsesUnapprovedAttribute(RuntimeError):
+    """The template renders an attribute outside the approved set."""
+
+
 class TemplateUsesDiscount(RuntimeError):
-    """The template still renders a discount attribute. Raivis struck those on 2026-09-07."""
+    """Kept for the annotation only; it is no longer a gate. See DISCOUNT_ATTRIBUTES."""
 
 
 class TemplateInactive(RuntimeError):
@@ -72,14 +76,37 @@ class TemplateInactive(RuntimeError):
     """
 
 
-# Raivis retired discount codes on 2026-09-07: offers live in the customer's own replenisher link
-# with a deadline and a margin, never as a percentage. Eleven educational templates still carried
-# XSELL_CODE / XSELL_PCT with 10 % hardcoded when Marketing checked on 09.09.
+# THE GATE IS AN ALLOWLIST, NOT A DENYLIST, and the inversion was paid for on 2026-09-09.
 #
-# THE REASON THIS IS ENFORCED HERE AND NOT BY THE PERSON EDITING THE TEMPLATES: a rule kept by
-# somebody remembering to strip eleven templates is a rule that comes back the first time a
-# twelfth is copied from an old one. A rule kept by the code that builds the campaign does not.
-DISCOUNT_ATTRIBUTES = ("XSELL_CODE", "XSELL_PCT", "NEXT_DISCOUNT_CODE", "NEXT_DISCOUNT_PCT")
+# The guard shipped that morning refused four NAMED discount attributes. The same evening the sync
+# node removed the discount fields, found fifteen where the order named six, and found that the
+# field which had ACTUALLY been delivering codes for three months was GROUP_CODE - which appeared
+# on nobody's list of discount fields. Campaign 87 went out on 18.06, and code VRTKN's first use in
+# the entire order history is 18.06.
+#
+# Their sentence, and it is about this function: "a list of names only ever catches the names
+# somebody thought of." So a template may render only what is in
+# mkt_control.template_attribute_allowlist, and the next discount-shaped field nobody has imagined
+# is refused by default instead of admitted by default.
+#
+# The approved set is INJECTED rather than read here: this module keeps no BigQuery client, the
+# refusal stays testable without a warehouse, and - the part that matters - forgetting to pass it
+# is a TypeError rather than a silent pass.
+#
+# DISCOUNT_ATTRIBUTES NOW DECIDES NOTHING. It only labels a refusal for the person reading it, so
+# that "GROUP_CODE is not approved" and "XSELL_PCT is not approved, and it is a known discount
+# field" read differently. Never gate on it again.
+DISCOUNT_ATTRIBUTES = ("XSELL_CODE", "XSELL_PCT", "NEXT_DISCOUNT_CODE", "NEXT_DISCOUNT_PCT",
+                       "GROUP_CODE", "GROUP2_CODE")
+
+# A DISCOUNT CAN HIDE AS A PRICE. Measured by the sync node on 2026-09-09: customer_xsell computed
+# XSELL_FINAL_PRICE = price x 0,9 - the same ten percent, with no floor, and no percent sign
+# anywhere to catch it by. The new model's whole shape is a personal price INSTEAD of a percentage,
+# so a percentage written as a price is indistinguishable from a legitimate one except by the
+# floor. This does not judge the number - it makes the PAIR visible, so whoever decides the
+# allowlist can see that a template renders both sides of a discount.
+_PRICE_STANDARD = ("_STD", "_STD_PRICE")
+_PRICE_FINAL = ("_FIN", "_FINAL", "_PRICE", "_FINAL_PRICE", "_AKC")
 
 
 _key_cache = None
@@ -164,11 +191,45 @@ def template_is_active(template_id: int) -> bool:
     return bool(template(template_id).get("isActive"))
 
 
-def template_discount_attributes(template_id: int):
-    """Which retired discount attributes this template still renders. Empty is the good answer."""
+_ATTR_REFS = (
+    re.compile(r"\{\{\s*contact\.([A-Z0-9_]+)\s*\}\}"),
+    re.compile(r"%([A-Z][A-Z0-9_]{1,})%"),          # legacy Brevo personalisation
+)
+
+
+def template_attributes(template_id: int):
+    """Every contact attribute this template renders. Read from Brevo, not from a list.
+
+    KNOWN LIMIT, stated rather than hidden: this sees the two personalisation syntaxes these
+    templates actually use. An attribute referenced some third way would not be seen, so
+    template_attribute_usage records the whole set it DID find and the count - a template whose
+    count looks implausibly low is worth a human's eye.
+    """
     t = template(template_id)
     blob = (t.get("htmlContent") or "") + " " + (t.get("subject") or "")
-    return [a for a in DISCOUNT_ATTRIBUTES if a in blob]
+    found = set()
+    for rx in _ATTR_REFS:
+        found.update(rx.findall(blob))
+    return sorted(found)
+
+
+def discount_shaped_pairs(attributes):
+    """Attributes forming a standard-price / final-price pair: a discount with no percent sign."""
+    attrs = set(attributes)
+    pairs = []
+    for a in sorted(attrs):
+        for std in _PRICE_STANDARD:
+            if a.endswith(std):
+                stem = a[: -len(std)]
+                for fin in _PRICE_FINAL:
+                    if stem + fin in attrs:
+                        pairs.append(f"{a}+{stem}{fin}")
+    return pairs
+
+
+def template_discount_attributes(template_id: int):
+    """Annotation only: which KNOWN discount names a template renders. Decides nothing."""
+    return [a for a in DISCOUNT_ATTRIBUTES if a in set(template_attributes(template_id))]
 
 
 def contact_attributes(email: str) -> dict:
@@ -220,7 +281,7 @@ def credit_headroom() -> int:
 
 
 def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_campaign: str,
-                 reply_to: str = "info@tiktik.lv") -> int:  # noqa: PLR0913
+                 approved_attributes, reply_to: str = "info@tiktik.lv") -> int:  # noqa: PLR0913
     """Create the campaign as a DRAFT. Never scheduled, never sent, from here.
 
     The draft has to exist BEFORE the approval e-mail, not after: the node's hard rule is that no
@@ -244,12 +305,20 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
             f"Brevo reports this as HTTP 405 method_not_allowed, which is why this is checked "
             f"before the call rather than read out of the error. Activating a template is "
             f"template work and belongs to Marketing, not here.")
-    still_discounting = template_discount_attributes(template_id)
-    if still_discounting:
-        raise TemplateUsesDiscount(
-            f"template {template_id} still renders {', '.join(still_discounting)}. Raivis retired "
-            f"discount codes on 2026-09-07; a campaign built from this template would print an "
-            f"offer he has withdrawn. Strip the attribute from the template, not this check.")
+    rendered = template_attributes(template_id)
+    unapproved = [a for a in rendered if a not in approved_attributes]
+    if unapproved:
+        known_discount = [a for a in unapproved if a in DISCOUNT_ATTRIBUTES]
+        pairs = discount_shaped_pairs(rendered)
+        raise TemplateUsesUnapprovedAttribute(
+            f"template {template_id} renders {len(unapproved)} attribute(s) outside the approved "
+            f"set: {', '.join(unapproved)}."
+            + (f" Of these, {', '.join(known_discount)} are known discount fields."
+               if known_discount else "")
+            + (f" It also renders discount-shaped price pair(s): {', '.join(pairs)} - a discount "
+               f"can hide as a price." if pairs else "")
+            + " Approve the attribute in mkt_control.template_attribute_allowlist or strip it from "
+              "the template; do not widen this check.")
     reachable = effective_audience(list_id)
     if reachable == 0:
         raise EmptyAudience(
