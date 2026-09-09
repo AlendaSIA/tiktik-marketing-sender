@@ -131,9 +131,28 @@ def step2b_assignment():
     (duplicate_sends, assignment_suppressed) read those numbers, so every Monday they were
     guaranteed 0. A guard that is always open is not a guard.
     """
-    if C.BUILD_ASSIGNMENT and bq.table_exists(C.T_ASSIGNMENT):
+    if not C.BUILD_ASSIGNMENT:
+        # The read-only path. A DIAGNOSTIC run must take it: this rebuild is a WRITE, and on
+        # 2026-09-09 Data & analytics caught the assignment being replaced twice in a day - the
+        # scheduled 07:31 run and a 12:40 dry run. A dry run is not read-only, and the object it
+        # rewrites is the one Raivis' approval e-mail is built from.
+        log.warning("ASSIGNMENT_NOT_REBUILT (BUILD_ASSIGNMENT=false) - reporting on whatever "
+                    "the last real build left behind")
+        return None
+    if bq.table_exists(C.T_ASSIGNMENT):
         n = bq.build_assignment()
-        log.info("ASSIGNMENT_REBUILT people=%s", n)
+        build_id = bq.assignment_build_id()
+        same = bq.log_assignment_build(RUN_ID, build_id, n)
+        log.info("ASSIGNMENT_REBUILT people=%s build_id=%s same_as_previous=%s",
+                 n, build_id, same)
+        if not same:
+            # Not an error - most rebuilds legitimately change something. It is a WARNING
+            # because any approval already sent for this week was written from the previous
+            # build and is now stale, and nothing else in the system says so out loud.
+            log.warning("ASSIGNMENT_CHANGED build_id=%s - any approval e-mail already sent for "
+                        "this week was written from a different audience", build_id)
+        return build_id
+    return None
 
 
 def step3_coverage():
@@ -220,7 +239,9 @@ def step4b_planned_snapshot(plan):
         log.warning("SNAPSHOT_SKIPPED: no assignment table, so there is no audience to freeze")
         return {"written": 0, "stale": bq.stale_planned(), "default_day": default_day,
                 "utm_slugs_emitted": 0, "utm_dictionary_rows": 0,
-                "utm_slug_not_derivable": 0}
+                "utm_slug_not_derivable": 0,
+                "dispatch_log_mismatch": bq.dispatch_log_mismatch(),
+                "day_list_overlap": bq.day_list_overlap()}
 
     sendable = [p for p in plan if p["decision"] == "SEND"]
 
@@ -255,6 +276,17 @@ def step4b_planned_snapshot(plan):
     else:
         log.info("SNAPSHOT_PLANNED written=%s snapshot_id=%s", written, RUN_ID)
 
+    mismatch = bq.dispatch_log_mismatch()
+    if mismatch:
+        log.error("DISPATCH_LOG_MISMATCH rows=%s - the dispatch fact and email_send_log "
+                  "disagree. The ladder is derived from the log, so this is a rung moving "
+                  "for a letter that did not go out, or not moving for one that did.",
+                  mismatch)
+    overlap = bq.day_list_overlap()
+    if overlap:
+        log.error("DAY_LIST_OVERLAP people=%s - somebody is planned into more than one of a "
+                  "sending day's lists. This stops the day.", overlap)
+
     stale = bq.stale_planned()
     if stale:
         log.warning("STALE_PLANNED rows=%s - planned rows outlived their send_date. Reported "
@@ -262,7 +294,8 @@ def step4b_planned_snapshot(plan):
                     "unserved and mail them the same letter again next week.", stale)
     return {"written": written, "stale": stale, "default_day": default_day,
             "utm_slugs_emitted": len(pairs), "utm_dictionary_rows": dict_rows,
-            "utm_slug_not_derivable": not_derivable}
+            "utm_slug_not_derivable": not_derivable,
+            "dispatch_log_mismatch": mismatch, "day_list_overlap": overlap}
 
 
 def step5_gate(plan, cov):
@@ -377,7 +410,7 @@ def main() -> int:
     try:
         report["identity_age_h"] = step1_identity_guard()
         report["snapshot_age_h"] = step2_refresh_suppression()
-        step2b_assignment()
+        report["assignment_build_id"] = step2b_assignment()
         cov = step3_coverage()
         report.update({k: v for k, v in cov.items()})
         plan = step4_plan()
@@ -394,6 +427,8 @@ def main() -> int:
         report["utm_slugs_emitted"] = snap["utm_slugs_emitted"]
         report["utm_dictionary_rows"] = snap["utm_dictionary_rows"]
         report["utm_slug_not_derivable"] = snap["utm_slug_not_derivable"]
+        report["dispatch_log_mismatch"] = snap["dispatch_log_mismatch"]
+        report["day_list_overlap"] = snap["day_list_overlap"]
 
         if step5_gate(plan, cov):
             sent, skipped, skipped_template, failed = step6_send(plan)

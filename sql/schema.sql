@@ -54,3 +54,9 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
   ADD COLUMN IF NOT EXISTS utm_slugs_emitted      INT64,
   ADD COLUMN IF NOT EXISTS utm_dictionary_rows    INT64,
   ADD COLUMN IF NOT EXISTS utm_slug_not_derivable INT64;
+
+-- Applied 2026-09-09 with sql/dispatch.sql.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
+  ADD COLUMN IF NOT EXISTS dispatch_log_mismatch INT64,
+  ADD COLUMN IF NOT EXISTS day_list_overlap      INT64,
+  ADD COLUMN IF NOT EXISTS assignment_build_id   STRING;

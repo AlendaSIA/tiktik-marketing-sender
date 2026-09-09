@@ -104,4 +104,15 @@ T_AUDIENCE_SNAPSHOT = t(CONTROL, "campaign_audience_snapshot")
 # write is an explicit per-slug DELETE then INSERT, NULL-safe on utm_content.
 T_UTM_DICTIONARY = t(CONTROL, "utm_dictionary")
 
+# Dispatch fact / ladder / Phase 3 objects (2026-09-09).
+#   T_DISPATCH_MISMATCH - snapshot 'sent' vs email_send_log. Empty is the only good state.
+#   T_DAY_OVERLAP       - one person in two of a day's lists. Stops the day.
+#   T_LIST_PLAN         - THE per-variant membership the list builder consumes; never re-derived.
+#   T_BUILD_LOG         - append-only trace of every assignment rebuild, because the assignment
+#                         table itself is replaced each run and keeps none.
+T_DISPATCH_MISMATCH = t(CONTROL, "dispatch_log_mismatch")
+T_DAY_OVERLAP = t(CONTROL, "day_list_overlap")
+T_LIST_PLAN = t(CONTROL, "variant_list_plan")
+T_BUILD_LOG = t(CONTROL, "assignment_build_log")
+
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"

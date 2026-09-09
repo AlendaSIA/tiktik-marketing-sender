@@ -1,6 +1,7 @@
 """BigQuery access. Every statement the sender runs lives here, so the data contract is
 readable in one file.
 """
+import datetime as dt
 import logging
 from google.cloud import bigquery
 
@@ -520,6 +521,161 @@ def write_utm_dictionary(slug_label_pairs: list,
             f"utm_dictionary write disagrees with itself: {len(slugs)} slugs emitted, "
             f"{written} whole-campaign rows present afterwards.")
     return written
+
+
+def assignment_build_id() -> str:
+    """A CONTENT hash of the week's assignment: who gets which letter on which day.
+
+    Not a timestamp. The approval e-mail records this and the press compares it against the
+    live value, so a rebuild that changes nobody keeps the batch approved while a rebuild that
+    moves one person invalidates it. A timestamp would differ on every run, the press would
+    refuse every time, and the check would be switched off inside a week.
+    """
+    return str(scalar(f"""
+        SELECT TO_HEX(MD5(STRING_AGG(
+                 FORMAT('%s|%s|%t', master_key, email_type, send_date) ORDER BY master_key)))
+        FROM {C.T_ASSIGNMENT}
+        WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+    """) or "")
+
+
+def log_assignment_build(run_id: str, build_id: str, rows: int) -> bool:
+    """Append the rebuild to the build log and answer whether it changed anything.
+
+    contact_weekly_assignment is CREATE OR REPLACEd every run and built_at is overwritten with
+    it, so without this row a rebuild leaves no trace at all after the next one. Data &
+    analytics found the table rebuilt twice on 2026-09-09 - the scheduled 07:31 run and a
+    12:40 dry run - and neither is visible in the table today.
+    """
+    previous = scalar(
+        f"SELECT build_id FROM {C.T_BUILD_LOG} ORDER BY built_at DESC LIMIT 1")
+    same = (previous == build_id)
+    people = int(scalar(f"""
+        SELECT COUNT(DISTINCT master_key) FROM {C.T_ASSIGNMENT}
+        WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))""") or 0)
+    errors = client().insert_rows_json(C.T_BUILD_LOG.strip("`"), [{
+        "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "run_id": run_id, "build_id": build_id,
+        "rows_written": rows, "distinct_people": people,
+        "same_as_previous": same,
+    }])
+    if errors:
+        raise RuntimeError(f"assignment_build_log insert failed: {errors[:3]}")
+    return same
+
+
+COMPLETE_DISPATCH_SQL = f"""
+-- The dispatch FACT, written in one transaction with the per-letter log rows derived from it.
+-- One transaction because the two must never disagree: a snapshot row that says 'sent' with no
+-- log row behind it advances nobody's rung and cannot be measured, and a log row with no
+-- snapshot row is a letter nobody can explain.
+--
+-- The log rows are what make the ladder move. customer_lifecycle derives welcome_step /
+-- reorder_step / winback_step from email_send_log; these rows are therefore the ONLY mechanism
+-- by which anyone ever climbs a rung, and they carry master_key, which no legacy row does.
+BEGIN TRANSACTION;
+
+UPDATE {C.T_AUDIENCE_SNAPSHOT} s
+SET dispatch_state = r.state,
+    dispatched_at = CURRENT_TIMESTAMP(),
+    dispatch_error = r.err,
+    brevo_campaign_id = @brevo_campaign_id
+FROM (
+  SELECT mk AS master_key, st AS state, er AS err
+  FROM UNNEST(@master_keys) AS mk WITH OFFSET o
+  JOIN UNNEST(@states) AS st WITH OFFSET o2 ON o = o2
+  JOIN UNNEST(@errors) AS er WITH OFFSET o3 ON o = o3
+) r
+WHERE s.master_key = r.master_key
+  AND s.send_date = @send_date
+  AND s.email_type = @email_type
+  AND s.dispatch_state = 'planned';
+
+-- Idempotent on a retry: this campaign's own log rows are removed before they are rewritten.
+-- Scoped to run_id AND campaign_id so it can never touch the 22 585 legacy rows, every one of
+-- which carries a NULL run_id.
+DELETE FROM {C.T_SEND_LOG}
+WHERE run_id = @run_id AND campaign_id = @brevo_campaign_id;
+
+INSERT INTO {C.T_SEND_LOG}
+  (email, campaign_id, campaign_name, utm_campaign, brevo_list_id, send_status, channel,
+   sent_at, email_type, language, master_key, run_id, brevo_message_id, assignment_week)
+SELECT
+  s.email, @brevo_campaign_id, @campaign_name, s.utm_campaign, s.brevo_list_id,
+  'sent', 'email',
+  -- One campaign is one dispatch, so one timestamp per campaign is the truth here. This is
+  -- NOT the June defect, where 7 668 PER-PERSON sends shared a single batch stamp.
+  CURRENT_TIMESTAMP(),
+  s.email_type, c.language, s.master_key, @run_id, s.brevo_message_id, s.week_start
+FROM {C.T_AUDIENCE_SNAPSHOT} s
+LEFT JOIN {C.T_LIFECYCLE} c
+  ON c.master_key = s.master_key AND LOWER(TRIM(c.email)) = s.email
+WHERE s.send_date = @send_date
+  AND s.email_type = @email_type
+  AND s.brevo_campaign_id = @brevo_campaign_id
+  AND s.dispatch_state = 'sent';
+
+COMMIT TRANSACTION;
+"""
+
+
+def complete_dispatch(run_id: str, send_date: str, email_type: str, brevo_campaign_id: int,
+                      campaign_name: str, results: list) -> dict:
+    """Close a dispatched campaign: planned -> sent/failed, and one log row per letter sent.
+
+    `results` is a list of (master_key, state, error) with state in {'sent','failed'}. The
+    caller is whatever actually dispatched; this function never talks to Brevo and never
+    decides whether something was sent - it records what it is told and then checks itself.
+
+    The check is the point. After the write it asserts mkt_control.dispatch_log_mismatch is
+    empty for this campaign, so "the dispatch was recorded" is a verified statement rather
+    than the absence of an exception.
+    """
+    if not results:
+        return {"updated": 0, "logged": 0}
+    from google.cloud.bigquery import ArrayQueryParameter as A
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    params = [
+        P("run_id", "STRING", run_id),
+        P("send_date", "DATE", send_date),
+        P("email_type", "STRING", email_type),
+        P("brevo_campaign_id", "INT64", brevo_campaign_id),
+        P("campaign_name", "STRING", campaign_name),
+        A("master_keys", "STRING", [r[0] for r in results]),
+        A("states", "STRING", [r[1] for r in results]),
+        A("errors", "STRING", [r[2] for r in results]),
+    ]
+    query(COMPLETE_DISPATCH_SQL, params)
+
+    updated = int(scalar(
+        f"SELECT COUNT(*) FROM {C.T_AUDIENCE_SNAPSHOT} "
+        f"WHERE brevo_campaign_id = @brevo_campaign_id AND dispatch_state != 'planned'",
+        [P("brevo_campaign_id", "INT64", brevo_campaign_id)]) or 0)
+    logged = int(scalar(
+        f"SELECT COUNT(*) FROM {C.T_SEND_LOG} "
+        f"WHERE run_id = @run_id AND campaign_id = @brevo_campaign_id",
+        [P("run_id", "STRING", run_id),
+         P("brevo_campaign_id", "INT64", brevo_campaign_id)]) or 0)
+
+    bad = query(
+        f"SELECT violation, COUNT(*) AS n FROM {C.T_DISPATCH_MISMATCH} "
+        f"WHERE campaign_id = @brevo_campaign_id GROUP BY violation",
+        [P("brevo_campaign_id", "INT64", brevo_campaign_id)])
+    if bad:
+        raise RuntimeError(
+            f"dispatch not consistently recorded for campaign {brevo_campaign_id}: "
+            + "; ".join(f"{b['violation']}={b['n']}" for b in bad))
+    return {"updated": updated, "logged": logged}
+
+
+def dispatch_log_mismatch() -> int:
+    """Rows in the dispatch/log invariant view. Reported every run; empty is the only good state."""
+    return int(scalar(f"SELECT COUNT(*) FROM {C.T_DISPATCH_MISMATCH}") or 0)
+
+
+def day_list_overlap() -> int:
+    """People in more than one of a sending day's lists. One is enough to stop the day."""
+    return int(scalar(f"SELECT COUNT(*) FROM {C.T_DAY_OVERLAP}") or 0)
 
 
 def default_day_rows() -> int:
