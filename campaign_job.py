@@ -19,6 +19,8 @@ import uuid
 
 from google.cloud import bigquery
 
+import batch as B
+import bq
 import campaign as C
 
 logging.basicConfig(level=logging.INFO,
@@ -42,6 +44,11 @@ def _write(report: dict):
         log.info("REPORT_WRITTEN %s", json.dumps(report, default=str))
 
 
+def _params(send_date, email_type):
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    return [P("d", "DATE", send_date), P("t", "STRING", email_type)]
+
+
 def main() -> int:
     mode = os.environ.get("MODE", "preflight")
     started = dt.datetime.now(dt.timezone.utc)
@@ -60,6 +67,44 @@ def main() -> int:
         r["template_discount_attrs"] = ",".join(found)
         if found:
             refusals.append(f"TemplateUsesDiscount:{','.join(found)}")
+
+        if mode == "batch":
+            send_date = os.environ.get("SEND_DATE") or str(
+                dt.date.today() + dt.timedelta(days=1))
+            out = B.build(send_date, RUN_ID,
+                          template_is_active=C.template_is_active,
+                          credits=r["brevo_credits"])
+            head = out["head"]
+            r["note"] = (f"batch {head['batch_id']} for {send_date}: "
+                         f"{head['campaign_count']} campaign(s), audience "
+                         f"{head['audience_total']}, presentable={head['presentable']}")
+            if head["blocking_reasons"]:
+                refusals.append("BatchBlocking:" + head["blocking_reasons"][:500])
+
+        if mode == "dispatch":
+            # Writes the dispatch FACT for a campaign that has already gone out. It does not send
+            # and cannot: it reads campaignStats and records what Brevo says happened.
+            cid = int(os.environ["DISPATCH_CAMPAIGN_ID"])
+            send_date = os.environ["SEND_DATE"]
+            email_type = os.environ["DISPATCH_EMAIL_TYPE"]
+            stats = C.campaign_stats(cid, [TEST_LIST_ID])
+            planned = bq.query(
+                f"SELECT master_key FROM {bq.C.T_AUDIENCE_SNAPSHOT} "
+                f"WHERE send_date = @d AND email_type = @t AND dispatch_state = 'planned'",
+                _params(send_date, email_type))
+            # A campaign send is all-or-nothing per list: Brevo reports per campaign, never per
+            # person, so 'sent' here means the letter WENT OUT, which is true for everyone in the
+            # list. Whether it was delivered is a different fact and lives in the log's own
+            # columns - conflating the two would advance a rung on a bounce.
+            results = [(row["master_key"], "sent", None) for row in planned]
+            done = bq.complete_dispatch(RUN_ID, send_date, email_type, cid,
+                                        f"dispatch {cid}", results)
+            r["draft_campaign_id"] = cid
+            r["note"] = (f"campaign {cid}: brevo sent={stats['sent']} "
+                         f"delivered={stats['delivered']}; snapshot rows closed="
+                         f"{done['updated']}, log rows written={done['logged']}")
+            if done["logged"] == 0:
+                refusals.append("DispatchWroteNothing")
 
         if mode == "draft-test":
             if r["computed_audience"] == 0:
