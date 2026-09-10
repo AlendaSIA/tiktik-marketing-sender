@@ -1,10 +1,21 @@
 """Entry point for the campaign layer. Creates drafts; never sends; reports what it refused.
 
 Modes:
-  preflight  - can the credential be read, how many credits are there, is the allowlisted list
-               still one person. Touches nothing.
-  draft-test - the end-to-end that can be run before any send exists: one draft to the allowlisted
-               list, its links checked AS a real contact, the numbers written down.
+  preflight      - can the credential be read, how many credits are there, is the allowlisted list
+                   still one person. Touches nothing.
+  draft-test     - the end-to-end that can be run before any send exists: one draft to the
+                   allowlisted list, its links checked AS a real contact, the numbers written down.
+  template-scan  - what every mapped template renders, and what blocks it.
+  batch          - freeze the day, then PUSH it to the relay (contract A). The push result is part
+                   of this row: a batch that is frozen and never handed over is a report nobody can
+                   write, and it must not read as a quiet day.
+  dispatch       - write the dispatch fact for a campaign that has already gone out.
+  press-verdict  - run the four press-time checks against the LIVE system and record the verdict.
+                   Writes NO approval row: this is how the refusal is proved before the relay
+                   exists, not a second road to an approval.
+  press-selftest - call the deployed press endpoint AS the relay would, with the real secret read
+                   from Secret Manager, so contract B is provable end to end without the value ever
+                   passing through a conversation.
 
 Every run writes a row to mkt_control.campaign_run_report, including the runs that refuse. A run
 that refused and left no row behind is indistinguishable from a run that never happened, and this
@@ -22,6 +33,8 @@ from google.cloud import bigquery
 import batch as B
 import bq
 import campaign as C
+import press_live as PL
+import push as PUSH
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -69,7 +82,7 @@ def _params(send_date, email_type):
     return [P("d", "DATE", send_date), P("t", "STRING", email_type)]
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0912, PLR0915
     mode = os.environ.get("MODE", "preflight")
     started = dt.datetime.now(dt.timezone.utc)
     r = {"started_at": started.isoformat(), "mode": mode, "credential_ok": False,
@@ -132,11 +145,67 @@ def main() -> int:
                           template_is_active=C.template_is_active,
                           credits=r["brevo_credits"])
             head = out["head"]
+            r["batch_id"] = head["batch_id"]
             r["note"] = (f"batch {head['batch_id']} for {send_date}: "
                          f"{head['campaign_count']} campaign(s), audience "
                          f"{head['audience_total']}, presentable={head['presentable']}")
             if head["blocking_reasons"]:
                 refusals.append("BatchBlocking:" + head["blocking_reasons"][:500])
+
+            # CONTRACT A, and it belongs INSIDE the night run rather than beside it. Freezing a
+            # batch nobody receives is a report that cannot be written, and the failure has to be
+            # visible in the same row as the batch it concerns. push_batch never raises for a bad
+            # relay - it returns what happened - so this stays a named refusal instead of becoming
+            # a generic "error" that says nothing about whether the day was handed over.
+            pushed = PUSH.push_batch(out)
+            r["push_status"] = pushed["status"]
+            r["push_http"] = pushed["http_status"]
+            r["push_detail"] = pushed["detail"][:900]
+            log.info("PUSH status=%s http=%s detail=%s",
+                     pushed["status"], pushed["http_status"], pushed["detail"])
+            if pushed["status"] != PUSH.SENT:
+                refusals.append(f"PushNotDelivered:{pushed['status']}:{pushed['detail'][:300]}")
+
+        if mode == "press-verdict":
+            # The four checks, against the live system, recorded. NO approval row is written here -
+            # record_approval is reached only through the endpoint, on the relay's call. This mode
+            # exists so the refusal can be seen working before the relay does, and seeing it refuse
+            # correctly is worth as much as seeing it pass.
+            send_date = os.environ["SEND_DATE"]
+            v = PL.verdict(send_date, r["brevo_credits"],
+                           checked_by=os.environ.get("PRESSED_BY", f"campaign-job/{RUN_ID}"))
+            failed = [c["id"] for c in v["checks"] if not c["passed"]]
+            r["note"] = (f"verdict {v['verdict_id']} for {send_date}: may_press={v['may_press']}; "
+                         f"failed checks: {', '.join(failed) or 'none'}")
+            log.info("PRESS_VERDICT_MODE %s", r["note"])
+            log.info("PRESS_REFUSAL_TEXT_LV %s", v["refusal_text_lv"] or "-")
+            if failed:
+                refusals.append("PressVerdictRefused:" + ",".join(failed))
+
+        if mode == "press-selftest":
+            # Contract B, exercised as the relay will exercise it. The secret is read from Secret
+            # Manager by this service account and never printed, so the path is proved without the
+            # value being seen. This is the same single endpoint, not a second one.
+            body = {"batch_id": os.environ.get("PRESS_BATCH_ID", ""),
+                    "build_id": os.environ.get("PRESS_BUILD_ID", ""),
+                    "counts": json.loads(os.environ.get("PRESS_COUNTS", "{}")),
+                    "pressed_by": os.environ.get("PRESSED_BY", "selftest"),
+                    "pressed_at": dt.datetime.now(dt.timezone.utc).isoformat()}
+            res = PUSH.press_selftest(body=body)
+            r["batch_id"] = body["batch_id"] or None
+            r["note"] = f"press endpoint {res['status']} http={res['http_status']}"
+            log.info("PRESS_SELFTEST %s http=%s answer=%s",
+                     res["status"], res["http_status"], (res["answer"] or "")[:1500])
+            if res["status"] != PUSH.SENT:
+                refusals.append(f"PressSelftest:{res['status']}:{res['detail'][:300]}")
+            else:
+                try:
+                    ans = json.loads(res["answer"] or "{}")
+                    if not ans.get("may_press"):
+                        refusals.append("PressSelftestRefused:" + ",".join(
+                            c["id"] for c in ans.get("checks", []) if not c.get("passed")))
+                except Exception:  # noqa: BLE001
+                    refusals.append("PressSelftestUnparseableAnswer")
 
         if mode == "dispatch":
             # Writes the dispatch FACT for a campaign that has already gone out. It does not send
@@ -203,6 +272,11 @@ def main() -> int:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
         # and it must land in the report with its reason rather than as a stack trace.
         r.update(status="refused", refusals=f"{type(e).__name__}: {str(e)[:600]}")
+    except PL.PressRefused as e:
+        # Same shape, and deliberately NOT inside the tuple above: this one is the press refusing,
+        # which is a different thing from a template refusing, and a reader of the report should be
+        # able to tell them apart without opening the text.
+        r.update(status="refused", refusals=f"PressRefused: {str(e)[:600]}")
     except C.CredentialUnavailable as e:
         r.update(status="credential_unavailable", error=str(e)[:900])
     except Exception as e:  # noqa: BLE001
