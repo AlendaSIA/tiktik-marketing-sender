@@ -23,8 +23,17 @@ not configured yet. `refused_unconfigured` is a status the report shows and the 
 refusal, precisely so that the day the relay IS configured, nobody has to remember to remove a
 temporary allowance that stopped being temporary.
 
+THE SECRET IS READ BY VERSION NUMBER, NOT BY `latest`, and this is not caution for its own sake.
+The relay's copy of `relay_secret` is being rotated after it leaked on their side; the new version
+exists here BEFORE the relay accepts it, and `latest` means "the newest enabled version". Following
+latest through a rotation therefore sends a value the other side rejects, and a 401 caused by a
+rotation looks exactly like a 401 caused by a broken push - the wrong thing to spend an evening on.
+So RELAY_SECRET_VERSION must be present and must be DIGITS: the literal "latest" is refused, which
+makes the mistake structurally unavailable rather than merely discouraged. When the rotation is
+finished, the version is changed in one env var and this comment stops applying.
+
 IDEMPOTENCE IS THE RELAY'S, AND IT IS KEYED ON build_id. The same build_id pushed twice is the same
-day stored twice over one row. A DIFFERENT build_id after the mail has gone out means the day was
+day stored twice over one row. A DIFFERENT build_id after a mail has gone out means the day was
 recomputed: the relay voids the old token and sends a short "day recomputed" mail. This side's only
 duty is to report the build_id honestly, which is why it is copied out of the frozen head and never
 regenerated here.
@@ -33,6 +42,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -44,8 +54,11 @@ log = logging.getLogger("push")
 # side has one string to match and a grep finds every place it is used.
 SECRET_HEADER = "X-Relay-Secret"
 SECRET_ID = "relay_secret"
+SECRET_VERSION_ENV = "RELAY_SECRET_VERSION"
 URL_ENV = "RELAY_INGEST_URL"
 TIMEOUT_S = float(os.environ.get("PUSH_TIMEOUT_S", "20"))
+
+_VERSION_NUMBER = re.compile(r"^[0-9]+$")
 
 # Statuses. They are strings in the report, so they are defined once and spelled once.
 SENT = "sent"
@@ -92,6 +105,15 @@ def payload(built: dict) -> dict:
             "day_note": head["note"],
             "built_at": head["built_at"],
             "built_by": head["built_by"],
+            # The frequency measurement travels WITH the day, because the mail has to be able to
+            # say "n of these people already had a letter this week" in the same numbers that
+            # blocked the day. A relay that recomputed it would produce a second answer.
+            "frequency": {
+                "people_measured": head.get("freq_people"),
+                "already_received_7d": head.get("freq_with_prior_7d"),
+                "would_exceed_limit": head.get("freq_would_exceed"),
+                "source": head.get("freq_source"),
+            },
         },
         "campaigns": [
             {
@@ -134,12 +156,23 @@ def push_batch(built: dict, url: str = None, timeout: float = None) -> dict:
             f"a human, and a night that quietly hands over nothing looks exactly like a night with "
             f"nothing to hand over.")
         return out
+
+    version = (os.environ.get(SECRET_VERSION_ENV) or "").strip()
+    if not _VERSION_NUMBER.match(version):
+        out["status"] = REFUSED_UNCONFIGURED
+        out["detail"] = (
+            f"{SECRET_VERSION_ENV} must be a version NUMBER and is {version!r}. `latest` is "
+            f"refused on purpose while {SECRET_ID} is being rotated: latest is the newest ENABLED "
+            f"version, which during a rotation is the value the relay has not accepted yet, and "
+            f"the 401 that follows is indistinguishable from a broken push. Set the number the "
+            f"relay currently accepts.")
+        return out
     try:
-        secret = gsecret.read(SECRET_ID, env_override="RELAY_SECRET")
+        secret = gsecret.read(SECRET_ID, env_override="RELAY_SECRET", version=version)
     except gsecret.SecretUnavailable as e:
         out["status"] = REFUSED_UNCONFIGURED
-        out["detail"] = (f"the shared secret is not available, so the push cannot be "
-                         f"authenticated: {e}")
+        out["detail"] = (f"the shared secret version {version} is not available, so the push "
+                         f"cannot be authenticated: {e}")
         return out
 
     req = urllib.request.Request(target, data=raw, method="POST")
@@ -150,16 +183,19 @@ def push_batch(built: dict, url: str = None, timeout: float = None) -> dict:
     # body it may already hold. The body remains the authority; this is a convenience, not a
     # second source, and the two can never disagree because both are copied from the frozen head.
     req.add_header("X-Relay-Build-Id", str(body["build_id"]))
+    # Which VERSION of the shared secret this push was signed with. During a rotation the relay
+    # accepts two, and a 401 that names neither is a guessing game for both sides.
+    req.add_header("X-Relay-Secret-Version", version)
     try:
         with urllib.request.urlopen(req, timeout=timeout or TIMEOUT_S) as resp:
             answer = (resp.read() or b"")[:400].decode("utf-8", "replace")
             out["http_status"] = resp.status
             if 200 <= resp.status < 300:
                 out["status"] = SENT
-                out["detail"] = (f"handed over batch {body['batch_id']} build {body['build_id']}: "
-                                 f"{out['campaigns']} campaign(s), audience "
-                                 f"{body['day']['audience_total']}, {out['bytes']} bytes; relay "
-                                 f"answered {resp.status} {answer!r}")
+                out["detail"] = (f"handed over batch {body['batch_id']} build {body['build_id']} "
+                                 f"signed with {SECRET_ID} v{version}: {out['campaigns']} "
+                                 f"campaign(s), audience {body['day']['audience_total']}, "
+                                 f"{out['bytes']} bytes; relay answered {resp.status} {answer!r}")
             else:
                 out["detail"] = (f"relay answered {resp.status}: {answer!r}. The batch was NOT "
                                  f"stored, so no mail can be written from it.")
@@ -170,13 +206,14 @@ def push_batch(built: dict, url: str = None, timeout: float = None) -> dict:
         except Exception:  # noqa: BLE001
             pass
         out["http_status"] = e.code
-        out["detail"] = f"relay answered {e.code}: {answer!r}"
+        out["detail"] = (f"relay answered {e.code} to a push signed with {SECRET_ID} v{version}: "
+                         f"{answer!r}")
     except Exception as e:  # noqa: BLE001
         # No answer at all - DNS, TLS, connection refused, timeout. http_status stays None on
         # purpose: "the relay said no" and "the relay was not there" are different things to chase.
         out["detail"] = f"no answer from {target}: {e!r}"
-    log.info("PUSH_RESULT status=%s http=%s bytes=%s campaigns=%s",
-             out["status"], out["http_status"], out["bytes"], out["campaigns"])
+    log.info("PUSH_RESULT status=%s http=%s bytes=%s campaigns=%s secret_version=%s",
+             out["status"], out["http_status"], out["bytes"], out["campaigns"], version)
     return out
 
 
