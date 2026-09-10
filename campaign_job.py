@@ -9,6 +9,11 @@ Modes:
   batch          - freeze the day, then PUSH it to the relay (contract A). The push result is part
                    of this row: a batch that is frozen and never handed over is a report nobody can
                    write, and it must not read as a quiet day.
+  repush         - hand over a batch that is ALREADY frozen, by batch_id, without recomputing the
+                   day. This is what a retry after a failed push must do - the frozen batch is the
+                   record of what was decided, and rebuilding it at retry time would quietly hand
+                   over a different day than the one that failed. It is also how idempotence is
+                   proved: the same build_id twice, from the same bytes.
   dispatch       - write the dispatch fact for a campaign that has already gone out.
   press-verdict  - run the four press-time checks against the LIVE system and record the verdict.
                    Writes NO approval row: this is how the refusal is proved before the relay
@@ -17,16 +22,14 @@ Modes:
                    from Secret Manager, so contract B is provable end to end without the value ever
                    passing through a conversation. Send the same PRESS_ID twice to prove the replay.
   secret-check   - which of the named secrets THIS identity can read. Prints the name and readable
-                   or not, never the value, never its length, never a hash. It exists because
-                   "can the service account read relay_secret" deserves a run with a row behind it
-                   rather than a shell command somebody remembers typing.
+                   or not, never the value, never its length, never a hash.
 
 Every run writes a row to mkt_control.campaign_run_report, including the runs that refuse. A run
 that refused and left no row behind is indistinguishable from a run that never happened, and this
 node has met that failure five times.
 
 WHERE PROOF MAY COME FROM, since 2026-09-10: this job, under its own service account. The zero-day
-batch of 09.09 was built under `ops-cloudshell-runner` and recorded `ops-verify-2026-09-09` in
+batch of 09.09. was built under `ops-cloudshell-runner` and recorded `ops-verify-2026-09-09` in
 day_batch.built_by, so it proved the code and not the road. Anything that works only from the ops
 shell is not proven - it is bypassed.
 """
@@ -70,9 +73,8 @@ def _write(report: dict):
 def _approved_attributes():
     """The approved attribute set. FAIL-CLOSED: unreadable or empty means nothing is approved.
 
-    Read from BigQuery when this identity may run queries, and from APPROVED_ATTRIBUTES otherwise -
-    the campaign layer's service account holds dataset WRITER but not bigquery.jobs.create as of
-    2026-09-09. A guard that cannot read its own allowlist must refuse, never wave things through.
+    Read from BigQuery when this identity may run queries, and from APPROVED_ATTRIBUTES otherwise.
+    A guard that cannot read its own allowlist must refuse, never wave things through.
     """
     env = os.environ.get("APPROVED_ATTRIBUTES", "").strip()
     if env:
@@ -90,6 +92,40 @@ def _approved_attributes():
 def _params(send_date, email_type):
     from google.cloud.bigquery import ScalarQueryParameter as P
     return [P("d", "DATE", send_date), P("t", "STRING", email_type)]
+
+
+def _frozen(batch_id: str) -> dict:
+    """Read a batch back out of the warehouse in the shape push.payload() expects.
+
+    Deliberately a READ and not a rebuild. `batch.build()` would produce a new batch_id, a new
+    built_at and possibly different numbers - which is a different day wearing the same name.
+    """
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    head = bq.query(
+        f"SELECT batch_id, send_date, built_at, built_by, assignment_build_id, campaign_count, "
+        f"audience_total, dedup_overlap, credit_headroom, presentable, blocking_reasons, note "
+        f"FROM `{PROJECT}.mkt_control.day_batch` WHERE batch_id = @b "
+        f"ORDER BY built_at DESC LIMIT 1", [P("b", "STRING", batch_id)])
+    if not head:
+        raise RuntimeError(
+            f"batch {batch_id} does not exist, so there is nothing to hand over. A repush of a "
+            f"batch nobody froze would be an invented day.")
+    camps = bq.query(
+        f"SELECT batch_id, send_date, email_type, track, utm_campaign, template_id, "
+        f"template_active, template_approved, audience, criteria, blocking "
+        f"FROM `{PROJECT}.mkt_control.day_batch_campaign` WHERE batch_id = @b ORDER BY email_type",
+        [P("b", "STRING", batch_id)])
+    return {"head": dict(head[0]), "campaigns": [dict(c) for c in camps]}
+
+
+def _record_push(r: dict, refusals: list, pushed: dict):
+    r["push_status"] = pushed["status"]
+    r["push_http"] = pushed["http_status"]
+    r["push_detail"] = pushed["detail"][:900]
+    log.info("PUSH status=%s http=%s sha256=%s detail=%s",
+             pushed["status"], pushed["http_status"], pushed.get("sha256"), pushed["detail"])
+    if pushed["status"] != PUSH.SENT:
+        refusals.append(f"PushNotDelivered:{pushed['status']}:{pushed['detail'][:300]}")
 
 
 def main() -> int:  # noqa: PLR0912, PLR0915
@@ -116,6 +152,24 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             r["refusals"] = " | ".join(refusals)
             r["status"] = "refused" if refusals else "ok"
             log.info("SECRET_CHECK %s", r["note"])
+            r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            _write(r)
+            return 0
+
+        if mode == "repush":
+            # No Brevo credential is needed to hand over a day that was already decided, and asking
+            # for one would make a retry depend on a system that has nothing to do with it.
+            batch_id = os.environ["PUSH_BATCH_ID"]
+            frozen = _frozen(batch_id)
+            r["batch_id"] = batch_id
+            pushed = PUSH.push_batch(frozen)
+            _record_push(r, refusals, pushed)
+            r["note"] = (f"repush of frozen batch {batch_id} build "
+                         f"{frozen['head']['assignment_build_id']}: {pushed['bytes']} bytes, "
+                         f"sha256 {pushed['sha256']}, {pushed['campaigns']} campaign(s). Nothing "
+                         f"was recomputed; these are the rows the freeze wrote.")
+            r["refusals"] = " | ".join(refusals)
+            r["status"] = "refused" if refusals else "ok"
             r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             _write(r)
             return 0
@@ -185,23 +239,14 @@ def main() -> int:  # noqa: PLR0912, PLR0915
 
             # CONTRACT A, and it belongs INSIDE the night run rather than beside it. Freezing a
             # batch nobody receives is a report that cannot be written, and the failure has to be
-            # visible in the same row as the batch it concerns. push_batch never raises for a bad
-            # relay - it returns what happened - so this stays a named refusal instead of becoming
-            # a generic "error" that says nothing about whether the day was handed over.
+            # visible in the same row as the batch it concerns.
             pushed = PUSH.push_batch(out)
-            r["push_status"] = pushed["status"]
-            r["push_http"] = pushed["http_status"]
-            r["push_detail"] = pushed["detail"][:900]
-            log.info("PUSH status=%s http=%s detail=%s",
-                     pushed["status"], pushed["http_status"], pushed["detail"])
-            if pushed["status"] != PUSH.SENT:
-                refusals.append(f"PushNotDelivered:{pushed['status']}:{pushed['detail'][:300]}")
+            _record_push(r, refusals, pushed)
+            r["note"] += f" | push {pushed['bytes']} bytes sha256 {pushed['sha256']}"
 
         if mode == "press-verdict":
             # The four checks, against the live system, recorded. NO approval row is written here -
-            # record_approval is reached only through the endpoint, on the relay's call. This mode
-            # exists so the refusal can be seen working before the relay does, and seeing it refuse
-            # correctly is worth as much as seeing it pass.
+            # record_approval is reached only through the endpoint, on the relay's call.
             send_date = os.environ["SEND_DATE"]
             v = PL.verdict(send_date, r["brevo_credits"],
                            checked_by=os.environ.get("PRESSED_BY", f"campaign-job/{RUN_ID}"))
@@ -216,8 +261,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         if mode == "press-selftest":
             # Contract B, exercised as the relay will exercise it. The secret is read from Secret
             # Manager by this service account and never printed, so the path is proved without the
-            # value being seen. This is the same single endpoint, not a second one. Sending the same
-            # PRESS_ID twice is how the replay is proved.
+            # value being seen. This is the same single endpoint, not a second one.
             body = {"press_id": os.environ.get("PRESS_ID", ""),
                     "batch_id": os.environ.get("PRESS_BATCH_ID", ""),
                     "build_id": os.environ.get("PRESS_BUILD_ID", ""),
@@ -308,8 +352,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         r["refusals"] = " | ".join(refusals)
         r["status"] = "refused" if refusals else "ok"
         # APPEND, never overwrite. The first version assigned here and clobbered the note each mode
-        # had just written, so the template scan reported the boilerplate instead of its own count -
-        # the run said nothing about what it had actually done.
+        # had just written, so the template scan reported the boilerplate instead of its own count.
         r["note"] = ((r.get("note") + " | ") if r.get("note") else "") + (
             "This layer creates drafts only; send_now() raises unconditionally. "
             "Nothing here can reach a customer.")
@@ -329,7 +372,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         r.update(status="error", error=repr(e)[:900])
         log.exception("CAMPAIGN_JOB_ERROR")
     finally:
-        if r.get("mode") != "secret-check" or "status" not in r:
+        if "finished_at" not in r:
             r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
             _write(r)
     return 0 if r.get("status") in ("ok", "refused") else 1
