@@ -6,10 +6,16 @@ is three chances for one of them to answer None instead of refusing, and a crede
 None turns a guard into a no-op without a line in any log. So there is one reader, it raises, and
 the caller decides what a missing secret means for its own job.
 
-A CACHE, NOT A FALLBACK. Values are cached per process because Cloud Run reuses an instance across
-requests and Secret Manager is a network call. The cache never holds a failure - a secret that
-could not be read this minute is re-read next minute, because the usual cause is an IAM binding
-somebody is in the middle of adding.
+VERSIONS ARE ADDRESSABLE, AND DURING A ROTATION THAT IS THE WHOLE POINT. `latest` means "the
+newest enabled version", which is exactly the wrong thing to follow while a shared secret is being
+rotated: the new value exists here before the other side accepts it, so following latest hands the
+relay a value it will reject, and a 401 from a rotation is indistinguishable from a 401 from a
+broken push. So a caller in that position asks for a NUMBER.
+
+A CACHE, NOT A FALLBACK. Values are cached per process and per version because Cloud Run reuses an
+instance across requests and Secret Manager is a network call. The cache never holds a failure - a
+secret that could not be read this minute is re-read next minute, because the usual cause is an IAM
+binding somebody is in the middle of adding.
 """
 import logging
 import os
@@ -26,8 +32,8 @@ class SecretUnavailable(RuntimeError):
     """The secret cannot be read, and it is named. Fail closed; never continue without it."""
 
 
-def read(secret_id: str, env_override: str = None) -> str:
-    """Return the secret's latest version as text, or raise SecretUnavailable.
+def read(secret_id: str, env_override: str = None, version: str = "latest") -> str:
+    """Return that version of the secret as text, or raise SecretUnavailable.
 
     env_override names an environment variable that may carry the value instead. It exists for the
     same reason campaign.api_key() accepts BREVO_API_KEY inline: a Cloud Run env var is protected by
@@ -35,14 +41,19 @@ def read(secret_id: str, env_override: str = None) -> str:
     the refusal paths could only ever be exercised in production. It is a place the value may LIVE,
     never a place an empty value becomes acceptable - an empty override falls through to Secret
     Manager and, failing that, raises.
+
+    version defaults to "latest" because most callers want the current value. A caller sharing a
+    secret with another system across a rotation must pass a NUMBER instead, and push.py refuses to
+    run at all unless it was given one.
     """
     if env_override:
         inline = (os.environ.get(env_override) or "").strip()
         if inline:
             return inline
-    if secret_id in _cache:
-        return _cache[secret_id]
-    name = f"projects/{PROJECT}/secrets/{secret_id}/versions/latest"
+    key = f"{secret_id}@{version}"
+    if key in _cache:
+        return _cache[key]
+    name = f"projects/{PROJECT}/secrets/{secret_id}/versions/{version}"
     try:
         from google.cloud import secretmanager
         client = secretmanager.SecretManagerServiceClient()
@@ -50,10 +61,11 @@ def read(secret_id: str, env_override: str = None) -> str:
             request={"name": name}).payload.data.decode("utf-8").strip()
     except Exception as e:  # noqa: BLE001
         raise SecretUnavailable(
-            f"cannot read {name}: {e!r}. Either the secret does not exist yet or this service "
-            f"account lacks roles/secretmanager.secretAccessor on it. Refusing rather than "
-            f"continuing without it.") from e
+            f"cannot read {name}: {e!r}. Either the secret or that version does not exist, the "
+            f"version is disabled or destroyed, or this service account lacks "
+            f"roles/secretmanager.secretAccessor on the secret. Refusing rather than continuing "
+            f"without it, and never falling back to another version.") from e
     if not value:
         raise SecretUnavailable(f"{name} is readable but empty, which is not a credential")
-    _cache[secret_id] = value
+    _cache[key] = value
     return value
