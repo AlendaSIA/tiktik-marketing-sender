@@ -8,7 +8,8 @@ nothing, not even a sum.
 WHAT IS SENT IS WHAT WAS FROZEN. The payload is assembled from the rows `batch.build()` has just
 written and from nothing else - no second query, no recomputed total. Every number the relay prints
 is a number this side computed; otherwise the mail and the warehouse can disagree while both look
-right, and nobody finds out until a customer does.
+right, and nobody finds out until a customer does. The SHAPE of it is the seam contract MAIN issued
+on 2026-09-09 in one wording to both sides; a field is not added here because it seemed useful.
 
 A FAILED PUSH IS A REFUSAL, LOUD, IN THE NIGHT REPORT - and that is why nothing here raises for the
 ordinary failures. An unconfigured relay, a timeout, a 500: each RETURNS a named status, and
@@ -105,15 +106,6 @@ def payload(built: dict) -> dict:
             "day_note": head["note"],
             "built_at": head["built_at"],
             "built_by": head["built_by"],
-            # The frequency measurement travels WITH the day, because the mail has to be able to
-            # say "n of these people already had a letter this week" in the same numbers that
-            # blocked the day. A relay that recomputed it would produce a second answer.
-            "frequency": {
-                "people_measured": head.get("freq_people"),
-                "already_received_7d": head.get("freq_with_prior_7d"),
-                "would_exceed_limit": head.get("freq_would_exceed"),
-                "source": head.get("freq_source"),
-            },
         },
         "campaigns": [
             {
