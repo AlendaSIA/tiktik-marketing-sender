@@ -124,6 +124,34 @@ DISCOUNT_ATTRIBUTES = ("XSELL_CODE", "XSELL_PCT", "NEXT_DISCOUNT_CODE", "NEXT_DI
 _PRICE_STANDARD = ("_STD", "_STD_PRICE")
 _PRICE_FINAL = ("_FIN", "_FINAL", "_PRICE", "_FINAL_PRICE", "_AKC")
 
+# BREVO'S OWN MERGE TAGS - an ALLOWLIST, and the direction is the OPPOSITE of the attribute gate
+# above, which is why it is safe to have one here at all.
+#
+# The attribute gate asks "is this field allowed to appear", where an allowlist is strict and a
+# denylist is a hole. This asks "is this a tag whose value we could never supply and Brevo always
+# will" - and there the strict form is naming them one by one. Anything not named is treated as our
+# own unfilled placeholder and still blocks.
+#
+# WHAT DECIDED IT, 2026-09-10: template 35's only href is `{{ unsubscribe }}`, and check_links
+# refused it as an unresolved placeholder. Marketing settled the form from the only live evidence
+# there is - campaign 164 went to 8 042 people on 03.09 carrying NO `{{ }}` token at all and
+# `[DEFAULT_FOOTER]`, so the unsubscribe link comes from Brevo's campaign footer. The body token is
+# surplus and will leave the templates when they are redrawn. Until then, refusing it under the
+# name PlaceholdersUnresolved would fire on every body-token template forever, and a guard that is
+# always on is not a guard - it is a thing people learn to click past.
+#
+# A template left with no checkable link at all is STILL refused, but under its own name,
+# no_real_links. Two different reasons must never share one word.
+#
+# WHOLE-HREF MATCH ONLY. `{{ unsubscribe }}` as the entire href is Brevo's link. The same token
+# inside a longer URL is a URL WE built around a value we cannot see, so it stays unresolved and
+# blocks. Narrow on purpose.
+BREVO_SYSTEM_TOKENS = frozenset({
+    "unsubscribe", "mirror", "update_profile", "view_in_browser", "subscribe",
+})
+
+_WHOLE_TOKEN = re.compile(r"^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$")
+
 
 _key_cache = None
 
@@ -151,10 +179,10 @@ def api_key() -> str:
             request={"name": secret}).payload.data.decode("utf-8").strip()
     except Exception as e:  # noqa: BLE001
         raise CredentialUnavailable(
-            f"cannot read {secret}: {e!r}. As of 2026-09-09 the per-secret IAM policy is EMPTY and "
-            f"access comes from project-level roles, so this service account needs "
-            f"roles/secretmanager.secretAccessor bound ON THE SECRET. Refusing to continue rather "
-            f"than falling back to anything.") from e
+            f"cannot read {secret}: {e!r}. The per-secret IAM policy is what grants this - measured "
+            f"2026-09-10, BREVO_API_KEY carries roles/secretmanager.secretAccessor for "
+            f"tiktik-campaign-sa ON THE SECRET, and this identity holds no project-level secret "
+            f"role at all. Refusing to continue rather than falling back to anything.") from e
     if not _key_cache:
         raise CredentialUnavailable("the secret is readable but empty")
     return _key_cache
@@ -437,23 +465,44 @@ def substitute(text: str, attributes: dict) -> str:
         lambda m: str(attributes.get(m.group(1), m.group(0))), text or "")
 
 
+def is_brevo_system_link(href: str) -> bool:
+    """Is this href entirely one of Brevo's own merge tags. Whole match only - see the constant."""
+    m = _WHOLE_TOKEN.match((href or "").strip())
+    return bool(m) and m.group(1).lower() in BREVO_SYSTEM_TOKENS
+
+
 def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None):
     """Every link in the campaign's HTML must answer 200 before the campaign may be scheduled.
 
-    Two classes, and conflating them is how a broken link survives a green check. A STATIC link is
-    checked here. A DYNAMIC one - anything still carrying a Brevo placeholder - cannot be resolved
-    without a real contact's attributes, so it is reported as unresolved and BLOCKS; resolving it
-    needs a test send to the allowlisted list, which is the second stage.
+    THREE classes, and the third was added on 2026-09-10 because conflating it with the second made
+    a refusal that could never clear.
+
+      static  - resolvable now, fetched now.
+      system  - Brevo's own tag, whole-href (`{{ unsubscribe }}` and friends). We can never fill it
+                and Brevo always does. Counted, reported, blocks nothing, and never counted as a
+                real link either.
+      dynamic - anything else still carrying a placeholder. Cannot be resolved without a real
+                contact's attributes, so it is reported as unresolved and BLOCKS; resolving it
+                needs a test send to the allowlisted list, which is the second stage.
+
+    `checked` is the number of real http links actually fetched. ZERO of them is not success - the
+    caller refuses it as no_real_links, which is a different fact from an unresolved placeholder
+    and deserves its own word.
     """
     html = campaign(campaign_id).get("htmlContent") or ""
     attrs = contact_attributes(as_contact) if as_contact else {}
-    static, dynamic = [], []
+    static, system, dynamic = [], [], []
     for href in set(_HREF.findall(html)):
-        resolved = substitute(href, attrs)
+        resolved = substitute(href, attrs).strip()
         # A link is only checkable once its placeholders carry real values. This is why the check
         # is run AS a contact: the 24.08 breakage lived inside the substituted part of the URL and
         # is invisible in the template's own HTML.
-        (dynamic if ("{{" in resolved or "{%" in resolved) else static).append(resolved)
+        if is_brevo_system_link(resolved):
+            system.append(resolved)
+        elif "{{" in resolved or "{%" in resolved:
+            dynamic.append(resolved)
+        else:
+            static.append(resolved)
     ok, failed = [], []
     for url in sorted(static):
         if not url.lower().startswith("http"):
@@ -472,6 +521,7 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
     if expect_utm:
         missing_utm = sorted(u for u, _ in ok if f"utm_campaign={expect_utm}" not in u)
     return {"ok": ok, "failed": failed, "dynamic_unresolved": sorted(dynamic),
+            "brevo_system": sorted(system), "checked": len(ok) + len(failed),
             "missing_utm": missing_utm}
 
 
