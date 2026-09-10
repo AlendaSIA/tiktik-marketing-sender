@@ -16,11 +16,12 @@ is READ LIVE from Brevo, not from the 06:30 mirror, because a campaign is built 
 state is read from mkt_control.template_approval, which is empty today, which is why every campaign
 currently blocks - and that is correct, not a bug.
 
-THE FREQUENCY MEASUREMENT IS FROZEN IN HERE TOO, and it is REQUIRED. Passing nothing does not mean
-"skip it": it blocks the day as FREQUENCY_NOT_MEASURED. A guard that a caller can quietly forget is
-the kind that disappears in a refactor and is missed only by the customer counting their mail. The
-numbers live on the batch rather than beside it so that the count which blocked the day is the same
-count the letter quotes and the relay repeats - one measurement, one answer.
+WHAT IS DELIBERATELY NOT HERE, decided 2026-09-10. A frequency gate counting letters from senders
+outside the engine was built and then reverted. Raivis sends campaigns by hand from the Brevo
+interface as a deliberate temporary arrangement, and he stops doing it the moment the automatic
+campaigns are switched on - so the two paths never run at once and there is no overlap to catch.
+The engine's per-person limit counts what the engine sends, which is the whole population it will
+ever send to. The columns freq_* exist on day_batch and stay NULL.
 """
 import datetime as dt
 import json
@@ -79,16 +80,12 @@ def _overlap(send_date):
         [P("d", "DATE", send_date)]) or 0)
 
 
-def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0,
-          frequency: dict = None) -> dict:  # noqa: PLR0913
+def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0) -> dict:
     """Freeze the batch for one sending day and return it.
 
     template_is_active is injected so the batch can be built and inspected without a Brevo
     credential; when it is None the active state is recorded as unknown, which BLOCKS rather than
     passes. Unknown is not the same as fine, and defaults belong on the harmless side.
-
-    frequency is the live measurement from frequency.scan(), or {"error": ...} when the source
-    could not be read. None means nobody measured, and that blocks - see the module docstring.
     """
     batch_id = f"{send_date}-{uuid.uuid4().hex[:8]}"
     built_at = dt.datetime.now(dt.timezone.utc)
@@ -137,24 +134,6 @@ def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0
     if credits < audience_total:
         blocking_day.append(f"DAY:NOT_ENOUGH_CREDITS={credits}<{audience_total}")
 
-    # THE FREQUENCY GATE. Three states, three different words, and only one of them is silence.
-    freq_people = freq_prior = freq_exceed = None
-    freq_source = None
-    if frequency is None:
-        blocking_day.append("DAY:FREQUENCY_NOT_MEASURED")
-        freq_source = ("nobody measured it. This is not a skip: a day whose frequency was never "
-                       "counted cannot honour the per-person limit, and the limit is a promise.")
-    elif frequency.get("error"):
-        blocking_day.append("DAY:FREQUENCY_SOURCE_UNAVAILABLE")
-        freq_source = f"UNREADABLE: {str(frequency.get('error'))[:400]}"
-    else:
-        freq_people = int(frequency.get("people") or 0)
-        freq_prior = int(frequency.get("with_prior") or 0)
-        freq_exceed = int(frequency.get("would_exceed") or 0)
-        freq_source = str(frequency.get("source") or "")[:900]
-        if freq_exceed > 0:
-            blocking_day.append(f"DAY:FREQUENCY_LIMIT_EXCEEDED={freq_exceed}")
-
     note = ("Nothing is planned for this day. The report still goes out: zero planned campaigns is "
             "a finding, and a missing report must never look like a quiet week."
             if not campaigns else
@@ -165,8 +144,6 @@ def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0
         "built_by": run_id, "assignment_build_id": build_id,
         "campaign_count": len(campaigns), "audience_total": audience_total,
         "dedup_overlap": overlap, "credit_headroom": int(credits),
-        "freq_people": freq_people, "freq_with_prior_7d": freq_prior,
-        "freq_would_exceed": freq_exceed, "freq_source": freq_source,
         "presentable": bool(campaigns) and not blocking_day,
         "blocking_reasons": " | ".join(blocking_day), "note": note,
     }
@@ -179,8 +156,7 @@ def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0
         errs = client.insert_rows_json(T_BATCH_CAMPAIGN, rows)
         if errs:
             raise RuntimeError(f"day_batch_campaign insert failed: {errs[:3]}")
-    log.info("BATCH_FROZEN %s campaigns=%s audience=%s freq(people=%s prior=%s exceed=%s) "
-             "presentable=%s blocking=%s",
-             batch_id, head["campaign_count"], audience_total, freq_people, freq_prior,
-             freq_exceed, head["presentable"], head["blocking_reasons"] or "-")
+    log.info("BATCH_FROZEN %s campaigns=%s audience=%s presentable=%s blocking=%s",
+             batch_id, head["campaign_count"], audience_total, head["presentable"],
+             head["blocking_reasons"] or "-")
     return {"head": head, "campaigns": rows}
