@@ -3,7 +3,8 @@
 Written 2026-09-09 by the sender's builder, for the `tiktik-relay` / `blk-ar-collection` owner.
 The SEAM CONTRACT below (section "The seam, chosen") is **agreed and fixed** - it was issued to the
 relay side on 2026-09-09 in this same form. The rest of this document describes the campaign side's
-half of it. Nothing has been built on the relay's side of the line yet.
+half of it. **Both halves of the campaign side are now built** - see "What exists, 2026-09-10" at
+the end, including what is measured NOT to work yet.
 
 ## The line
 
@@ -111,3 +112,86 @@ them himself.
 reference Liquid `params`, which are always empty in a campaign, and are blocked for that reason.
 Template 35 is active in Brevo as of 2026-09-09 18:00 UTC and is the one template intended for the
 first end-to-end. Nothing in this repository can reach a customer.
+
+---
+
+# What exists, 2026-09-10 - built, and measured
+
+Everything in this section was read from the running system on 2026-09-10, morning EEST. The parts
+that do not work are here for the same reason as the parts that do: a boundary document that only
+lists what was written is the document that gets somebody stuck at 23:00.
+
+## A) PUSH - the code exists, and it has never run under the identity that will run it
+
+`push.py` builds the payload from the rows `batch.build()` has just frozen and POSTs them to
+`RELAY_INGEST_URL` with the shared secret in the header `X-Relay-Secret`, plus `X-Relay-Build-Id` as
+a convenience for deciding idempotence before parsing. It never raises for a bad relay; it returns
+a named status and `campaign_job` writes it into `campaign_run_report` in four new columns -
+`batch_id`, `push_status`, `push_http`, `push_detail`. `push_http` is NULL when no answer arrived at
+all, which is a different fact from a bad status.
+
+There is deliberately no branch that succeeds because the relay is not configured yet.
+`refused_unconfigured` is a status, it becomes a refusal in the report, and it stays that way until
+`RELAY_INGEST_URL` and `relay_secret` exist. The day the relay IS configured, nobody has to remember
+to remove a temporary allowance.
+
+**MEASURED, AND IT MATTERS MORE THAN THE CODE: `MODE=batch` cannot run as `tiktik-campaign-sa`.** It
+fails 403 on `business_marts.contact_weekly_assignment` before it reaches the freeze, let alone the
+push. The zero-campaign batch `2026-09-10-3cf62711` that exists from 2026-09-09 was built under
+`ops-cloudshell-runner` - `day_batch.built_by` reads `ops-verify-2026-09-09` - so the batch has never
+been proven on the road the night will actually travel. A proof taken on a different identity is the
+quiet second road this node keeps meeting.
+
+## B) PRESS - deployed, answering, and fail-closed on its own credential
+
+Cloud Run **service** `tiktik-campaign-press`, region `europe-west1`, image
+`tiktik-marketing-sender:189779b` - the SAME image as the job, entry point `python press_server.py`,
+so there is one `press.py`. Service account `tiktik-campaign-sa`.
+
+**URL: `https://tiktik-campaign-press-142693968214.europe-west1.run.app`, and the route is
+`POST /press`.**
+
+Proved live on 2026-09-10:
+
+| Call | Answer |
+|---|---|
+| `GET /` | 200, a fixed liveness string that carries no batch, no verdict, no state |
+| `POST /approve` | 404 `NO_SUCH_ROUTE` - there is one route and it is not guessable into two |
+| `POST /press` with no `X-Press-Secret` | 401, and deliberately NOT recorded: this service has to be publicly reachable, scanners will find it, and recording them would drown the signal |
+| `POST /press` with a secret header | 503 `SECRET_UNAVAILABLE` - it cannot read `press_endpoint_secret`, so it refuses to authenticate anyone, and records that refusal |
+
+The 503 is the correct behaviour and it is also the current blocker: see the grants below.
+
+Three refusals sit in FRONT of the four checks and outside them - unknown `batch_id`, a `build_id`
+that disagrees with the frozen batch, a `send_date` that disagrees with it. "Is this request about a
+real, current day" is a different question from "may the day go", and `press.py` stays the single
+place the four rules live. Credits are read live at the press; if they cannot be read the endpoint
+refuses 503 rather than judging the day against a zero nobody measured.
+
+A refusal answers **HTTP 200 with `may_press: false`**, not 4xx. Non-2xx means only: this request
+never reached a verdict. The relay must treat those two cases differently - one shows Raivis a reason,
+the other is an unreachable endpoint and the day does not go.
+
+## The three grants that stand between this and a working seam
+
+None of them is a code change, and none of them is the builder's to make. Each is one line.
+
+1. **The campaign identity must be able to read the assignment table.** Everything downstream -
+   freezing the batch, pushing it, and all four press checks - reads
+   `business_marts.contact_weekly_assignment` through `bq.assignment_build_id()`. Today
+   `tiktik-campaign-sa` holds `roles/bigquery.jobUser` at project level and WRITER on `mkt_control`,
+   and nothing on `business_marts`.
+2. **The endpoint must be able to read its own credential**: `roles/secretmanager.secretAccessor`
+   for `tiktik-campaign-sa` on the secret `press_endpoint_secret`. The secret exists (created
+   2026-09-10, one random value, version 1 destroyed because it was a placeholder). The per-secret
+   policy on `BREVO_API_KEY` already has exactly this binding, which is how the Brevo key is read -
+   the note elsewhere that per-secret IAM is empty is out of date as of 2026-09-10.
+3. **The relay must be allowed to call the service.** `allUsers` -> `roles/run.invoker` on
+   `tiktik-campaign-press`. The deploy tried and answered "Setting IAM policy failed"; unauthenticated
+   `GET /` returns Google's own 403, not the app's. The relay is PHP on a shared host and carries no
+   Google identity, so without this it can never reach the endpoint. If org policy forbids `allUsers`,
+   the fallback has to be decided rather than worked around, and it is not decided here.
+
+`relay_secret` and `RELAY_INGEST_URL` are still absent, which is correct - the relay's ingest endpoint
+does not exist yet. The push will keep reporting `refused_unconfigured` until both sides are placed,
+and that refusal is the intended state, not an outage.
