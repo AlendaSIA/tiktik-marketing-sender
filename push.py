@@ -24,14 +24,23 @@ not configured yet. `refused_unconfigured` is a status the report shows and the 
 refusal, precisely so that the day the relay IS configured, nobody has to remember to remove a
 temporary allowance that stopped being temporary.
 
+IT SAYS WHO IT IS. The first real push, 2026-09-10, answered 403 - and not from the relay.
+Cloudflare error 1010, `browser_signature_banned`, before PHP saw the request at all, because
+urllib introduces itself as `Python-urllib/3.12` and that signature is blocked. check_links has
+carried a name since it was written and this did not, so the fix is a missing name rather than a
+wall to climb. The name is OURS - a client that dresses as a browser to get past a rule is lying to
+a site we own, and the next person reading that access log could not tell the night run from a
+scraper. If an honest name is still refused, that is an allowlist decision for the owner of
+plani.tiktik.lv, and it is asked for rather than worked around.
+
 THE SECRET IS READ BY VERSION NUMBER, NOT BY `latest`, and this is not caution for its own sake.
 The relay's copy of `relay_secret` is being rotated after it leaked on their side; the new version
 exists here BEFORE the relay accepts it, and `latest` means "the newest enabled version". Following
 latest through a rotation therefore sends a value the other side rejects, and a 401 caused by a
 rotation looks exactly like a 401 caused by a broken push - the wrong thing to spend an evening on.
 So RELAY_SECRET_VERSION must be present and must be DIGITS: the literal "latest" is refused, which
-makes the mistake structurally unavailable rather than merely discouraged. When the rotation is
-finished, the version is changed in one env var and this comment stops applying.
+makes the mistake structurally unavailable rather than merely discouraged. Pinned to 5 on
+2026-09-10, which the relay accepts both during the rotation and after it.
 
 IDEMPOTENCE IS THE RELAY'S, AND IT IS KEYED ON build_id. The same build_id pushed twice is the same
 day stored twice over one row. A DIFFERENT build_id after a mail has gone out means the day was
@@ -58,6 +67,8 @@ SECRET_ID = "relay_secret"
 SECRET_VERSION_ENV = "RELAY_SECRET_VERSION"
 URL_ENV = "RELAY_INGEST_URL"
 TIMEOUT_S = float(os.environ.get("PUSH_TIMEOUT_S", "20"))
+# Our own name, in the same shape check_links has used since it was written. Never a browser's.
+USER_AGENT = "tiktik-campaign-push/1.0"
 
 _VERSION_NUMBER = re.compile(r"^[0-9]+$")
 
@@ -170,6 +181,7 @@ def push_batch(built: dict, url: str = None, timeout: float = None) -> dict:
     req = urllib.request.Request(target, data=raw, method="POST")
     req.add_header("content-type", "application/json; charset=utf-8")
     req.add_header("accept", "application/json")
+    req.add_header("user-agent", USER_AGENT)
     req.add_header(SECRET_HEADER, secret)
     # The build_id also rides in a header so the relay can decide idempotence before it parses a
     # body it may already hold. The body remains the authority; this is a convenience, not a
@@ -233,6 +245,7 @@ def press_selftest(url: str = None, body: dict = None, timeout: float = None) ->
     raw = json.dumps(body or {}, ensure_ascii=False, default=str).encode("utf-8")
     req = urllib.request.Request(target, data=raw, method="POST")
     req.add_header("content-type", "application/json; charset=utf-8")
+    req.add_header("user-agent", USER_AGENT)
     req.add_header("X-Press-Secret", secret)
     try:
         with urllib.request.urlopen(req, timeout=timeout or 60) as resp:
