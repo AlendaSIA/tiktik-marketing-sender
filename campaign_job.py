@@ -15,11 +15,20 @@ Modes:
                    exists, not a second road to an approval.
   press-selftest - call the deployed press endpoint AS the relay would, with the real secret read
                    from Secret Manager, so contract B is provable end to end without the value ever
-                   passing through a conversation.
+                   passing through a conversation. Send the same PRESS_ID twice to prove the replay.
+  secret-check   - which of the named secrets THIS identity can read. Prints the name and readable
+                   or not, never the value, never its length, never a hash. It exists because
+                   "can the service account read relay_secret" deserves a run with a row behind it
+                   rather than a shell command somebody remembers typing.
 
 Every run writes a row to mkt_control.campaign_run_report, including the runs that refuse. A run
 that refused and left no row behind is indistinguishable from a run that never happened, and this
 node has met that failure five times.
+
+WHERE PROOF MAY COME FROM, since 2026-09-10: this job, under its own service account. The zero-day
+batch of 09.09 was built under `ops-cloudshell-runner` and recorded `ops-verify-2026-09-09` in
+day_batch.built_by, so it proved the code and not the road. Anything that works only from the ops
+shell is not proven - it is bypassed.
 """
 import datetime as dt
 import json
@@ -33,6 +42,7 @@ from google.cloud import bigquery
 import batch as B
 import bq
 import campaign as C
+import gsecret
 import press_live as PL
 import push as PUSH
 
@@ -89,6 +99,27 @@ def main() -> int:  # noqa: PLR0912, PLR0915
          "list_id": TEST_LIST_ID, "template_id": TEST_TEMPLATE_ID, "refusals": ""}
     refusals = []
     try:
+        if mode == "secret-check":
+            # Deliberately BEFORE the Brevo credential: the whole point is to answer "what can this
+            # identity read", and failing on an unrelated secret would answer a different question.
+            ids = [s.strip() for s in os.environ.get(
+                "SECRET_IDS", "relay_secret,press_endpoint_secret").split(",") if s.strip()]
+            seen = []
+            for sid in ids:
+                try:
+                    gsecret.read(sid)
+                    seen.append(f"{sid}=READABLE")
+                except gsecret.SecretUnavailable:
+                    seen.append(f"{sid}=UNREADABLE")
+                    refusals.append(f"SecretUnreadable:{sid}")
+            r["note"] = "; ".join(seen)
+            r["refusals"] = " | ".join(refusals)
+            r["status"] = "refused" if refusals else "ok"
+            log.info("SECRET_CHECK %s", r["note"])
+            r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            _write(r)
+            return 0
+
         C.api_key()
         r["credential_ok"] = True
         r["brevo_credits"] = C.credit_headroom()
@@ -185,17 +216,20 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         if mode == "press-selftest":
             # Contract B, exercised as the relay will exercise it. The secret is read from Secret
             # Manager by this service account and never printed, so the path is proved without the
-            # value being seen. This is the same single endpoint, not a second one.
-            body = {"batch_id": os.environ.get("PRESS_BATCH_ID", ""),
+            # value being seen. This is the same single endpoint, not a second one. Sending the same
+            # PRESS_ID twice is how the replay is proved.
+            body = {"press_id": os.environ.get("PRESS_ID", ""),
+                    "batch_id": os.environ.get("PRESS_BATCH_ID", ""),
                     "build_id": os.environ.get("PRESS_BUILD_ID", ""),
                     "counts": json.loads(os.environ.get("PRESS_COUNTS", "{}")),
                     "pressed_by": os.environ.get("PRESSED_BY", "selftest"),
                     "pressed_at": dt.datetime.now(dt.timezone.utc).isoformat()}
             res = PUSH.press_selftest(body=body)
             r["batch_id"] = body["batch_id"] or None
+            r["press_id"] = body["press_id"] or None
             r["note"] = f"press endpoint {res['status']} http={res['http_status']}"
             log.info("PRESS_SELFTEST %s http=%s answer=%s",
-                     res["status"], res["http_status"], (res["answer"] or "")[:1500])
+                     res["status"], res["http_status"], (res["answer"] or "")[:1800])
             if res["status"] != PUSH.SENT:
                 refusals.append(f"PressSelftest:{res['status']}:{res['detail'][:300]}")
             else:
@@ -248,6 +282,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                 r["links_ok"] = len(links["ok"])
                 r["links_failed"] = len(links["failed"])
                 r["links_unresolved"] = len(links["dynamic_unresolved"])
+                r["links_system"] = len(links["brevo_system"])
                 if links["failed"]:
                     refusals.append("LinksNot200:" + "; ".join(
                         f"{u} -> {s}" for u, s in links["failed"][:5]))
@@ -256,8 +291,19 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                 if links["dynamic_unresolved"]:
                     refusals.append("PlaceholdersUnresolved:" +
                                     "; ".join(links["dynamic_unresolved"][:5]))
-                log.info("DRAFT id=%s links ok=%s failed=%s unresolved=%s",
-                         cid, r["links_ok"], r["links_failed"], r["links_unresolved"])
+                # A DIFFERENT FACT, AND THEREFORE A DIFFERENT WORD. Zero checkable links is not an
+                # unresolved placeholder: it is a letter with nothing to click. Brevo's own tags do
+                # not count towards it, which is exactly why they had to stop being counted as
+                # unresolved placeholders - otherwise one refusal hid the other permanently.
+                if links["checked"] == 0:
+                    refusals.append(
+                        f"no_real_links: the rendered campaign has no checkable http link at all "
+                        f"({len(links['brevo_system'])} Brevo system tag(s), "
+                        f"{len(links['dynamic_unresolved'])} unresolved). A letter with nothing to "
+                        f"click cannot be attributed and has no reason to arrive.")
+                log.info("DRAFT id=%s links ok=%s failed=%s unresolved=%s system=%s checked=%s",
+                         cid, r["links_ok"], r["links_failed"], r["links_unresolved"],
+                         r["links_system"], links["checked"])
 
         r["refusals"] = " | ".join(refusals)
         r["status"] = "refused" if refusals else "ok"
@@ -283,8 +329,9 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         r.update(status="error", error=repr(e)[:900])
         log.exception("CAMPAIGN_JOB_ERROR")
     finally:
-        r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        _write(r)
+        if r.get("mode") != "secret-check" or "status" not in r:
+            r["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+            _write(r)
     return 0 if r.get("status") in ("ok", "refused") else 1
 
 
