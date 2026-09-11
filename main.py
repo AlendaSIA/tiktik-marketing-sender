@@ -7,8 +7,8 @@ What this job guarantees, and where each guarantee is enforced
 -------------------------------------------------------------
 G1  IDENTITY_STALE   identity older than IDENTITY_MAX_AGE_H -> abort            (step 1)
 G2  SUPPRESSION_FRESH the contact snapshot is refreshed here, then asserted     (step 2)
-G3a ASSIGNMENT     rebuilt here every run; one row per person per week, none suppressed (step 4)
-G3  ONE_PER_PERSON   the plan holds at most one row per master_key -> else abort(step 4)
+G3a ASSIGNMENT     rebuilt here every run; one row per person per week PER LAYER, none suppressed (step 4)
+G3  ONE_PER_PERSON   the plan holds at most one row per (master_key, layer) -> else abort (step 4)
 G4  NO_SUPPRESSED    plan INTERSECT suppression = 0 -> else abort               (step 4)
 G5  FREQUENCY        <= MAX_EMAILS_PER_WEEK per person, >= MIN_DAYS_BETWEEN     (plan SQL)
 G6  SEND_TIME_RECHECK every message re-checks person AND template               (step 6)
@@ -143,7 +143,9 @@ def step2b_assignment():
         n = bq.build_assignment()
         build_id = bq.assignment_build_id()
         same = bq.log_assignment_build(RUN_ID, build_id, n)
-        log.info("ASSIGNMENT_REBUILT people=%s build_id=%s same_as_previous=%s",
+        # n is ROWS: since the layer grain one person can hold two rows. People are logged by
+        # log_assignment_build as COUNT(DISTINCT master_key).
+        log.info("ASSIGNMENT_REBUILT rows=%s build_id=%s same_as_previous=%s",
                  n, build_id, same)
         if not same:
             # Not an error - most rebuilds legitimately change something. It is a WARNING
@@ -178,6 +180,7 @@ def step4_plan():
         "week_start": r["week_start"].isoformat() if r["week_start"] else None,
         "master_key": r["master_key"],
         "email": r["email"],
+        "layer": r["layer"],
         "track": r["track"],
         "email_type": r["email_type"],
         "template_id": r["template_id"],
@@ -196,10 +199,13 @@ def step4_plan():
     } for r in rows]
 
     sendable = [p for p in plan if p["decision"] == "SEND"]
-    masters = [p["master_key"] for p in sendable]
-    if len(masters) != len(set(masters)):
-        dupes = len(masters) - len(set(masters))
-        raise GuardFailure(f"ONE_PER_PERSON violated: {dupes} duplicate master_key rows in the plan")
+    # One row per person PER LAYER (grain since 2026-09-10). A commercial and an educational row
+    # for the same person is the designed state; two rows in ONE layer is the violation.
+    keys = [(p["master_key"], p["layer"]) for p in sendable]
+    if len(keys) != len(set(keys)):
+        dupes = len(keys) - len(set(keys))
+        raise GuardFailure(f"ONE_PER_PERSON violated: {dupes} duplicate (master_key, layer) rows "
+                           f"in the plan")
     if any(p["decision"] == "SUPPRESSED" for p in sendable):
         raise GuardFailure("NO_SUPPRESSED violated: a suppressed row survived into the send set")
     track_off = sum(1 for p in plan if p["decision"] == "TRACK_OFF")
@@ -254,7 +260,8 @@ def step4b_planned_snapshot(plan):
         raise GuardFailure(f"UTM_THEME_MISSING {e}") from e
 
     written = bq.write_planned_snapshot(
-        RUN_ID, [p["master_key"] for p in sendable], slugs)
+        RUN_ID, [p["master_key"] for p in sendable], slugs,
+        layers=[p["layer"] for p in sendable])
 
     not_derivable = sum(1 for s in slugs if s is None)
     if not_derivable:

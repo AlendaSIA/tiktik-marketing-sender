@@ -110,13 +110,40 @@ def build_assignment() -> int:
         raise RuntimeError(
             f"assignment invariant: {total} row(s) in {C.T_GRAIN_GUARD}. Sample: {sample}")
 
-    leaked = scalar(f"""
-        SELECT COUNTIF(a.email IN (SELECT email FROM {C.T_SUPPRESSION}))
-        FROM {C.T_ASSIGNMENT} a
-    """)
+    # LAYER INVARIANT (2026-09-11). Every other read of this table filters
+    # layer IN ('commercial','educational') explicitly, so a row with any other layer - NULL, a
+    # typo, a third layer nobody decided - would be dropped by all of them without a word. This
+    # is the one read that must NOT filter: it counts exactly those rows and fails the run on
+    # them. A third layer also breaks the two-letters-a-week guarantee, which is Raivis' call.
+    unknown = int(scalar(ASSIGNMENT_UNKNOWN_LAYER_SQL) or 0)
+    if unknown:
+        raise RuntimeError(
+            f"assignment invariant: {unknown} row(s) whose layer is not one of {C.LAYERS}. "
+            f"Every reader filters those two layers explicitly and would silently skip them.")
+
+    leaked = scalar(ASSIGNMENT_LEAKED_SQL)
     if leaked:
         raise RuntimeError(f"assignment invariant: {leaked} suppressed addresses in the assignment")
-    return int(scalar(f"SELECT COUNT(*) FROM {C.T_ASSIGNMENT}"))
+    # ROWS, not people. Since the layer grain one person can hold two rows, so this number is
+    # reported as rows_written and never as a head count - people are COUNT(DISTINCT master_key).
+    return int(scalar(ASSIGNMENT_ROWS_SQL))
+
+
+ASSIGNMENT_UNKNOWN_LAYER_SQL = f"""
+    SELECT COUNTIF(layer IS NULL OR layer NOT IN {C.ALL_LAYERS_SQL})
+    FROM {C.T_ASSIGNMENT}
+"""
+
+ASSIGNMENT_LEAKED_SQL = f"""
+    SELECT COUNTIF(a.email IN (SELECT email FROM {C.T_SUPPRESSION}))
+    FROM {C.T_ASSIGNMENT} a
+    WHERE a.layer IN {C.ALL_LAYERS_SQL}
+"""
+
+ASSIGNMENT_ROWS_SQL = f"""
+    SELECT COUNT(*) FROM {C.T_ASSIGNMENT}
+    WHERE layer IN {C.ALL_LAYERS_SQL}
+"""
 
 
 # --------------------------------------------------------------------------- #
@@ -129,10 +156,16 @@ def build_assignment() -> int:
 # contradiction visible. Comparing decision against that view per email_type is now the
 # acceptance test for any change in here.
 PLAN_SQL = f"""
+-- BOTH layers, named explicitly, and the layer travels with every row (2026-09-11). This plan is
+-- the writer of the planned snapshot for every sending day - Tuesday commercial and Thursday
+-- educational alike - so reading only one layer would silently leave the other day with no
+-- batch. One person may therefore appear twice, once per layer; the ONE_PER_PERSON guard in
+-- main.step4_plan is per (master_key, layer) for exactly that reason.
 WITH assignment AS (
-  SELECT master_key, email, track, email_type, template_id, week_start
+  SELECT master_key, email, layer, track, email_type, template_id, week_start
   FROM {C.T_ASSIGNMENT}
   WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+    AND layer IN {C.ALL_LAYERS_SQL}
 ),
 suppression AS (SELECT DISTINCT email FROM {C.T_SUPPRESSION}),
 -- Raivis' per-track switch. Read it or his decisions are decoration.
@@ -334,6 +367,14 @@ def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
     """
     if not rows:
         return 0
+    # layer is REQUIRED on every new row (MAIN, 2026-09-11: "NULL jaunas rindas nav atlauts").
+    # Refused here, before the insert, so a caller that forgets it fails loudly instead of
+    # writing a row no layer-filtered reader will ever see.
+    bad = [r.get("master_key") for r in rows if r.get("layer") not in C.LAYERS]
+    if bad:
+        raise RuntimeError(
+            f"campaign_audience_snapshot: {len(bad)} row(s) without a valid layer "
+            f"(must be one of {C.LAYERS}); first master_key={bad[0]!r}. Nothing written.")
     payload = [{
         "snapshot_id": snapshot_id,
         "built_at": r["built_at"],
@@ -347,6 +388,7 @@ def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
         "brevo_message_id": r.get("brevo_message_id"),
         "master_key": r["master_key"],
         "email": r["email"],
+        "layer": r["layer"],
         "template_id": r.get("template_id"),
         "dispatch_state": r.get("dispatch_state", "planned"),
         "dispatched_at": r.get("dispatched_at"),
@@ -382,31 +424,39 @@ WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
   AND brevo_message_id IS NULL
   AND written_by = @written_by;
 
+-- layer is written on every row and comes from the assignment row itself, which the WHERE below
+-- restricts to the two named layers - so it can never be NULL here (MAIN, 2026-09-11).
 INSERT INTO {C.T_AUDIENCE_SNAPSHOT}
   (snapshot_id, built_at, week_start, send_date, utm_campaign, email_type, track,
    brevo_list_id, brevo_campaign_id, brevo_message_id, master_key, email, template_id,
-   chosen_because, dispatch_state, dispatched_at, dispatch_error, written_by)
+   chosen_because, dispatch_state, dispatched_at, dispatch_error, written_by, layer)
 SELECT
   @snapshot_id, CURRENT_TIMESTAMP(), a.week_start, a.send_date,
   p.utm_campaign, a.email_type, a.track,
   NULL, NULL, NULL, a.master_key, a.email, a.template_id,
-  a.chosen_because, 'planned', NULL, NULL, @written_by
+  a.chosen_because, 'planned', NULL, NULL, @written_by, a.layer
 FROM {C.T_ASSIGNMENT} a
--- The two arrays are ONE list split in two, paired by position: WITH OFFSET is what makes
+-- The three arrays are ONE list split in three, paired by position: WITH OFFSET is what makes
 -- that pairing explicit rather than hoped for. A struct array would read better and is the
 -- one place this driver's parameter support is worth not relying on.
+-- The join key is (master_key, layer), never master_key alone: since the layer grain one
+-- person can hold two assignment rows, and a master_key-only join would pair each plan row
+-- with both of them.
 JOIN (
-  SELECT mk AS master_key, uc AS utm_campaign
+  SELECT mk AS master_key, ly AS layer, uc AS utm_campaign
   FROM UNNEST(@master_keys) AS mk WITH OFFSET o
+  JOIN UNNEST(@layers) AS ly WITH OFFSET o1 ON o = o1
   JOIN UNNEST(@utm_campaigns) AS uc WITH OFFSET o2 ON o = o2
-) p ON p.master_key = a.master_key
-WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY));
+) p ON p.master_key = a.master_key AND p.layer = a.layer
+WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+  AND a.layer IN {C.ALL_LAYERS_SQL};
 
 COMMIT TRANSACTION;
 """
 
 
 def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: list,
+                           layers: list = None,
                            written_by: str = "tiktik-marketing-sender") -> int:
     """Freeze who is slated for which letter on which day, at dispatch_state='planned'.
 
@@ -429,19 +479,26 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: l
     Returns the number of rows actually in the table for this snapshot_id - read back, not
     assumed. A master_key in the plan with no assignment row would otherwise vanish silently.
     """
-    if len(master_keys) != len(utm_campaigns):
+    if layers is None or not (len(master_keys) == len(utm_campaigns) == len(layers)):
         raise RuntimeError(
-            f"master_keys ({len(master_keys)}) and utm_campaigns ({len(utm_campaigns)}) are "
-            f"one list split in two and must stay the same length; they are paired by "
-            f"position in the SQL below.")
+            f"master_keys ({len(master_keys)}), layers ({'missing' if layers is None else len(layers)}) "
+            f"and utm_campaigns ({len(utm_campaigns)}) are one list split in three and must stay "
+            f"the same length; they are paired by position in the SQL below. layers is "
+            f"required: a snapshot row without its layer is not allowed (MAIN, 2026-09-11).")
     if not master_keys:
         return 0
+    bad = [ly for ly in layers if ly not in C.LAYERS]
+    if bad:
+        raise RuntimeError(
+            f"write_planned_snapshot: {len(bad)} layer value(s) outside {C.LAYERS}, first "
+            f"{bad[0]!r}. Nothing written.")
     from google.cloud.bigquery import ArrayQueryParameter as A
     from google.cloud.bigquery import ScalarQueryParameter as P
     query(PLANNED_SNAPSHOT_SQL, [
         P("snapshot_id", "STRING", snapshot_id),
         P("written_by", "STRING", written_by),
         A("master_keys", "STRING", master_keys),
+        A("layers", "STRING", layers),
         A("utm_campaigns", "STRING", utm_campaigns),
     ])
     written = int(scalar(
@@ -531,12 +588,34 @@ def assignment_build_id() -> str:
     moves one person invalidates it. A timestamp would differ on every run, the press would
     refuse every time, and the check would be switched off inside a week.
     """
-    return str(scalar(f"""
+    return str(scalar(ASSIGNMENT_BUILD_ID_SQL) or "")
+
+
+# BOTH layers, named, and a TOTAL order (2026-09-11). Until this change the aggregate was ordered
+# by master_key alone. With one row per person that was a total order; since the layer grain
+# (2026-09-10) a person holds up to two rows, the two tie on master_key, and BigQuery does not
+# promise which comes first - so the hash of an unchanged table was not guaranteed to be stable,
+# and the press compares exactly this value (AUDIENCE_CHANGED). The tie-break is layer DESC:
+# measured live on 2026-09-11 against the 04:31 UTC build, the old expression returned
+# 53a763ec0a8fa09400507f936c16bb4f five times out of five, and ORDER BY master_key, layer DESC is
+# the order that reproduces it, so no build_id already stored in assignment_build_log, day_batch
+# or press_verdict changes its meaning. The row text itself is unchanged: layer is not added to
+# FORMAT because email_type already differs between the two layers (0 shared values measured).
+ASSIGNMENT_BUILD_ID_SQL = f"""
         SELECT TO_HEX(MD5(STRING_AGG(
-                 FORMAT('%s|%s|%t', master_key, email_type, send_date) ORDER BY master_key)))
+                 FORMAT('%s|%s|%t', master_key, email_type, send_date)
+                 ORDER BY master_key, layer DESC)))
         FROM {C.T_ASSIGNMENT}
         WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
-    """) or "")
+          AND layer IN {C.ALL_LAYERS_SQL}
+"""
+
+
+# People, not rows: one person can hold a commercial AND an educational row.
+ASSIGNMENT_PEOPLE_SQL = f"""
+        SELECT COUNT(DISTINCT master_key) FROM {C.T_ASSIGNMENT}
+        WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+          AND layer IN {C.ALL_LAYERS_SQL}"""
 
 
 def log_assignment_build(run_id: str, build_id: str, rows: int) -> bool:
@@ -550,9 +629,7 @@ def log_assignment_build(run_id: str, build_id: str, rows: int) -> bool:
     previous = scalar(
         f"SELECT build_id FROM {C.T_BUILD_LOG} ORDER BY built_at DESC LIMIT 1")
     same = (previous == build_id)
-    people = int(scalar(f"""
-        SELECT COUNT(DISTINCT master_key) FROM {C.T_ASSIGNMENT}
-        WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))""") or 0)
+    people = int(scalar(ASSIGNMENT_PEOPLE_SQL) or 0)
     errors = client().insert_rows_json(C.T_BUILD_LOG.strip("`"), [{
         "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "run_id": run_id, "build_id": build_id,
@@ -687,12 +764,18 @@ def default_day_rows() -> int:
     Marketing having chosen its day - since 2026-09-09 that lands on Thursday rather than the
     commercial day, which makes it survivable, not correct.
     """
-    n = scalar(f"""
+    n = scalar(DEFAULT_DAY_ROWS_SQL)
+    return int(n or 0)
+
+
+# ROWS on the placeholder, both layers named: a variant with no send-day row is a finding in
+# either layer, and one person's two rows are two variants that each lack (or have) a map row.
+DEFAULT_DAY_ROWS_SQL = f"""
         SELECT COUNTIF(chosen_because LIKE '%send_day=default_first_sending_day%')
         FROM {C.T_ASSIGNMENT}
         WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
-    """)
-    return int(n or 0)
+          AND layer IN {C.ALL_LAYERS_SQL}
+"""
 
 
 def stale_planned() -> int:
@@ -733,9 +816,17 @@ sendable AS (
   SELECT email, master_key FROM cl
   WHERE lifecycle_stage != 'blocked' AND email NOT IN (SELECT email FROM sup)
 ),
+-- Both layers, named (2026-09-11). Two numbers changed meaning with the layer grain and are
+-- defined here so they keep the meaning their names promise:
+--   assignment_people = COUNT(DISTINCT master_key) - people, not rows. Rows are not people.
+--   duplicate_sends   = rows beyond one per (master_key, layer). A person holding one
+--                       commercial and one educational row is the designed state, not a
+--                       duplicate; before this change it read 3 883 on 2026-09-11 04:31 UTC
+--                       and step5_gate would have refused on it every night.
 asg AS (
-  SELECT master_key, email, week_start FROM {C.T_ASSIGNMENT}
+  SELECT master_key, email, layer, week_start FROM {C.T_ASSIGNMENT}
   WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
+    AND layer IN {C.ALL_LAYERS_SQL}
 )
 SELECT
   (SELECT COUNT(*) FROM l3) AS list3_total,
@@ -745,8 +836,8 @@ SELECT
   (SELECT COUNT(*) FROM sendable) AS sendable_rows,
   (SELECT COUNT(DISTINCT master_key) FROM sendable) AS sendable_people,
   (SELECT COUNT(*) - COUNT(DISTINCT master_key) FROM sendable) AS multi_address_people,
-  (SELECT COUNT(*) FROM asg) AS assignment_people,
-  (SELECT COUNT(*) - COUNT(DISTINCT master_key) FROM asg) AS duplicate_sends,
+  (SELECT COUNT(DISTINCT master_key) FROM asg) AS assignment_people,
+  (SELECT COUNT(*) - COUNT(DISTINCT FORMAT('%s|%s', master_key, layer)) FROM asg) AS duplicate_sends,
   (SELECT COUNTIF(email IN (SELECT email FROM sup)) FROM asg) AS assignment_suppressed
 """
 

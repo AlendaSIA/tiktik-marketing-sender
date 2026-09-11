@@ -69,6 +69,16 @@ T_IDENTITY = t(MARTS, "customer_identity")
 T_MASTER = t(MARTS, "customer_master")
 T_SEND_LOG = t(MARTS, "email_send_log")
 T_ASSIGNMENT = t(MARTS, "contact_weekly_assignment")
+# The assignment grain is (week_start, master_key, layer) since 2026-09-10, and there are EXACTLY
+# two layers. Form issued by MAIN on 2026-09-11, same words to every reader: "Katrs lasitajs filtre
+# layer skaidri. Pieskiiruma rindu skaits nav cilveku skaits - cilvekus skaita ar
+# COUNT(DISTINCT master_key)." Every read of T_ASSIGNMENT names its layer(s) out loud, and
+# bq.build_assignment() refuses a row whose layer is anything else, because an explicit IN-list
+# would otherwise drop a third layer silently instead of failing on it.
+LAYER_COMMERCIAL = "commercial"
+LAYER_EDUCATIONAL = "educational"
+LAYERS = (LAYER_COMMERCIAL, LAYER_EDUCATIONAL)
+ALL_LAYERS_SQL = "('commercial', 'educational')"
 T_SEND_PLAN = t(CONTROL, "send_plan")
 T_RUN_REPORT = t(CONTROL, "sender_run_report")
 
