@@ -54,11 +54,13 @@ exits 0.
 
 | object | role |
 |---|---|
-| `business_marts.contact_weekly_assignment` | **one row per person per week** — which track owns them and which single address to use. Built separately (step 3). Absent ⇒ this job reports and sends nothing. |
+| `business_marts.contact_weekly_assignment` | **one row per person per week per layer** (`commercial` / `educational`) — which track owns them, which single address, which sending day. Written only by the live procedure below. Absent ⇒ this job reports and sends nothing. |
 | `business_marts.customer_lifecycle` | personalisation and stage, address grain |
 | `business_marts.email_suppression_all` | consent, master-resolved |
 | `business_marts.brevo_contacts_snapshot` | Brevo contact state + list membership (refreshed here) |
 | `business_marts.email_send_log` | frequency history, counted per `master_key` |
+
+The assignment procedure has no copy in this repo: its only source is the live routine `mkt_control.sp_build_contact_weekly_assignment`, DDL history in `Company-Alenda-SIA/shared-platforms/_pavediens--tiktik-marketing-night-sync.md`.
 
 ## Outputs
 

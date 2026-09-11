@@ -193,8 +193,8 @@ def step4_plan():
         "hero_product_name": r["hero_product_name"],
         "hero_product_url": r["hero_product_url"],
         "hero_product_image": r["hero_product_image"],
-        "next_discount_pct": r["next_discount_pct"],
-        "next_discount_code": r["next_discount_code"],
+        # next_discount_pct / next_discount_code: gone on purpose (MAIN, 2026-09-11) - codes were
+        # cancelled and the lifecycle columns removed. Not replaced by a default.
         "dry_run": C.DRY_RUN,
     } for r in rows]
 
@@ -212,6 +212,10 @@ def step4_plan():
     # Counted on decision_if_enabled deliberately: while every track is off, counting template
     # problems on `decision` would report zero of them and hide the real state.
     template_blocked = sum(1 for p in plan if p["decision_if_enabled"] in TEMPLATE_BLOCKED)
+    # Rows per layer, so a run's plan can be read per sending layer without SQL. Rows, not people.
+    by_layer = {ly: sum(1 for p in plan if p["layer"] == ly) for ly in C.LAYERS}
+    send_by_layer = {ly: sum(1 for p in sendable if p["layer"] == ly) for ly in C.LAYERS}
+    log.info("PLAN_BY_LAYER rows=%s send=%s", by_layer, send_by_layer)
     log.info("PLAN rows=%s send=%s track_off=%s template_blocked=%s suppressed=%s frequency=%s other=%s",
              len(plan), len(sendable), track_off, template_blocked,
              sum(1 for p in plan if p["decision"] == "SUPPRESSED"),
@@ -360,8 +364,6 @@ def step6_send(plan):
             "product": p["hero_product_name"],
             "product_url": p["hero_product_url"],
             "product_image": p["hero_product_image"],
-            "discount_pct": p["next_discount_pct"],
-            "discount_code": p["next_discount_code"],
         }
         try:
             message_id = brevo.send_transactional(
@@ -396,8 +398,6 @@ def step6_send(plan):
             "channel": "email",
             "sent_at": _now().isoformat(),
             "targeted_at": p["planned_at"],
-            "discount_code": p["next_discount_code"],
-            "discount_pct": p["next_discount_pct"],
         })
         if status == "sent":
             sent += 1

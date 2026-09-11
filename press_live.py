@@ -1,13 +1,13 @@
 """The live half of the press: gather, judge, record. press.py stays pure; this touches the world.
 
 THE SPLIT IS THE POINT. press.evaluate() decides, and it holds no BigQuery client, no Brevo client
-and no clock - the only reason all four refusals were provable on the day they were written, with no
+and no clock - the only reason every refusal was provable on the day they were written, with no
 credential and no warehouse. Everything that has to LOOK something up lives here instead, so that
 property survives whatever the relay ends up calling. PressRefused is defined here rather than in
 press.py for the same reason: press.py imports nothing.
 
 WHAT THE RELAY CALLS. verdict() is the callable their action endpoint must use before recording a
-press; it must never re-implement the four checks, and that is only meaningfully true because they
+press; it must never re-implement the three press checks, and that is only meaningfully true because they
 exist as one function anyone can call. record_approval() then refuses to write the approval row
 unless a PASSING verdict for that send_date already exists. The order is structural, not procedural:
 there is no path to an approval row that skips the checks.
@@ -41,17 +41,28 @@ class PressRefused(RuntimeError):
     """A press was attempted without a passing verdict. Outside every per-item handler."""
 
 
-def live_inputs(send_date: str, credits_available: int):
-    """Read the four things the checks judge, AT THE MOMENT OF THE PRESS.
+BATCH_BY_ID_SQL = (f"SELECT batch_id, send_date, assignment_build_id, audience_total "
+                   f"FROM `{C.PROJECT}.{C.CONTROL}.day_batch` WHERE batch_id = @b LIMIT 1")
 
-    Not from the batch, deliberately. The batch is what the mail was written from; these are what is
-    true now, and the entire purpose of the re-check is that those two can differ.
+
+def live_inputs(send_date: str, credits_available: int, batch_id: str):
+    """Read what the three checks judge, AT THE MOMENT OF THE PRESS, for the PRESSED batch.
+
+    The mail side (build_id_in_mail, credits_needed) comes from the batch the human was SHOWN,
+    looked up by its batch_id (MAIN, 2026-09-11). Until then it was the NEWEST day_batch for the
+    date, so a batch rebuilt after the mail went out would have been judged in place of the one he
+    read - an approval of a day he never saw. The live side (live_build_id, overlap) is what is true
+    now, and the entire purpose of the re-check is that those two can differ.
+
+    A batch_id that does not exist, or belongs to another date, gives build_id_in_mail=None, which
+    fails AUDIENCE_CHANGED: fail-closed, never a silent fallback to some other batch.
     """
     from google.cloud.bigquery import ScalarQueryParameter as P
-    batch = bq.query(
-        f"SELECT assignment_build_id, audience_total FROM `{C.PROJECT}.{C.CONTROL}.day_batch` "
-        f"WHERE send_date = @d ORDER BY built_at DESC LIMIT 1",
-        [P("d", "DATE", send_date)])
+    if not batch_id:
+        raise PressRefused("a press must name the batch it was shown; no batch_id, no verdict.")
+    batch = bq.query(BATCH_BY_ID_SQL, [P("b", "STRING", batch_id)])
+    if batch and str(batch[0]["send_date"]) != str(send_date):
+        batch = []
     overlap = int(bq.scalar(
         f"SELECT COUNT(*) FROM {C.T_DAY_OVERLAP} WHERE send_date = @d",
         [P("d", "DATE", send_date)]) or 0)
@@ -64,12 +75,18 @@ def live_inputs(send_date: str, credits_available: int):
     }
 
 
-def approval_row(send_date: str):
+def approval_for(batch_id: str, build_id: str):
+    """The approval row for exactly this batch AND this build - what the SEND-TIME gate needs.
+
+    Injected into campaign.send_now() as its approval_lookup. press.send_gate() re-checks both keys
+    on the row it gets back, so a lookup that drifted could still not let the wrong day through.
+    """
     from google.cloud.bigquery import ScalarQueryParameter as P
     rows = bq.query(
-        f"SELECT send_date, approved_by, approved_at, revoked_at, revoked_reason "
-        f"FROM `{T_APPROVAL}` WHERE send_date = @d ORDER BY approved_at DESC LIMIT 1",
-        [P("d", "DATE", send_date)])
+        f"SELECT send_date, batch_id, assignment_build_id, approved_by, approved_at, revoked_at, "
+        f"revoked_reason FROM `{T_APPROVAL}` WHERE batch_id = @b AND assignment_build_id = @i "
+        f"ORDER BY approved_at DESC LIMIT 1",
+        [P("b", "STRING", batch_id), P("i", "STRING", build_id)])
     return dict(rows[0]) if rows else None
 
 
@@ -99,21 +116,22 @@ def approval_by_press_id(press_id: str):
 
 
 def verdict(send_date: str, credits_available: int, checked_by: str,
-            press_id: str = None) -> dict:
+            press_id: str = None, batch_id: str = None) -> dict:
     """Judge the press and RECORD the judgement, refusal included.
 
     The refusal is written, not only returned. The press is the one moment where a wrong answer
     either mails thousands of people or silently mails nobody, so a refusal that leaves no row is
     indistinguishable afterwards from a press that never happened.
     """
-    v = live_inputs(send_date, credits_available)
-    checks = press.evaluate(send_date=send_date, approval_row=approval_row(send_date), **v)
+    v = live_inputs(send_date, credits_available, batch_id)
+    checks = press.evaluate(send_date=send_date, **v)
     may = press.may_press(checks)
     row = {
         "verdict_id": f"{send_date}-{uuid.uuid4().hex[:8]}", "send_date": send_date,
         "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(), "checked_by": checked_by,
         "may_press": may, "checks_json": json.dumps(checks, ensure_ascii=False),
-        "refusal_text_lv": press.refusal_text(checks), "press_id": press_id, **v,
+        "refusal_text_lv": press.refusal_text(checks), "press_id": press_id,
+        "batch_id": batch_id, **v,
     }
     errs = bq.client().insert_rows_json(T_VERDICT, [row])
     if errs:
@@ -124,21 +142,26 @@ def verdict(send_date: str, credits_available: int, checked_by: str,
 
 
 def record_approval(send_date: str, approved_by: str, batch_id: str, counts_at_press: dict,
-                    board_token: str = None, press_id: str = None) -> str:  # noqa: PLR0913
-    """Write the approval row. Refuses unless a PASSING verdict for this day already exists.
+                    board_token: str = None, press_id: str = None,
+                    verdict_id: str = None) -> str:  # noqa: PLR0913
+    """Write the approval row. Refuses unless THIS press's verdict exists and passed.
 
-    counts_at_press is stored as it was SHOWN in the e-mail, not as it is now - otherwise nobody can
-    later say what Raivis approved, only what happened to be true afterwards.
+    The verdict is looked up by its verdict_id, and must be for this batch_id - not "the newest
+    verdict for the date", which a second press on another batch could have written a second
+    earlier. counts_at_press is stored as it was SHOWN in the e-mail, not as it is now - otherwise
+    nobody can later say what Raivis approved, only what happened to be true afterwards.
     """
     from google.cloud.bigquery import ScalarQueryParameter as P
+    if not verdict_id:
+        raise PressRefused("record_approval needs the verdict_id of the press it records.")
     rows = bq.query(
-        f"SELECT verdict_id, may_press, live_build_id FROM `{T_VERDICT}` "
-        f"WHERE send_date = @d ORDER BY checked_at DESC LIMIT 1",
-        [P("d", "DATE", send_date)])
-    if not rows or not rows[0]["may_press"]:
+        f"SELECT verdict_id, may_press, live_build_id, batch_id FROM `{T_VERDICT}` "
+        f"WHERE verdict_id = @v LIMIT 1",
+        [P("v", "STRING", verdict_id)])
+    if not rows or not rows[0]["may_press"] or rows[0].get("batch_id") != batch_id:
         raise PressRefused(
-            f"no passing verdict for {send_date}. The checks run BEFORE the approval row is "
-            f"written, and there is no path to an approval row that skips them.")
+            f"no passing verdict {verdict_id} for batch {batch_id}. The checks run BEFORE the "
+            f"approval row is written, and there is no path to an approval row that skips them.")
     batch = bq.query(
         f"SELECT audience_total, campaign_count, dedup_overlap, credit_headroom "
         f"FROM `{C.PROJECT}.{C.CONTROL}.day_batch` WHERE batch_id = @b LIMIT 1",
@@ -157,6 +180,7 @@ def record_approval(send_date: str, approved_by: str, batch_id: str, counts_at_p
         "credit_headroom": int(batch[0]["credit_headroom"] or 0),
         "board_token": board_token,
         "press_id": press_id,
+        "batch_id": batch_id,
     }
     errs = bq.client().insert_rows_json(T_APPROVAL, [row])
     if errs:

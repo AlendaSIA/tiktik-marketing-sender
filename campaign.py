@@ -525,26 +525,27 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
             "missing_utm": missing_utm}
 
 
-def send_now(campaign_id: int, send_date: str, approval_lookup):
-    """Send a campaign. Raises unless Raivis has approved that sending day.
+def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, approval_lookup):
+    """Send a campaign. Raises unless Raivis approved exactly THIS batch at THIS build.
 
-    `approval_lookup` is injected rather than imported so this module holds no BigQuery client and
-    the refusal can be exercised in a test without a warehouse. It must return the approval row or
-    None.
+    THE SEND-TIME GATE (MAIN, 2026-09-11). NO_APPROVAL_ROW used to be a press check, which made the
+    press wait for its own approval. It lives here now, with the same words - silence is not
+    consent - and it is keyed on (batch_id, build_id), not on the date: an approval is for the day
+    the human saw, and a batch rebuilt after his press is a different day.
+
+    `approval_lookup(batch_id, build_id)` is injected (press_live.approval_for in production) so
+    this module holds no BigQuery client and the refusal can be exercised without a warehouse. The
+    decision is press.send_gate(), which re-checks both keys on whatever row the lookup returns.
 
     There is no flag that turns this off. SEND_MODE, DRY_RUN and an absent key are all things a
     person can change in thirty seconds under pressure; a raise at the call site is not.
     """
-    row = approval_lookup(send_date)
-    if not row:
-        raise SendRefused(
-            f"no approval row for send_date={send_date}. Nothing sends without Raivis pressing the "
-            f"day-batch button, and silence is not consent.")
-    if row.get("revoked_at"):
-        raise SendRefused(
-            f"the approval for {send_date} was revoked at {row['revoked_at']}: "
-            f"{row.get('revoked_reason')}")
+    import press  # pure module: no client, no clock
+    gate = press.send_gate(send_date=send_date, batch_id=batch_id, build_id=build_id,
+                           approval_row=approval_lookup(batch_id, build_id))
+    if not gate["passed"]:
+        raise SendRefused(f"{gate['reason_lv']} ({gate['detail']})")
     raise SendRefused(
         f"the send path is not built. Raivis' condition of 2026-09-09 stands - 'visam japaliek dry "
         f"run kamer nav viss lidz galam gatavs' - and enabling it is his call, not a code change "
-        f"anyone here may make. campaign_id={campaign_id} send_date={send_date}")
+        f"anyone here may make. campaign_id={campaign_id} send_date={send_date} batch_id={batch_id}")

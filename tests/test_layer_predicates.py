@@ -143,6 +143,15 @@ class AssignmentReadsNameTheirLayer(unittest.TestCase):
     def test_plan_carries_the_layer(self):
         self.assertIn("SELECT master_key, email, layer, track", bq.PLAN_SQL)
 
+    def test_plan_does_not_read_the_removed_discount_columns(self):
+        """MAIN, 2026-09-11: discount codes are cancelled and the lifecycle columns are gone.
+        Reading them failed every nightly run from 10.09; nothing stands in for them."""
+        self.assertNotIn("c.next_discount_pct", bq.PLAN_SQL)
+        self.assertNotIn("c.next_discount_code", bq.PLAN_SQL)
+        src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+        self.assertNotIn('p["next_discount', src)
+        self.assertNotIn('r["next_discount', src)
+
 
 class SnapshotWritersFillLayer(unittest.TestCase):
 
@@ -242,8 +251,7 @@ class PlanGuardIsPerLayer(unittest.TestCase):
                 "track": "t", "email_type": f"e-{layer}", "template_id": 1, "decision": "SEND",
                 "decision_if_enabled": "READY", "lifecycle_stage": "active", "full_name": "N",
                 "gender_greeting": "", "language": "lv", "hero_product_name": None,
-                "hero_product_url": None, "hero_product_image": None,
-                "next_discount_pct": None, "next_discount_code": None}
+                "hero_product_url": None, "hero_product_image": None}
 
     def test_one_person_in_both_layers_is_allowed(self):
         bq.build_plan = lambda: [self._row("m1", "commercial"), self._row("m1", "educational")]

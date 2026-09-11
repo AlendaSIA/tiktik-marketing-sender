@@ -198,7 +198,9 @@ joined AS (
   SELECT a.*,
          c.full_name, c.gender_greeting, c.language, c.segment, c.lifecycle_stage,
          c.hero_product_name, c.hero_product_url, c.hero_product_image, c.hero_product_price,
-         c.next_discount_pct, c.next_discount_code,
+         -- next_discount_pct / next_discount_code are NOT read (MAIN, 2026-09-11): discount codes
+         -- were cancelled by decision and both columns removed from customer_lifecycle on purpose.
+         -- Reading them failed every nightly run from 10.09. No default stands in for them.
          COALESCE(h.sent_this_week, 0) AS sent_this_week,
          h.last_sent_date,
          tr.track_enabled,
@@ -805,8 +807,9 @@ COVERAGE_SQL = f"""
 --     send. Reported always; blocks only if GATE_ON_ORPHANS is on (see main.step5_gate).
 --
 -- 2026-09-04: sendable_people read 6 144 while assignment_people read 6 143, and the whole of
--- that gap was ONE person with lifecycle_stage='blocked'. sql/assignment.sql excludes blocked
--- in _assign_cl; this query did not. The definition is aligned below rather than the number
+-- that gap was ONE person with lifecycle_stage='blocked'. The assignment procedure
+-- (mkt_control.sp_build_contact_weekly_assignment, live) excludes blocked in _assign_cl; this
+-- query did not. The definition is aligned below rather than the number
 -- patched. Note it is aligned for SENDABLE only: cl stays unfiltered for the list3/orphan
 -- numbers, because a blocked person IS known to the engine and must not become an "orphan".
 WITH l3 AS (SELECT email FROM {C.T_SNAPSHOT} WHERE 3 IN UNNEST(list_ids)),

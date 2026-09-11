@@ -14,7 +14,7 @@ the end, including what is measured NOT to work yet.
 | Pushing the frozen batch to the relay | campaign layer |
 | Rendering the board and the digest e-mail | relay |
 | Token signing, the press UI, the action endpoint | relay |
-| The four press-time checks | campaign layer - **called**, never re-implemented |
+| The three press-time checks (AUDIENCE_CHANGED, PERSON_IN_TWO_LISTS, NOT_ENOUGH_CREDITS); NO_APPROVAL_ROW is the SEND-time gate since 2026-09-11 | campaign layer - **called**, never re-implemented |
 | Writing the approval row | campaign layer, on the relay's call |
 | Dispatching campaigns after approval | campaign layer |
 
@@ -162,10 +162,10 @@ Proved live on 2026-09-10:
 
 The 503 is the correct behaviour and it is also the current blocker: see the grants below.
 
-Three refusals sit in FRONT of the four checks and outside them - unknown `batch_id`, a `build_id`
+Three refusals sit in FRONT of the three press checks and outside them - unknown `batch_id`, a `build_id`
 that disagrees with the frozen batch, a `send_date` that disagrees with it. "Is this request about a
 real, current day" is a different question from "may the day go", and `press.py` stays the single
-place the four rules live. Credits are read live at the press; if they cannot be read the endpoint
+place the press rules live. Credits are read live at the press; if they cannot be read the endpoint
 refuses 503 rather than judging the day against a zero nobody measured.
 
 A refusal answers **HTTP 200 with `may_press: false`**, not 4xx. Non-2xx means only: this request

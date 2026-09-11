@@ -60,3 +60,13 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
   ADD COLUMN IF NOT EXISTS dispatch_log_mismatch INT64,
   ADD COLUMN IF NOT EXISTS day_list_overlap      INT64,
   ADD COLUMN IF NOT EXISTS assignment_build_id   STRING;
+
+-- Applied 2026-09-11 with the press-cycle fix (MAIN's decision of the same day). The press is the
+-- approval; the approval row must name the batch the human was SHOWN, because the send-time gate
+-- (press.send_gate) refuses without an approval for exactly this batch_id AND build_id, and the
+-- verdict must record which batch it judged (live_inputs reads that batch by id, not the newest
+-- batch of the date). Additive and nullable: the two verdict rows of 10.09 keep NULL.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.press_verdict`
+  ADD COLUMN IF NOT EXISTS batch_id STRING;
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.send_approval`
+  ADD COLUMN IF NOT EXISTS batch_id STRING;

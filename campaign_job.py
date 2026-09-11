@@ -15,7 +15,7 @@ Modes:
                    over a different day than the one that failed. It is also how idempotence is
                    proved: the same build_id twice, from the same bytes.
   dispatch       - write the dispatch fact for a campaign that has already gone out.
-  press-verdict  - run the four press-time checks against the LIVE system and record the verdict.
+  press-verdict  - run the three press-time checks against the LIVE system and record the verdict.
                    Writes NO approval row: this is how the refusal is proved before the relay
                    exists, not a second road to an approval.
   press-selftest - call the deployed press endpoint AS the relay would, with the real secret read
@@ -245,11 +245,15 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             r["note"] += f" | push {pushed['bytes']} bytes sha256 {pushed['sha256']}"
 
         if mode == "press-verdict":
-            # The four checks, against the live system, recorded. NO approval row is written here -
-            # record_approval is reached only through the endpoint, on the relay's call.
+            # The three press checks, against the live system, recorded. NO approval row is written
+            # here - record_approval is reached only through the endpoint, on the relay's call.
+            # PRESS_BATCH_ID is required: a verdict judges the batch a human was shown, never
+            # "the newest batch for the date" (MAIN, 2026-09-11).
             send_date = os.environ["SEND_DATE"]
+            r["batch_id"] = os.environ.get("PRESS_BATCH_ID", "") or None
             v = PL.verdict(send_date, r["brevo_credits"],
-                           checked_by=os.environ.get("PRESSED_BY", f"campaign-job/{RUN_ID}"))
+                           checked_by=os.environ.get("PRESSED_BY", f"campaign-job/{RUN_ID}"),
+                           batch_id=r["batch_id"])
             failed = [c["id"] for c in v["checks"] if not c["passed"]]
             r["note"] = (f"verdict {v['verdict_id']} for {send_date}: may_press={v['may_press']}; "
                          f"failed checks: {', '.join(failed) or 'none'}")

@@ -6,7 +6,7 @@ only route that decides anything. `GET /` answers a fixed string so Cloud Run's 
 something to talk to; it carries no batch, no verdict and no state, so it is not a road to anything.
 
 SAME IMAGE, SAME CODE, ONE press.py. This runs from the identical container as the job, with a
-different entry point, because a second implementation of the four checks would be a second set of
+different entry point, because a second implementation of the press checks would be a second set of
 rules - and the entire value of the checks is that there is exactly one. This module never decides
 whether the day may go; it gathers, calls press_live.verdict(), and repeats the answer.
 
@@ -26,7 +26,7 @@ the seam contract issued on 2026-09-09; it is required from 2026-09-10 onward.
 THREE REFUSALS SIT IN FRONT OF THE CHECKS, DELIBERATELY OUTSIDE THEM. Unknown batch_id, a build_id
 that disagrees with the frozen batch, a send_date that disagrees with it. "Is this request about a
 real, current day" is a different question from "may the day go", and press.py must stay the single
-place the four rules live. They are recorded like every other refusal.
+place the press rules live. They are recorded like every other refusal.
 
 CREDITS ARE READ LIVE, AND AN UNREADABLE CREDIT COUNT REFUSES. Passing zero would put a number in
 press_verdict that looks like a measurement and was never measured, which is worse than a blank -
@@ -189,14 +189,15 @@ def handle_press(body: dict) -> tuple:  # noqa: PLR0911
                 press_id=press_id, note=repr(e)[:400])
         return 503, r
 
-    v = PL.verdict(send_date, credits, checked_by=str(body["pressed_by"]), press_id=press_id)
+    v = PL.verdict(send_date, credits, checked_by=str(body["pressed_by"]), press_id=press_id,
+                   batch_id=batch_id)
     approval_recorded = False
     approval_error = None
     if v["may_press"]:
         try:
             PL.record_approval(send_date, str(body["pressed_by"]), batch_id,
                                body.get("counts") or {}, board_token=body.get("board_token"),
-                               press_id=press_id)
+                               press_id=press_id, verdict_id=v["verdict_id"])
             approval_recorded = True
         except PL.PressRefused as e:
             # record_approval refuses on its own terms even after a passing verdict - a race, a
