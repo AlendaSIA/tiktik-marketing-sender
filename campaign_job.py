@@ -351,6 +351,11 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                         f"{u} -> {s}" for u, s in links["failed"][:5]))
                 if links.get("missing_utm"):
                     refusals.append("LinksWithoutOurUtm:" + "; ".join(links["missing_utm"][:5]))
+                if links["no_unsubscribe"]:
+                    refusals.append(
+                        f"no_unsubscribe: the letter carries {links['unsubscribe_links']} Brevo "
+                        f"{{{{ unsubscribe }}}} link(s); exactly one is required (rule #2, Brevo's "
+                        f"own unsubscribe). Template builder's fix, not this layer's.")
                 if links["dynamic_unresolved"]:
                     refusals.append("PlaceholdersUnresolved:" +
                                     "; ".join(links["dynamic_unresolved"][:5]))

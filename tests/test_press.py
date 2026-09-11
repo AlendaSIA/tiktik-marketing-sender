@@ -123,16 +123,16 @@ class _PressBase(unittest.TestCase):
 
     def setUp(self):
         self.w = FakeWarehouse()
-        self._saved = (bq.query, bq.scalar, bq.client, bq.assignment_build_id,
+        self._saved = (bq.query, bq.scalar, bq.client, bq.day_build_id,
                        campaign.credit_headroom)
         bq.query = self.w.query
         bq.scalar = self.w.scalar
         bq.client = lambda: self.w
-        bq.assignment_build_id = lambda: BUILD_SHOWN
+        bq.day_build_id = lambda send_date: BUILD_SHOWN
         campaign.credit_headroom = lambda: 100
 
     def tearDown(self):
-        (bq.query, bq.scalar, bq.client, bq.assignment_build_id,
+        (bq.query, bq.scalar, bq.client, bq.day_build_id,
          campaign.credit_headroom) = self._saved
 
     @staticmethod

@@ -668,9 +668,25 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
     missing_utm = []
     if expect_utm:
         missing_utm = sorted(u for u, _ in ok if f"utm_campaign={expect_utm}" not in u)
+    # UNSUBSCRIBE GATE (MAIN, 2026-09-11; rule #2 wants Brevo's OWN unsubscribe). Counted on the
+    # letter as this contact sees it, links in the raw HTML (not inside a block the contact
+    # does not see). EXACTLY one: zero means nobody can leave; two means two footers, which is a
+    # template assembled twice. Either refuses as no_unsubscribe.
+    unsub = unsubscribe_links(html)
     return {"ok": ok, "failed": failed, "dynamic_unresolved": sorted(dynamic),
             "brevo_system": sorted(system), "checked": len(ok) + len(failed),
-            "missing_utm": missing_utm}
+            "missing_utm": missing_utm, "unsubscribe_links": unsub,
+            "no_unsubscribe": unsub != 1}
+
+
+def unsubscribe_links(html_text: str) -> int:
+    """How many hrefs are exactly Brevo's `{{ unsubscribe }}` tag."""
+    n = 0
+    for href in hrefs_in(html_text):
+        m = _WHOLE_TOKEN.match(_html.unescape(href).strip())
+        if m and m.group(1).lower() == "unsubscribe":
+            n += 1
+    return n
 
 
 def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, approval_lookup):

@@ -69,7 +69,9 @@ def live_inputs(send_date: str, credits_available: int, batch_id: str):
     return {
         "build_id_in_mail": batch[0]["assignment_build_id"] if batch else None,
         "credits_needed": int(batch[0]["audience_total"]) if batch else 0,
-        "live_build_id": bq.assignment_build_id(),
+        # The same day's planned rows NOW. The planner never touches a frozen day, so this differs
+        # from the frozen value only if something else wrote the day - a correct refusal.
+        "live_build_id": bq.day_build_id(send_date),
         "overlap_people": overlap,
         "credits_available": int(credits_available),
     }

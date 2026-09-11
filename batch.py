@@ -93,7 +93,9 @@ def build(send_date: str, run_id: str, template_is_active=None, credits: int = 0
     criteria = _criteria(send_date)
     approvals = _approvals()
     overlap = _overlap(send_date)
-    build_id = bq.assignment_build_id()
+    # The DAY's identity (MAIN, 2026-09-11): a hash of THIS send_date's planned rows, frozen now.
+    # Not the week: the nightly rebuild moves the week, and a frozen day is never rebuilt.
+    build_id = bq.day_build_id(send_date)
 
     rows, audience_total, blocking_day = [], 0, []
     for c in campaigns:

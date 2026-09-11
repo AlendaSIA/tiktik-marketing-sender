@@ -162,7 +162,7 @@ PLAN_SQL = f"""
 -- batch. One person may therefore appear twice, once per layer; the ONE_PER_PERSON guard in
 -- main.step4_plan is per (master_key, layer) for exactly that reason.
 WITH assignment AS (
-  SELECT master_key, email, layer, track, email_type, template_id, week_start
+  SELECT master_key, email, layer, track, email_type, template_id, week_start, send_date
   FROM {C.T_ASSIGNMENT}
   WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
     AND layer IN {C.ALL_LAYERS_SQL}
@@ -403,6 +403,18 @@ def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
     return len(payload)
 
 
+T_DAY_BATCH = f"`{C.PROJECT}.{C.CONTROL}.day_batch`"
+
+# The days that are FROZEN: any send_date with a day_batch row. `IS NOT NULL` is not decoration - a
+# single NULL in a NOT IN list makes the predicate NULL for every row, and the planner would then
+# delete and insert nothing at all, silently.
+FROZEN_DAYS_SQL = f"SELECT DISTINCT CAST(send_date AS STRING) AS d FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL"
+
+
+def frozen_send_dates() -> set:
+    return {r["d"] for r in query(FROZEN_DAYS_SQL)}
+
+
 PLANNED_SNAPSHOT_SQL = f"""
 -- Re-derive THIS WEEK's planned audience, in one transaction, so a reader never sees the
 -- table half-emptied. The job runs every night against the same week, so an append-only
@@ -424,7 +436,10 @@ WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
   AND dispatch_state = 'planned'
   AND brevo_campaign_id IS NULL
   AND brevo_message_id IS NULL
-  AND written_by = @written_by;
+  AND written_by = @written_by
+  -- THE FROZEN DAY (MAIN, 2026-09-11): a send_date that already has a day_batch is never touched
+  -- again. What goes out is what Raivis approved; the nightly rebuild never changes a frozen day.
+  AND send_date NOT IN (SELECT send_date FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL);
 
 -- layer is written on every row and comes from the assignment row itself, which the WHERE below
 -- restricts to the two named layers - so it can never be NULL here (MAIN, 2026-09-11).
@@ -451,14 +466,15 @@ JOIN (
   JOIN UNNEST(@utm_campaigns) AS uc WITH OFFSET o2 ON o = o2
 ) p ON p.master_key = a.master_key AND p.layer = a.layer
 WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
-  AND a.layer IN {C.ALL_LAYERS_SQL};
+  AND a.layer IN {C.ALL_LAYERS_SQL}
+  AND a.send_date NOT IN (SELECT send_date FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL);
 
 COMMIT TRANSACTION;
 """
 
 
 def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: list,
-                           layers: list = None,
+                           layers: list = None, send_dates: list = None,
                            written_by: str = "tiktik-marketing-sender") -> int:
     """Freeze who is slated for which letter on which day, at dispatch_state='planned'.
 
@@ -481,6 +497,20 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: l
     Returns the number of rows actually in the table for this snapshot_id - read back, not
     assumed. A master_key in the plan with no assignment row would otherwise vanish silently.
     """
+    if send_dates is None or len(send_dates) != len(master_keys):
+        raise RuntimeError(
+            "send_dates is required, one per plan row: a frozen day is skipped by send_date, and a "
+            "row whose day is unknown cannot be told apart from one that must not be touched.")
+    # FROZEN DAYS ARE DROPPED HERE AS WELL AS IN THE SQL, so the read-back count below compares like
+    # with like: rows for a frozen send_date are neither deleted nor inserted, by design.
+    frozen = frozen_send_dates()
+    keep = [i for i, d in enumerate(send_dates) if str(d)[:10] not in frozen]
+    skipped = len(master_keys) - len(keep)
+    if skipped:
+        log.info("FROZEN_DAYS_SKIPPED rows=%s frozen_dates=%s", skipped, sorted(frozen))
+    master_keys = [master_keys[i] for i in keep]
+    utm_campaigns = [utm_campaigns[i] for i in keep]
+    layers = [layers[i] for i in keep] if layers is not None else None
     if layers is None or not (len(master_keys) == len(utm_campaigns) == len(layers)):
         raise RuntimeError(
             f"master_keys ({len(master_keys)}), layers ({'missing' if layers is None else len(layers)}) "
@@ -592,17 +622,42 @@ def write_utm_dictionary(slug_label_pairs: list,
               "the campaign layer when the draft is built.")
 
 
-def assignment_build_id() -> str:
-    """A CONTENT hash of the week's assignment: who gets which letter on which day.
+def assignment_week_hash() -> str:
+    """A content hash of the WHOLE WEEK's assignment table - a REBUILD TRACE, nothing else.
 
-    Not a timestamp. The approval e-mail records this and the press compares it against the
-    live value, so a rebuild that changes nobody keeps the batch approved while a rebuild that
-    moves one person invalidates it. A timestamp would differ on every run, the press would
-    refuse every time, and the check would be switched off inside a week.
+    Since 2026-09-11 (MAIN) this is NOT the build_id of a day any more. It is written only to
+    mkt_control.assignment_build_log (and sender_run_report.assignment_build_id, a column whose
+    name predates the change) so a rebuild leaves a trace. The day identity that the batch, the
+    relay and the press carry is day_build_id(send_date) below.
     """
-    return str(scalar(ASSIGNMENT_BUILD_ID_SQL) or "")
+    return str(scalar(ASSIGNMENT_WEEK_HASH_SQL) or "")
 
 
+def day_build_id(send_date) -> str:
+    """THE build_id: the identity of ONE send_date's planned audience (MAIN, 2026-09-11).
+
+    MD5 over `master_key|email_type|send_date` of that day's planned rows in
+    campaign_audience_snapshot, in a total order. Frozen into day_batch when the batch is built;
+    the press compares it with the same computation now (AUDIENCE_CHANGED). Because the planner
+    never touches a frozen day, the two differ only if something ELSE wrote that day - which is
+    exactly when the press should refuse. An empty day hashes the empty string (a fixed value),
+    never NULL: the relay requires the field.
+    """
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    return str(scalar(DAY_BUILD_ID_SQL, [P("d", "DATE", str(send_date)[:10])]))
+
+
+DAY_BUILD_ID_SQL = f"""
+        SELECT TO_HEX(MD5(IFNULL(STRING_AGG(
+                 FORMAT('%s|%s|%t', master_key, email_type, send_date)
+                 ORDER BY master_key, email_type), '')))
+        FROM {C.T_AUDIENCE_SNAPSHOT}
+        WHERE send_date = @d AND dispatch_state = 'planned'
+"""
+
+
+# (Since the frozen-day decision of 2026-09-11 this hash is a rebuild TRACE only - see
+# assignment_week_hash(). The notes below explain its order and remain true.)
 # BOTH layers, named, and a TOTAL order (2026-09-11). Until this change the aggregate was ordered
 # by master_key alone. With one row per person that was a total order; since the layer grain
 # (2026-09-10) a person holds up to two rows, the two tie on master_key, and BigQuery does not
@@ -613,7 +668,7 @@ def assignment_build_id() -> str:
 # the order that reproduces it, so no build_id already stored in assignment_build_log, day_batch
 # or press_verdict changes its meaning. The row text itself is unchanged: layer is not added to
 # FORMAT because email_type already differs between the two layers (0 shared values measured).
-ASSIGNMENT_BUILD_ID_SQL = f"""
+ASSIGNMENT_WEEK_HASH_SQL = f"""
         SELECT TO_HEX(MD5(STRING_AGG(
                  FORMAT('%s|%s|%t', master_key, email_type, send_date)
                  ORDER BY master_key, layer DESC)))

@@ -141,7 +141,9 @@ def step2b_assignment():
         return None
     if bq.table_exists(C.T_ASSIGNMENT):
         n = bq.build_assignment()
-        build_id = bq.assignment_build_id()
+        # The WEEK hash is a rebuild trace for assignment_build_log only; the day identity the
+        # batch, relay and press carry is bq.day_build_id(send_date) (MAIN, 2026-09-11).
+        build_id = bq.assignment_week_hash()
         same = bq.log_assignment_build(RUN_ID, build_id, n)
         # n is ROWS: since the layer grain one person can hold two rows. People are logged by
         # log_assignment_build as COUNT(DISTINCT master_key).
@@ -181,6 +183,7 @@ def step4_plan():
         "master_key": r["master_key"],
         "email": r["email"],
         "layer": r["layer"],
+        "send_date": r["send_date"].isoformat() if r["send_date"] else None,
         "track": r["track"],
         "email_type": r["email_type"],
         "template_id": r["template_id"],
@@ -265,7 +268,8 @@ def step4b_planned_snapshot(plan):
 
     written = bq.write_planned_snapshot(
         RUN_ID, [p["master_key"] for p in sendable], slugs,
-        layers=[p["layer"] for p in sendable])
+        layers=[p["layer"] for p in sendable],
+        send_dates=[p["send_date"] for p in sendable])
 
     not_derivable = sum(1 for s in slugs if s is None)
     if not_derivable:

@@ -54,6 +54,9 @@ So RELAY_SECRET_VERSION must be present and must be DIGITS: the literal "latest"
 makes the mistake structurally unavailable rather than merely discouraged. Pinned to 5 on
 2026-09-10, which the relay accepts both during the rotation and after it.
 
+LĪGUMS A, piezīme 11.09 (MAIN): "build_id ir vienas send_date iesaldētās auditorijas identitāte,
+nevis visas nedēļas. Formā nekas nemainās, un releja uzvedība paliek tā pati."
+
 IDEMPOTENCE IS THE RELAY'S, AND IT IS KEYED ON build_id. The same build_id pushed twice is the same
 day stored twice over one row. A DIFFERENT build_id after a mail has gone out means the day was
 recomputed: the relay voids the old token and sends a short "day recomputed" mail. This side's only

@@ -75,7 +75,7 @@ class AssignmentReadsNameTheirLayer(unittest.TestCase):
         self.assertTrue(readers, "found no SQL reading the assignment - the scan is broken")
         expected = {"ASSIGNMENT_UNKNOWN_LAYER_SQL", "ASSIGNMENT_LEAKED_SQL",
                     "ASSIGNMENT_ROWS_SQL", "PLAN_SQL", "PLANNED_SNAPSHOT_SQL",
-                    "ASSIGNMENT_BUILD_ID_SQL", "ASSIGNMENT_PEOPLE_SQL",
+                    "ASSIGNMENT_WEEK_HASH_SQL", "ASSIGNMENT_PEOPLE_SQL",
                     "DEFAULT_DAY_ROWS_SQL", "COVERAGE_SQL"}
         self.assertEqual(set(readers), expected,
                          "a read of contact_weekly_assignment was added or removed; give it an "
@@ -127,8 +127,8 @@ class AssignmentReadsNameTheirLayer(unittest.TestCase):
         self.assertIn("layer NOT IN ('commercial', 'educational')", sql)
         self.assertNotIn(PRED, sql)
 
-    def test_build_id_is_both_layers_with_a_total_order(self):
-        sql = bq.ASSIGNMENT_BUILD_ID_SQL
+    def test_week_hash_is_both_layers_with_a_total_order(self):
+        sql = bq.ASSIGNMENT_WEEK_HASH_SQL
         self.assertIn("ORDER BY master_key, layer DESC", sql)
         self.assertIn("FORMAT('%s|%s|%t', master_key, email_type, send_date)", sql)
         self.assertIn(PRED, sql)
@@ -183,9 +183,10 @@ class SnapshotWritersFillLayer(unittest.TestCase):
         bq.query = lambda sql, params=None: self.calls.append((sql, params)) or []
         bq.scalar = lambda sql, params=None: 2
         n = bq.write_planned_snapshot("s1", ["m1", "m1"], ["u1", "u2"],
-                                      layers=["commercial", "educational"])
+                                      layers=["commercial", "educational"],
+                                      send_dates=["2026-09-08", "2026-09-10"])
         self.assertEqual(n, 2)
-        sql, params = self.calls[0]
+        sql, params = [c for c in self.calls if c[0] is bq.PLANNED_SNAPSHOT_SQL][0]
         self.assertEqual(_param(params, "layers"), ["commercial", "educational"])
         self.assertEqual(_param(params, "master_keys"), ["m1", "m1"])
 
@@ -247,7 +248,9 @@ class PlanGuardIsPerLayer(unittest.TestCase):
 
     @staticmethod
     def _row(mk, layer):
+        import datetime as _dt
         return {"week_start": None, "master_key": mk, "email": f"{mk}@x.lv", "layer": layer,
+                "send_date": _dt.date(2026, 9, 8),
                 "track": "t", "email_type": f"e-{layer}", "template_id": 1, "decision": "SEND",
                 "decision_if_enabled": "READY", "lifecycle_stage": "active", "full_name": "N",
                 "gender_greeting": "", "language": "lv", "hero_product_name": None,
