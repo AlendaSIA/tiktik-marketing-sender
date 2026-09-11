@@ -94,8 +94,15 @@ gcloud run jobs update tiktik-marketing-sender \
   --image=europe-west1-docker.pkg.dev/$PROJECT/jobs/tiktik-marketing-sender:$SHORT_SHA
 ```
 
-**No scheduler yet, on purpose.** Scheduling is a separate step and comes only after a dry
-run reports `orphans_mailable = 0` and `duplicate_sends = 0`.
+The sender itself runs from Cloud Scheduler `tiktik-marketing-sender-daily` (07:30 Europe/Riga).
+
+**The day batch (contract A) runs from Cloud Scheduler `tiktik-campaign-batch-daily`, 15:00
+Europe/Riga** (since 2026-09-11; before that NOTHING scheduled it - every push was a hand-run
+execution). It executes the job `tiktik-campaign-layer` with one override, `MODE=batch`; the
+target `RELAY_INGEST_URL` and `RELAY_SECRET_VERSION` live permanently in the job's own env, and
+`SEND_DATE` must NOT (the batch defaults to tomorrow in Riga). A batch without a target, a
+batch for today or the past, or a push the relay did not store exits non-zero, so the
+failed-execution alert fires; nothing is frozen when the target is missing.
 
 ## Home in the tree
 

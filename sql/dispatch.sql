@@ -124,7 +124,7 @@ HAVING COUNT(DISTINCT email_type) > 1 OR COUNT(*) > 1;
 CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.assignment_build_log` (
   built_at        TIMESTAMP,
   run_id          STRING,
-  build_id        STRING,
+  assignment_week_hash STRING,  -- renamed from build_id 2026-09-11 (MAIN 18:50): build_id is only the day identity
   rows_written    INT64,
   distinct_people INT64,
   same_as_previous BOOL

@@ -61,6 +61,14 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
   ADD COLUMN IF NOT EXISTS day_list_overlap      INT64,
   ADD COLUMN IF NOT EXISTS assignment_build_id   STRING;
 
+-- Applied 2026-09-11 (MAIN 18:50, "viens nosaukums - viena nozime"). Both columns hold the WEEK
+-- hash, a rebuild trace; the word build_id is kept ONLY for the day identity (day_batch,
+-- press_verdict, send_approval, contract A).
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.sender_run_report`
+  RENAME COLUMN assignment_build_id TO assignment_week_hash;
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.assignment_build_log`
+  RENAME COLUMN build_id TO assignment_week_hash;
+
 -- Applied 2026-09-11 with the press-cycle fix (MAIN's decision of the same day). The press is the
 -- approval; the approval row must name the batch the human was SHOWN, because the send-time gate
 -- (press.send_gate) refuses without an approval for exactly this batch_id AND build_id, and the

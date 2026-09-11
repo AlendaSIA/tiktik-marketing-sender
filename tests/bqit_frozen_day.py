@@ -50,8 +50,9 @@ class FrozenDayLive(unittest.TestCase):
             bq.query(f"CREATE TABLE `{C.PROJECT}.{SCRATCH}.{name}` "
                      f"LIKE `{PROD_PROJECT}.{src}.{name}`")
         r = bq.query("SELECT CAST(DATE_ADD(CURRENT_DATE(), INTERVAL 1 DAY) AS STRING) d1, "
-                     "CAST(DATE_ADD(CURRENT_DATE(), INTERVAL 2 DAY) AS STRING) d2")[0]
-        cls.D1, cls.D2 = r["d1"], r["d2"]
+                     "CAST(DATE_ADD(CURRENT_DATE(), INTERVAL 2 DAY) AS STRING) d2, "
+                     "CAST(DATE_ADD(CURRENT_DATE(), INTERVAL 3 DAY) AS STRING) d3")[0]
+        cls.D1, cls.D2, cls.D3 = r["d1"], r["d2"], r["d3"]
 
     @classmethod
     def tearDownClass(cls):
@@ -99,8 +100,8 @@ class FrozenDayLive(unittest.TestCase):
         # Freeze D1 exactly as batch.py does: a day_batch row whose build_id is the day hash.
         frozen_id = bq.day_build_id(D1)
         bq.query(f"INSERT INTO `{C.PROJECT}.{SCRATCH}.day_batch` (batch_id, send_date, built_at, "
-                 f"built_by, assignment_build_id) VALUES ('b1', DATE '{D1}', CURRENT_TIMESTAMP(), "
-                 f"'bqit', '{frozen_id}')")
+                 f"built_by, assignment_build_id, audience_total) VALUES ('b1', DATE '{D1}', "
+                 f"CURRENT_TIMESTAMP(), 'bqit', '{frozen_id}', 2)")
         d1_before, d2_before = self._day_json(D1), self._day_json(D2)
         self.assertEqual(len(d1_before), 2)
 
@@ -129,6 +130,23 @@ class FrozenDayLive(unittest.TestCase):
                  f"WHERE send_date = DATE '{D1}' AND master_key = 'k2'")
         self.assertNotEqual(bq.day_build_id(D1), frozen_id)
         self.assertFalse(self._press(frozen_id, D1)["AUDIENCE_CHANGED"]["passed"])
+
+    def test_z_empty_frozen_day_stays_writable(self):
+        """MAIN 18:50: a day frozen EMPTY is not frozen. The rebuild writes its rows, the day's
+        build_id moves off the empty hash, and the press refuses the zero day the human saw."""
+        C, bq, D3 = self.C, self.bq, self.D3
+        empty_id = bq.day_build_id(D3)
+        self.assertEqual(empty_id, "d41d8cd98f00b204e9800998ecf8427e")   # MD5 of ''
+        bq.query(f"INSERT INTO `{C.PROJECT}.{SCRATCH}.day_batch` (batch_id, send_date, built_at, "
+                 f"built_by, assignment_build_id, audience_total) VALUES ('b3', DATE '{D3}', "
+                 f"CURRENT_TIMESTAMP(), 'bqit', '{empty_id}', 0)")
+        self.assertNotIn(D3, bq.frozen_send_dates())
+        rows = [("k7", "commercial", D3, "reorder_1"), ("k8", "educational", D3, "cimdi_info_2")]
+        self._assign(rows)
+        self.assertEqual(self._plan("run3", rows), 2)                    # rows ARE written
+        self.assertEqual(len(self._day_json(D3)), 2)
+        self.assertNotEqual(bq.day_build_id(D3), empty_id)
+        self.assertFalse(self._press(empty_id, D3)["AUDIENCE_CHANGED"]["passed"])
 
 
 if __name__ == "__main__":

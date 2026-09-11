@@ -143,19 +143,19 @@ def step2b_assignment():
         n = bq.build_assignment()
         # The WEEK hash is a rebuild trace for assignment_build_log only; the day identity the
         # batch, relay and press carry is bq.day_build_id(send_date) (MAIN, 2026-09-11).
-        build_id = bq.assignment_week_hash()
-        same = bq.log_assignment_build(RUN_ID, build_id, n)
+        week_hash = bq.assignment_week_hash()
+        same = bq.log_assignment_build(RUN_ID, week_hash, n)
         # n is ROWS: since the layer grain one person can hold two rows. People are logged by
         # log_assignment_build as COUNT(DISTINCT master_key).
-        log.info("ASSIGNMENT_REBUILT rows=%s build_id=%s same_as_previous=%s",
-                 n, build_id, same)
+        log.info("ASSIGNMENT_REBUILT rows=%s assignment_week_hash=%s same_as_previous=%s",
+                 n, week_hash, same)
         if not same:
             # Not an error - most rebuilds legitimately change something. It is a WARNING
             # because any approval already sent for this week was written from the previous
             # build and is now stale, and nothing else in the system says so out loud.
-            log.warning("ASSIGNMENT_CHANGED build_id=%s - any approval e-mail already sent for "
-                        "this week was written from a different audience", build_id)
-        return build_id
+            log.warning("ASSIGNMENT_CHANGED assignment_week_hash=%s - the week moved; frozen days "
+                        "are untouched, open days are re-planned", week_hash)
+        return week_hash
     return None
 
 
@@ -421,7 +421,7 @@ def main() -> int:
     try:
         report["identity_age_h"] = step1_identity_guard()
         report["snapshot_age_h"] = step2_refresh_suppression()
-        report["assignment_build_id"] = step2b_assignment()
+        report["assignment_week_hash"] = step2b_assignment()
         cov = step3_coverage()
         report.update({k: v for k, v in cov.items()})
         plan = step4_plan()

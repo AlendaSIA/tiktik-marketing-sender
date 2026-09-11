@@ -405,10 +405,17 @@ def write_audience_snapshot(snapshot_id: str, send_date: str, rows: list,
 
 T_DAY_BATCH = f"`{C.PROJECT}.{C.CONTROL}.day_batch`"
 
-# The days that are FROZEN: any send_date with a day_batch row. `IS NOT NULL` is not decoration - a
-# single NULL in a NOT IN list makes the predicate NULL for every row, and the planner would then
-# delete and insert nothing at all, silently.
-FROZEN_DAYS_SQL = f"SELECT DISTINCT CAST(send_date AS STRING) AS d FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL"
+# The days that are FROZEN: a send_date with a day_batch that froze MORE THAN ZERO rows (MAIN,
+# 2026-09-11 18:50). A day frozen EMPTY is not frozen: it stays writable, and if rows appear in it
+# later its build_id changes and the relay treats it as "day recalculated" (contract A, token
+# revoked) - correct, because the human was shown a zero day. audience_total is what that human was
+# shown. `send_date IS NOT NULL` is not decoration - a single NULL in a NOT IN list makes the
+# predicate NULL for every row, and the planner would then delete and insert nothing, silently.
+# ONE fragment, used by the Python filter and by both the DELETE and the INSERT, so the three can
+# never disagree about which days are frozen.
+FROZEN_DATES_SUBQUERY = (f"SELECT send_date FROM {T_DAY_BATCH} "
+                         f"WHERE send_date IS NOT NULL AND COALESCE(audience_total, 0) > 0")
+FROZEN_DAYS_SQL = f"SELECT DISTINCT CAST(send_date AS STRING) AS d FROM ({FROZEN_DATES_SUBQUERY})"
 
 
 def frozen_send_dates() -> set:
@@ -437,9 +444,10 @@ WHERE week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
   AND brevo_campaign_id IS NULL
   AND brevo_message_id IS NULL
   AND written_by = @written_by
-  -- THE FROZEN DAY (MAIN, 2026-09-11): a send_date that already has a day_batch is never touched
+  -- THE FROZEN DAY (MAIN, 2026-09-11): a send_date whose day_batch froze rows is never touched
   -- again. What goes out is what Raivis approved; the nightly rebuild never changes a frozen day.
-  AND send_date NOT IN (SELECT send_date FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL);
+  -- A day frozen EMPTY stays writable (MAIN, 18:50) - see FROZEN_DATES_SUBQUERY.
+  AND send_date NOT IN ({FROZEN_DATES_SUBQUERY});
 
 -- layer is written on every row and comes from the assignment row itself, which the WHERE below
 -- restricts to the two named layers - so it can never be NULL here (MAIN, 2026-09-11).
@@ -467,7 +475,7 @@ JOIN (
 ) p ON p.master_key = a.master_key AND p.layer = a.layer
 WHERE a.week_start = DATE_TRUNC(CURRENT_DATE(), WEEK(MONDAY))
   AND a.layer IN {C.ALL_LAYERS_SQL}
-  AND a.send_date NOT IN (SELECT send_date FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL);
+  AND a.send_date NOT IN ({FROZEN_DATES_SUBQUERY});
 
 COMMIT TRANSACTION;
 """
@@ -626,9 +634,10 @@ def assignment_week_hash() -> str:
     """A content hash of the WHOLE WEEK's assignment table - a REBUILD TRACE, nothing else.
 
     Since 2026-09-11 (MAIN) this is NOT the build_id of a day any more. It is written only to
-    mkt_control.assignment_build_log (and sender_run_report.assignment_build_id, a column whose
-    name predates the change) so a rebuild leaves a trace. The day identity that the batch, the
-    relay and the press carry is day_build_id(send_date) below.
+    mkt_control.assignment_build_log.assignment_week_hash and
+    sender_run_report.assignment_week_hash (both renamed from *build_id* on 2026-09-11, MAIN 18:50:
+    one name, one meaning - `build_id` is ONLY the day identity) so a rebuild leaves a trace. The
+    day identity that the batch, the relay and the press carry is day_build_id(send_date) below.
     """
     return str(scalar(ASSIGNMENT_WEEK_HASH_SQL) or "")
 
@@ -685,7 +694,7 @@ ASSIGNMENT_PEOPLE_SQL = f"""
           AND layer IN {C.ALL_LAYERS_SQL}"""
 
 
-def log_assignment_build(run_id: str, build_id: str, rows: int) -> bool:
+def log_assignment_build(run_id: str, week_hash: str, rows: int) -> bool:
     """Append the rebuild to the build log and answer whether it changed anything.
 
     contact_weekly_assignment is CREATE OR REPLACEd every run and built_at is overwritten with
@@ -694,12 +703,12 @@ def log_assignment_build(run_id: str, build_id: str, rows: int) -> bool:
     12:40 dry run - and neither is visible in the table today.
     """
     previous = scalar(
-        f"SELECT build_id FROM {C.T_BUILD_LOG} ORDER BY built_at DESC LIMIT 1")
-    same = (previous == build_id)
+        f"SELECT assignment_week_hash FROM {C.T_BUILD_LOG} ORDER BY built_at DESC LIMIT 1")
+    same = (previous == week_hash)
     people = int(scalar(ASSIGNMENT_PEOPLE_SQL) or 0)
     errors = client().insert_rows_json(C.T_BUILD_LOG.strip("`"), [{
         "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "run_id": run_id, "build_id": build_id,
+        "run_id": run_id, "assignment_week_hash": week_hash,
         "rows_written": rows, "distinct_people": people,
         "same_as_previous": same,
     }])

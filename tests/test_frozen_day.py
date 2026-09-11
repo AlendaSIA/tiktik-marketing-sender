@@ -132,3 +132,47 @@ class DayIdentity(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EmptyFrozenDayIsNotFrozen(unittest.TestCase):
+    """MAIN 2026-09-11 18:50: only a day whose frozen batch holds MORE THAN ZERO rows is frozen."""
+
+    def test_one_fragment_requires_rows(self):
+        self.assertIn("COALESCE(audience_total, 0) > 0", bq.FROZEN_DATES_SUBQUERY)
+        self.assertIn("send_date IS NOT NULL", bq.FROZEN_DATES_SUBQUERY)
+
+    def test_delete_insert_and_python_filter_share_it(self):
+        sql = bq.PLANNED_SNAPSHOT_SQL
+        delete = sql[sql.index("DELETE FROM"):sql.index("INSERT INTO")]
+        insert = sql[sql.index("INSERT INTO"):]
+        frag = f"NOT IN ({bq.FROZEN_DATES_SUBQUERY})"
+        self.assertIn(frag, delete)
+        self.assertIn(frag, insert)
+        self.assertIn(bq.FROZEN_DATES_SUBQUERY, bq.FROZEN_DAYS_SQL)
+        # no second, older spelling left anywhere
+        self.assertNotIn("FROM {T_DAY_BATCH} WHERE send_date IS NOT NULL)".replace(
+            "{T_DAY_BATCH}", bq.T_DAY_BATCH), sql)
+
+
+class OneNameOneMeaning(unittest.TestCase):
+    """MAIN 2026-09-11 18:50: the week hash is assignment_week_hash; build_id is only the day."""
+
+    def _src(self, name):
+        with open(os.path.join(ROOT, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_build_log_reads_and_writes_the_renamed_column(self):
+        src = self._src("bq.py")
+        self.assertIn("SELECT assignment_week_hash FROM {C.T_BUILD_LOG}", src)
+        self.assertIn('"assignment_week_hash": week_hash', src)
+        self.assertNotIn('"build_id": build_id', src)
+
+    def test_run_report_key_is_renamed(self):
+        src = self._src("main.py")
+        self.assertIn('report["assignment_week_hash"] = step2b_assignment()', src)
+        self.assertNotIn("assignment_build_id", src)
+
+    def test_the_rename_ddl_is_on_record(self):
+        ddl = self._src("sql/schema.sql")
+        self.assertIn("RENAME COLUMN assignment_build_id TO assignment_week_hash", ddl)
+        self.assertIn("RENAME COLUMN build_id TO assignment_week_hash", ddl)

@@ -119,6 +119,36 @@ def _frozen(batch_id: str) -> dict:
     return {"head": dict(head[0]), "campaigns": [dict(c) for c in camps]}
 
 
+class PushPathBroken(RuntimeError):
+    """The day cannot reach the relay. An ERROR - exit code != 0 - never a quiet refusal.
+
+    MAIN, 2026-09-11 18:50: "batch rezims bez RELAY_INGEST_URL ir kluda (izejas kods != 0, un
+    trauksme to noker), nevis kluss 'nekas netika nosutits'". Until this change a batch without a
+    target, or a push the relay did not store, ended as status=refused and exit 0: a green execution,
+    and the failed-execution alert (policy 13483623152752078293) never saw it. A frozen day nobody
+    received looks exactly like a day with nothing to hand over, so it has to be loud.
+    """
+
+
+class BatchDayNotAhead(RuntimeError):
+    """A batch for today or the past. The day button is the day BEFORE; a batch for a day that has
+    already begun can never be pressed, and freezing it would only block the planner for nothing.
+    Guards against a SEND_DATE left pinned in the job's environment (it held 2026-09-10 until
+    2026-09-11), which would silently rebuild the same old day every night."""
+
+
+def _require_push_target(mode: str):
+    if not os.environ.get(PUSH.URL_ENV, "").strip():
+        raise PushPathBroken(
+            f"{mode}: {PUSH.URL_ENV} is not set, so nothing could be handed to the relay. Refused "
+            f"BEFORE anything is frozen: a batch that cannot be pushed must not exist.")
+
+
+def _riga_today() -> dt.date:
+    from zoneinfo import ZoneInfo
+    return dt.datetime.now(ZoneInfo("Europe/Riga")).date()
+
+
 def _record_push(r: dict, refusals: list, pushed: dict):
     r["push_status"] = pushed["status"]
     r["push_http"] = pushed["http_status"]
@@ -127,6 +157,7 @@ def _record_push(r: dict, refusals: list, pushed: dict):
              pushed["status"], pushed["http_status"], pushed.get("sha256"), pushed["detail"])
     if pushed["status"] != PUSH.SENT:
         refusals.append(f"PushNotDelivered:{pushed['status']}:{pushed['detail'][:300]}")
+        raise PushPathBroken(f"PushNotDelivered:{pushed['status']}:{pushed['detail'][:600]}")
 
 
 def main() -> int:  # noqa: PLR0912, PLR0915
@@ -136,6 +167,18 @@ def main() -> int:  # noqa: PLR0912, PLR0915
          "list_id": TEST_LIST_ID, "template_id": TEST_TEMPLATE_ID, "refusals": ""}
     refusals = []
     try:
+        if mode in ("batch", "repush"):
+            _require_push_target(mode)
+        if mode == "batch":
+            # Decided BEFORE the Brevo credential and before anything is frozen: both guards are
+            # about whether this run may exist at all.
+            batch_send_date = os.environ.get("SEND_DATE") or str(
+                _riga_today() + dt.timedelta(days=1))
+            if dt.date.fromisoformat(batch_send_date) <= _riga_today():
+                raise BatchDayNotAhead(
+                    f"batch for {batch_send_date}, but today in Riga is {_riga_today()}: the day "
+                    f"button is the day BEFORE. Nothing frozen, nothing pushed.")
+
         if mode == "secret-check":
             # Deliberately BEFORE the Brevo credential: the whole point is to answer "what can this
             # identity read", and failing on an unrelated secret would answer a different question.
@@ -225,8 +268,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             refusals.append(f"TemplateUsesDiscount:{','.join(found)}")
 
         if mode == "batch":
-            send_date = os.environ.get("SEND_DATE") or str(
-                dt.date.today() + dt.timedelta(days=1))
+            send_date = batch_send_date
             out = B.build(send_date, RUN_ID,
                           template_is_active=C.template_is_active,
                           credits=r["brevo_credits"])
@@ -405,6 +447,12 @@ def main() -> int:  # noqa: PLR0912, PLR0915
         # which is a different thing from a template refusing, and a reader of the report should be
         # able to tell them apart without opening the text.
         r.update(status="refused", refusals=f"PressRefused: {str(e)[:600]}")
+    except PushPathBroken as e:
+        r.update(status="push_failed", error=str(e)[:900])
+        log.error("PUSH_PATH_BROKEN %s", e)
+    except BatchDayNotAhead as e:
+        r.update(status="error", error=str(e)[:900])
+        log.error("BATCH_DAY_NOT_AHEAD %s", e)
     except C.CredentialUnavailable as e:
         r.update(status="credential_unavailable", error=str(e)[:900])
     except Exception as e:  # noqa: BLE001
