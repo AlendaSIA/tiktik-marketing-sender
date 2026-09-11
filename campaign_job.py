@@ -48,6 +48,7 @@ import campaign as C
 import gsecret
 import press_live as PL
 import push as PUSH
+import utm as UTM
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -269,6 +270,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             body = {"press_id": os.environ.get("PRESS_ID", ""),
                     "batch_id": os.environ.get("PRESS_BATCH_ID", ""),
                     "build_id": os.environ.get("PRESS_BUILD_ID", ""),
+                    "send_date": os.environ.get("SEND_DATE", ""),
                     "counts": json.loads(os.environ.get("PRESS_COUNTS", "{}")),
                     "pressed_by": os.environ.get("PRESSED_BY", "selftest"),
                     "pressed_at": dt.datetime.now(dt.timezone.utc).isoformat()}
@@ -318,15 +320,28 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             if r["computed_audience"] == 0:
                 refusals.append("EmptyAudience")
             if not refusals:
-                cid = C.create_draft(
+                # UTM SEAM v1: the week comes from utm.py for the day the draft is for, never from
+                # the template. The draft is built from the template's HTML after replacement.
+                week = UTM.iso_week(dt.date.fromisoformat(
+                    os.environ.get("SEND_DATE") or dt.date.today().isoformat()))
+                email_type = os.environ.get("DRAFT_EMAIL_TYPE", "").strip()
+                if not email_type:
+                    raise C.UtmSeamRefused(
+                        "DRAFT_EMAIL_TYPE is required: it is the internal_label of every "
+                        "utm_dictionary row this draft writes, and a decode row without one "
+                        "decodes nothing.")
+                d = C.create_draft(
                     approved_attributes=approved,
-                    name=f"[TEST {started:%Y-%m-%d}] campaign layer draft, list {TEST_LIST_ID}",
-                    subject="Tests — kampanu slanis (melnraksts, netiek sutits)",
-                    list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID,
-                    utm_campaign=os.environ.get("TEST_UTM", "2026-w37-tests"))
+                    name=f"[TEST {started:%Y-%m-%d}] {email_type} {week} tpl {TEST_TEMPLATE_ID}, "
+                         f"list {TEST_LIST_ID}",
+                    list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID, week=week)
+                cid = d["id"]
                 r["draft_campaign_id"] = cid
-                links = C.check_links(cid, as_contact=TEST_CONTACT,
-                                      expect_utm=os.environ.get("TEST_UTM", "2026-w37-tests"))
+                r["note"] = (f"draft {cid} from template {TEST_TEMPLATE_ID} "
+                             f"(active={d['template_active']}) week {week}, "
+                             f"{len(d['pairs'])} utm pair(s): "
+                             + ", ".join(f"{c}/{ct or '-'}" for c, ct in d["pairs"]))
+                links = C.check_links(cid, as_contact=TEST_CONTACT, expect_utm=f"{week}-")
                 r["links_ok"] = len(links["ok"])
                 r["links_failed"] = len(links["failed"])
                 r["links_unresolved"] = len(links["dynamic_unresolved"])
@@ -352,6 +367,21 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                 log.info("DRAFT id=%s links ok=%s failed=%s unresolved=%s system=%s checked=%s",
                          cid, r["links_ok"], r["links_failed"], r["links_unresolved"],
                          r["links_system"], links["checked"])
+                log.info("DRAFT_LINKS_OK %s", [f"{u} -> {st}" for u, st in links["ok"]])
+                # utm_dictionary: written ONLY here (and by the planner's whole-campaign row), MERGE,
+                # one row per pair - and only for a draft that passed, so a refused letter leaves
+                # no decode row for a campaign that will not exist.
+                if not refusals:
+                    n = bq.merge_utm_rows([(c, ct, email_type) for c, ct in d["pairs"]],
+                                          added_by="tiktik-campaign-layer",
+                                          notes=f"per-link decode row from template "
+                                                f"{TEST_TEMPLATE_ID}, UTM seam v1")
+                    r["note"] += f" | utm_dictionary rows present for these pairs: {n}"
+                if os.environ.get("DELETE_DRAFT_AFTER", "").lower() == "true":
+                    gone = C.delete_draft(cid)
+                    r["note"] += f" | draft {cid} deleted, GET answers 404: {gone}"
+                    if not gone:
+                        refusals.append(f"DraftNotDeleted:{cid}")
 
         r["refusals"] = " | ".join(refusals)
         r["status"] = "refused" if refusals else "ok"
@@ -361,7 +391,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915
             "This layer creates drafts only; send_now() raises unconditionally. "
             "Nothing here can reach a customer.")
     except (C.TemplateInactive, C.TemplateUsesParams, C.TemplateUsesUnapprovedAttribute,
-            C.TemplateUsesDiscount, C.ListNotAllowed, C.EmptyAudience) as e:
+            C.TemplateUsesDiscount, C.ListNotAllowed, C.EmptyAudience, C.UtmSeamRefused) as e:
         # A structural refusal is a REPORTED outcome, not a crash: it is the guard doing its job,
         # and it must land in the report with its reason rather than as a stack trace.
         r.update(status="refused", refusals=f"{type(e).__name__}: {str(e)[:600]}")

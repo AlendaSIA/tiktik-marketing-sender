@@ -99,7 +99,7 @@ def verdict_by_press_id(press_id: str):
     """
     from google.cloud.bigquery import ScalarQueryParameter as P
     rows = bq.query(
-        f"SELECT verdict_id, send_date, may_press, checks_json, refusal_text_lv, checked_at "
+        f"SELECT verdict_id, send_date, may_press, checks_json, refusal_text_lv, checked_at, batch_id "
         f"FROM `{T_VERDICT}` WHERE press_id = @p ORDER BY checked_at ASC LIMIT 1",
         [P("p", "STRING", press_id)])
     return dict(rows[0]) if rows else None

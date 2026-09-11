@@ -69,7 +69,38 @@ REPORT = f"{CFG.PROJECT}.{CFG.CONTROL}.campaign_run_report"
 SECRET_HEADER = "X-Press-Secret"
 SECRET_ID = "press_endpoint_secret"
 MAX_BODY = 64 * 1024
-REQUIRED = ("press_id", "batch_id", "build_id", "counts", "pressed_by", "pressed_at")
+# CONTRACT B v2, issued by MAIN on 2026-09-11 in the same words to both sides (quoted verbatim in
+# README.md). The body carries EXACTLY these keys; X-Press-Id is not sent and is not read;
+# board_token is not sent; shown_in_mail does not exist (it is `counts`).
+REQUIRED = ("press_id", "batch_id", "build_id", "send_date", "pressed_by", "pressed_at", "counts")
+# The answer carries EXACTLY these keys on every verdict (HTTP 200), fresh or replayed. The relay
+# counts a press as approved ONLY when may_press === true AND approval_recorded === true.
+ANSWER_KEYS = ("verdict_id", "press_id", "batch_id", "send_date", "may_press",
+               "approval_recorded", "checks", "refusal_text_lv", "replayed")
+_DATE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _field_errors(body: dict):
+    """Types the contract names. Presence is checked separately; this is shape."""
+    bad = []
+    if not isinstance(body.get("press_id"), str):
+        bad.append("press_id must be a string")
+    if not _DATE.match(str(body.get("send_date"))):
+        bad.append("send_date must be YYYY-MM-DD")
+    try:
+        ts = dt.datetime.fromisoformat(str(body.get("pressed_at")).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            bad.append("pressed_at must carry its zone")
+    except ValueError:
+        bad.append("pressed_at must be ISO-8601")
+    if not isinstance(body.get("counts"), dict):
+        bad.append("counts must be an object")
+    return bad
+
+
+def _answer(**kw) -> dict:
+    """The contract's answer, and nothing else - two wordings of one answer is the defect class."""
+    return {k: kw[k] for k in ANSWER_KEYS}
 
 
 def _record(*, status, refusals="", note="", batch_id=None, press_id=None, run_id=None):
@@ -118,6 +149,11 @@ def handle_press(body: dict) -> tuple:  # noqa: PLR0911
         _record(status="refused", refusals="IncompletePress:" + ",".join(missing),
                 batch_id=body.get("batch_id"), press_id=body.get("press_id"))
         return 400, r
+    bad = _field_errors(body)
+    if bad:
+        _record(status="refused", refusals="BadPressField:" + "; ".join(bad)[:300],
+                batch_id=str(body.get("batch_id")), press_id=str(body.get("press_id")))
+        return 400, {"error": "BAD_PRESS_FIELD", "detail": "; ".join(bad)}
 
     press_id = str(body["press_id"])
 
@@ -131,12 +167,12 @@ def handle_press(body: dict) -> tuple:  # noqa: PLR0911
         except Exception:  # noqa: BLE001
             checks = []
         approved = PL.approval_by_press_id(press_id)
-        answer = {"verdict_id": prior["verdict_id"], "send_date": str(prior["send_date"]),
-                  "batch_id": str(body["batch_id"]), "press_id": press_id,
-                  "may_press": bool(prior["may_press"]) and bool(approved),
-                  "verdict_may_press": bool(prior["may_press"]),
-                  "approval_recorded": bool(approved), "checks": checks,
-                  "refusal_text_lv": prior["refusal_text_lv"] or "", "replayed": True}
+        answer = _answer(verdict_id=prior["verdict_id"], send_date=str(prior["send_date"]),
+                         batch_id=str(prior.get("batch_id") or body["batch_id"]),
+                         press_id=press_id,
+                         may_press=bool(prior["may_press"]) and bool(approved),
+                         approval_recorded=bool(approved), checks=checks,
+                         refusal_text_lv=prior["refusal_text_lv"] or "", replayed=True)
         _record(status="ok" if answer["may_press"] else "refused",
                 refusals="" if answer["may_press"] else "PressReplayedRefusal",
                 batch_id=str(body["batch_id"]), press_id=press_id,
@@ -204,17 +240,13 @@ def handle_press(body: dict) -> tuple:  # noqa: PLR0911
             # revoked row. Its refusal is the answer, and it is reported as one rather than as a
             # crash, because the relay has to show a human something.
             approval_error = str(e)
-    answer = {
-        "verdict_id": v["verdict_id"], "send_date": send_date, "batch_id": batch_id,
-        "press_id": press_id,
-        "may_press": v["may_press"] and approval_recorded,
-        "verdict_may_press": v["may_press"],
-        "approval_recorded": approval_recorded,
-        "checks": v["checks"],
-        "refusal_text_lv": v["refusal_text_lv"] or (approval_error or ""),
-        "credits_available": credits,
-        "replayed": False,
-    }
+    answer = _answer(
+        verdict_id=v["verdict_id"], send_date=send_date, batch_id=batch_id, press_id=press_id,
+        may_press=v["may_press"] and approval_recorded,
+        approval_recorded=approval_recorded,
+        checks=v["checks"],
+        refusal_text_lv=v["refusal_text_lv"] or (approval_error or ""),
+        replayed=False)
     failed = ",".join(c["id"] for c in v["checks"] if not c["passed"])
     _record(status="ok" if answer["may_press"] else "refused",
             refusals=("PressRefused:" + failed) if failed else (

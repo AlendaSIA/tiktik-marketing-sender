@@ -26,10 +26,12 @@ THREE LAYERS, and they are deliberately not the same kind of thing:
      rejected this address" and destructive for "this must not happen", where one structural
      refusal becomes 6 156 quiet failures and a run that still exits 0.
 """
+import html as _html
 import json
 import logging
 import os
 import re
+import urllib.error
 import urllib.request
 
 log = logging.getLogger("campaign")
@@ -279,18 +281,25 @@ def template_attributes(template_id: int):
     count looks implausibly low is worth a human's eye.
     """
     t = template(template_id)
-    blob = (t.get("htmlContent") or "") + " " + (t.get("subject") or "")
+    return attributes_in((t.get("htmlContent") or "") + " " + (t.get("subject") or ""))
+
+
+def attributes_in(blob: str):
+    """Contact attributes referenced in a piece of HTML/subject text (same rules as above)."""
     found = set()
     for rx in _ATTR_REFS:
-        found.update(rx.findall(blob))
+        found.update(rx.findall(blob or ""))
     return sorted(found)
 
 
 def template_params(template_id: int):
     """Liquid `params.*` references. Any of them makes the template unusable as a campaign."""
     t = template(template_id)
-    blob = (t.get("htmlContent") or "") + " " + (t.get("subject") or "")
-    return sorted({m.rstrip(".") for m in _PARAM_REF.findall(blob)})
+    return params_in((t.get("htmlContent") or "") + " " + (t.get("subject") or ""))
+
+
+def params_in(blob: str):
+    return sorted({m.rstrip(".") for m in _PARAM_REF.findall(blob or "")})
 
 
 def discount_shaped_pairs(attributes):
@@ -360,32 +369,96 @@ def credit_headroom() -> int:
     return 0
 
 
-def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_campaign: str,
-                 approved_attributes, reply_to: str = "info@tiktik.lv") -> int:  # noqa: PLR0913
-    """Create the campaign as a DRAFT. Never scheduled, never sent, from here.
+# --------------------------------------------------------------------------- #
+# UTM SEAM v1 (MAIN, 2026-09-11) - issued in the same words to the template builder:
+#   "Veidnes saitēs utm_campaign vērtība ir __UTM_WEEK__-<bāze>, kur <bāze> ir veidnes pastāvīgā,
+#    klientam droša daļa (piemēram, papildinam). Kampaņu slānis, veidojot melnrakstu, nolasa
+#    veidnes HTML, aizvieto katru __UTM_WEEK__ ar utm.py nedēļas daļu (YYYY-Www) un veido kampaņu
+#    ar šo HTML. Ja pēc aizvietošanas HTML vēl satur __UTM_WEEK__, melnraksts tiek atteikts.
+#    mkt_control.utm_dictionary rindas raksta TIKAI kampaņu slānis, ar MERGE, vienu rindu katram
+#    (utm_campaign, utm_content) pārim. Veidņu būvētājs tur neraksta."
+# --------------------------------------------------------------------------- #
+UTM_WEEK_MARKER = "__UTM_WEEK__"
+# Spellings the plain replace would NOT catch - lower case, URL-encoded, HTML-entity encoded. If any
+# survives, the letter would carry a literal marker in a customer's address bar.
+_MARKER_LEFTOVER = re.compile(r"__\s*utm_week\s*__|%5F%5FUTM_WEEK%5F%5F|&#0*95;&#0*95;UTM_WEEK", re.I)
+# Not anchored on `?`/`&`: in the house idiom the parameter follows a Liquid `{% endif %}`.
+_UTM_CAMPAIGN = re.compile(r"(?<![A-Za-z0-9_])utm_campaign=([^&\"'#\s{}<>]*)", re.I)
+_UTM_CONTENT = re.compile(r"(?<![A-Za-z0-9_])utm_content=([^&\"'#\s{}<>]*)", re.I)
 
-    The draft has to exist BEFORE the approval e-mail, not after: the node's hard rule is that no
-    campaign is scheduled until every link in the RENDERED letter has answered 200, and there is
-    nothing to render until a draft exists. Raivis found four broken links exactly this way on
-    24.08.
 
-    utmCampaign is set to the same slug the links carry. Campaign 164 shows why that is worth
-    stating: its campaign-level UTM reads '2026 09 cimdi un ada', with spaces, while its links
-    carry '2026-09-cimdi-un-ada'. Two values for one campaign is two rows in any report that joins
-    on it.
+class UtmSeamRefused(RuntimeError):
+    """The template does not carry the seam form, or the replacement left something behind."""
+
+
+def hrefs_in(html_text: str):
+    """Every href value, Liquid-aware.
+
+    A plain `href="([^"]+)"` stops at the first quote INSIDE a Liquid tag - the house link idiom is
+    `{{ contact.URL }}{% if "?" in contact.URL %}&amp;{% else %}?{% endif %}utm_source=...`, so the
+    old pattern captured `{{ contact.URL }}{% if ` and nothing after it. Tags are consumed whole.
     """
-    if list_id not in ALLOWED_LIST_IDS:
-        raise ListNotAllowed(
-            f"list {list_id} is not in the hard allowlist {sorted(ALLOWED_LIST_IDS)}. Until Raivis' "
-            f"first approval, this layer may address only a list whose entire membership is his own "
-            f"address. Widening it is a code change, on purpose.")
-    if not template_is_active(template_id):
-        raise TemplateInactive(
-            f"template {template_id} is inactive in Brevo, so no campaign can be built from it. "
-            f"Brevo reports this as HTTP 405 method_not_allowed, which is why this is checked "
-            f"before the call rather than read out of the error. Activating a template is "
-            f"template work and belongs to Marketing, not here.")
-    params = template_params(template_id)
+    out = []
+    for m in _HREF_LIQUID.finditer(html_text or ""):
+        out.append(m.group(1) if m.group(1) is not None else m.group(2))
+    return out
+
+
+_HREF_LIQUID = re.compile(
+    r"""href\s*=\s*(?:"((?:\{%.*?%\}|\{\{.*?\}\}|[^"])*)"|'((?:\{%.*?%\}|\{\{.*?\}\}|[^'])*)')""",
+    re.I | re.S)
+
+
+def utm_pairs(html_text: str):
+    """(utm_campaign, utm_content or None) for every link that carries a utm_campaign."""
+    pairs = set()
+    for href in hrefs_in(html_text):
+        h = _html.unescape(href)
+        c = _UTM_CAMPAIGN.search(h)
+        if not c or not c.group(1):
+            continue
+        ct = _UTM_CONTENT.search(h)
+        pairs.add((c.group(1), (ct.group(1) or None) if ct else None))
+    return sorted(pairs, key=lambda p: (p[0], p[1] or ""))
+
+
+def apply_utm_week(html_text: str, week: str):
+    """Replace every __UTM_WEEK__ with the ISO week part; refuse anything that is not the seam form.
+
+    Returns (html_after, pairs). Refuses, BEFORE any campaign exists, when:
+      - the template carries no marker at all (its week is hardcoded, so it would ship the same
+        week's slug every week - the collision the ISO week was introduced to remove);
+      - a marker survives the replacement in any spelling (the contract's own refusal);
+      - there is no utm_campaign at all (an untagged letter - rule #13);
+      - any utm_campaign after replacement does not start with `<week>-` (one link hardcoded).
+    """
+    if not re.fullmatch(r"\d{4}-w\d{2}", week or ""):
+        raise UtmSeamRefused(f"week {week!r} is not the utm.py form YYYY-Www")
+    if UTM_WEEK_MARKER not in (html_text or ""):
+        found = sorted({c for c, _ in utm_pairs(html_text)})
+        raise UtmSeamRefused(
+            f"the template carries no {UTM_WEEK_MARKER}; its links say utm_campaign="
+            f"{', '.join(found) or '(none)'}. A week written into the template ships the same slug "
+            f"every week. The seam form is {UTM_WEEK_MARKER}-<base>; the template builder owns it.")
+    after = html_text.replace(UTM_WEEK_MARKER, week)
+    if UTM_WEEK_MARKER in after or _MARKER_LEFTOVER.search(after):
+        raise UtmSeamRefused(
+            f"a {UTM_WEEK_MARKER} marker survived the replacement (encoded or in another case). "
+            f"Refusing the draft: a literal marker would reach the customer's address bar.")
+    pairs = utm_pairs(after)
+    if not pairs:
+        raise UtmSeamRefused("no link carries utm_campaign after replacement - an untagged letter.")
+    wrong = sorted({c for c, _ in pairs if not c.startswith(week + "-")})
+    if wrong:
+        raise UtmSeamRefused(
+            f"utm_campaign value(s) not built from the marker: {', '.join(wrong)} (expected "
+            f"{week}-<base>). At least one link has its week written in.")
+    return after, pairs
+
+
+def _guard_content(template_id: int, blob: str, approved_attributes):
+    """The content refusals, run on the HTML that will actually be sent (after the seam)."""
+    params = params_in(blob)
     if params:
         raise TemplateUsesParams(
             f"template {template_id} references {len(params)} Liquid param(s): "
@@ -393,7 +466,7 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
             f"the transactional API and are ALWAYS empty in a campaign, so every one of these "
             f"renders as a blank. Rewrite them as contact attributes or remove the block; this "
             f"check cannot be widened, because the value genuinely does not exist here.")
-    rendered = template_attributes(template_id)
+    rendered = attributes_in(blob)
     unapproved = [a for a in rendered if a not in approved_attributes]
     if unapproved:
         known_discount = [a for a in unapproved if a in DISCOUNT_ATTRIBUTES]
@@ -407,18 +480,44 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
                f"can hide as a price." if pairs else "")
             + " Approve the attribute in mkt_control.template_attribute_allowlist or strip it from "
               "the template; do not widen this check.")
-
     # SECOND LAYER. Reached only when every rendered attribute IS approved, so it exists to catch a
-    # wrong allowlist rather than an unlisted field. A known discount name refuses even with an
-    # approval behind it, because approving one is far more likely to be a slip than a decision.
+    # wrong allowlist rather than an unlisted field.
     known_discount = [a for a in rendered if a in DISCOUNT_ATTRIBUTES]
     if known_discount:
         raise TemplateUsesDiscount(
             f"template {template_id} renders {', '.join(known_discount)}, which are known discount "
             f"fields, and they are approved in the allowlist. Refusing anyway: Raivis retired "
             f"discount codes on 2026-09-07, so an approval on one of these is far more likely to be "
-            f"a slip than a decision. Remove the allowlist row, or remove this name from "
-            f"DISCOUNT_ATTRIBUTES deliberately and say why in the commit.")
+            f"a slip than a decision.")
+
+
+def create_draft(name: str, list_id: int, template_id: int, week: str,
+                 approved_attributes, reply_to: str = "info@tiktik.lv") -> dict:
+    """Create the campaign as a DRAFT from the template's HTML after the UTM seam. Never sent.
+
+    SINCE 2026-09-11 THE CAMPAIGN IS BUILT FROM htmlContent, NOT templateId (UTM seam v1): the
+    template's HTML is read, every __UTM_WEEK__ becomes the ISO week, and THAT HTML is the campaign.
+    Every content refusal runs on the replaced HTML - the letter that would actually go out.
+
+    WHAT CHANGED ABOUT ACTIVE TEMPLATES, stated rather than hidden: Brevo's 405 on an inactive
+    template applied to `templateId`; a campaign from htmlContent does not need the template to be
+    active, so a draft no longer requires it. template_active is still read and returned, and the
+    DAY BATCH still blocks an inactive template (batch.py TEMPLATE_INACTIVE_IN_BREVO) - activation
+    keeps its meaning as Marketing's "ready" signal for a real day; it is no longer a draft gate.
+
+    utmCampaign is deliberately NOT sent: Brevo's field accepts only alphanumerics and spaces, so
+    the slug cannot live there without becoming a second value. The links carry it.
+    Returns {"id", "subject", "pairs", "template_active", "reachable"}.
+    """
+    if list_id not in ALLOWED_LIST_IDS:
+        raise ListNotAllowed(
+            f"list {list_id} is not in the hard allowlist {sorted(ALLOWED_LIST_IDS)}. Until Raivis' "
+            f"first approval, this layer may address only a list whose entire membership is his own "
+            f"address. Widening it is a code change, on purpose.")
+    t = template(template_id)
+    subject = t.get("subject") or ""
+    html_after, pairs = apply_utm_week(t.get("htmlContent") or "", week)
+    _guard_content(template_id, html_after + " " + subject, approved_attributes)
     reachable = effective_audience(list_id)
     if reachable == 0:
         raise EmptyAudience(
@@ -430,26 +529,72 @@ def create_draft(name: str, subject: str, list_id: int, template_id: int, utm_ca
         "subject": subject,
         "sender": {"id": SENDER_ID},
         "replyTo": reply_to,
-        "templateId": template_id,
+        "htmlContent": html_after,
         "recipients": {"listIds": [list_id], "exclusionListIds": [SUPPRESSION_LIST_ID]},
         "inlineImageActivation": False,
     }
-    # utmCampaign IS DELIBERATELY NOT SENT, and this reverses what I wrote this morning about
-    # campaign 164. Brevo's own field documentation says utmCampaign accepts "only alphanumeric
-    # characters and spaces" - so `2026-w37-papildinam` CANNOT be stored there at all. Campaign
-    # 164's `2026 09 cimdi un ada` was not sloppiness; it was the only shape the field accepts.
-    #
-    # Setting a spaces-variant would create a SECOND utm_campaign value for one campaign, which is
-    # the defect this whole UTM contract exists to prevent. So the slug lives where we control it
-    # completely - in the links - and check_links asserts every href carries it. The campaign name
-    # carries the slug for a human reading the Brevo UI.
     created = _call("POST", "/emailCampaigns", payload)
-    log.info("DRAFT_CREATED id=%s list=%s reachable=%s utm=%s",
-             created.get("id"), list_id, reachable, utm_campaign)
-    return int(created["id"])
+    log.info("DRAFT_CREATED id=%s list=%s reachable=%s week=%s pairs=%s",
+             created.get("id"), list_id, reachable, week, len(pairs))
+    return {"id": int(created["id"]), "subject": subject, "pairs": pairs,
+            "template_active": bool(t.get("isActive")), "reachable": reachable}
 
 
-_HREF = re.compile(r'href=["\']([^"\']+)["\']', re.I)
+def delete_draft(campaign_id: int) -> bool:
+    """Delete a test draft and READ that it is gone (GET answers 404). True only then."""
+    _call("DELETE", f"/emailCampaigns/{campaign_id}")
+    try:
+        campaign(campaign_id, statistics="globalStats")
+    except urllib.error.HTTPError as e:
+        return e.code == 404
+    return False
+
+
+# Minimal Liquid, for LINK CHECKING ONLY: `{% if <cond> %}...{% else %}...{% endif %}` where cond is
+# `contact.X`, `contact.X and contact.Y ...`, or `"s" in contact.X`. Anything else is left untouched,
+# so it stays a placeholder and blocks (fail-closed). Rendering blocks matters twice: a link inside
+# `{% if contact.HERO_PRODUCT_URL %}` does not exist for a contact without one, and the house idiom
+# `{% if "?" in contact.URL %}&amp;{% else %}?{% endif %}` picks the separator per contact.
+_IF_BLOCK = re.compile(
+    r"\{%\s*if\s+((?:(?!%\}).)+?)\s*%\}((?:(?!\{%\s*if\b).)*?)(?:\{%\s*else\s*%\}((?:(?!\{%\s*if\b).)*?))?\{%\s*endif\s*%\}",
+    re.S)
+_TERM_ATTR = re.compile(r"^contact\.([A-Za-z0-9_]+)$")
+_TERM_IN = re.compile(r"^[\"']([^\"']*)[\"']\s+in\s+contact\.([A-Za-z0-9_]+)$")
+
+
+def _cond(expr: str, attrs: dict):
+    result = True
+    for term in re.split(r"\s+and\s+", expr.strip()):
+        m = _TERM_ATTR.match(term.strip())
+        if m:
+            result = result and bool(attrs.get(m.group(1)))
+            continue
+        m = _TERM_IN.match(term.strip())
+        if m:
+            result = result and (m.group(1) in str(attrs.get(m.group(2)) or ""))
+            continue
+        return None  # unknown syntax: do not guess
+    return result
+
+
+def render_for_contact(html_text: str, attrs: dict) -> str:
+    text = html_text or ""
+    while True:
+        changed = False
+
+        def _one(m):
+            nonlocal changed
+            c = _cond(m.group(1), attrs)
+            if c is None:
+                return m.group(0)
+            changed = True
+            return m.group(2) if c else (m.group(3) or "")
+        new = _IF_BLOCK.sub(_one, text)
+        if not changed or new == text:
+            return new
+        text = new
+
+
 
 
 _PLACEHOLDER = re.compile(r"\{\{\s*(?:contact\.)?([A-Z0-9_]+)\s*\}\}")
@@ -491,9 +636,12 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
     """
     html = campaign(campaign_id).get("htmlContent") or ""
     attrs = contact_attributes(as_contact) if as_contact else {}
+    # Render the letter AS this contact first: blocks the contact does not see carry no links for
+    # them, and the separator idiom resolves per contact. Unknown Liquid stays and blocks.
+    html = render_for_contact(html, attrs) if as_contact else html
     static, system, dynamic = [], [], []
-    for href in set(_HREF.findall(html)):
-        resolved = substitute(href, attrs).strip()
+    for href in set(hrefs_in(html)):
+        resolved = _html.unescape(substitute(href, attrs)).strip()
         # A link is only checkable once its placeholders carry real values. This is why the check
         # is run AS a contact: the 24.08 breakage lived inside the substituted part of the URL and
         # is invisible in the template's own HTML.

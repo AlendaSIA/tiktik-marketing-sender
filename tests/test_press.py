@@ -119,7 +119,7 @@ class FakeWarehouse:
         return None if not rows else list(rows[0].values())[0]
 
 
-class PressPath(unittest.TestCase):
+class _PressBase(unittest.TestCase):
 
     def setUp(self):
         self.w = FakeWarehouse()
@@ -138,8 +138,13 @@ class PressPath(unittest.TestCase):
     @staticmethod
     def _body(press_id="P1", batch_id="B-shown", build_id=BUILD_SHOWN):
         return {"press_id": press_id, "batch_id": batch_id, "build_id": build_id,
+                "send_date": "2026-09-15",
                 "counts": {"audience_total": 10}, "pressed_by": "raivis",
-                "pressed_at": "2026-09-15T06:00:00Z"}
+                "pressed_at": "2026-09-15T06:00:00+03:00"}
+
+
+
+class PressPath(_PressBase):
 
     def test_evaluate_judges_exactly_three_checks(self):
         checks = press.evaluate(send_date="2026-09-15", build_id_in_mail="x", live_build_id="x",
@@ -186,7 +191,7 @@ class PressPath(unittest.TestCase):
         # The newest batch of the date carries BUILD_NEWER; the live build equals the SHOWN one.
         # Reading by date would fail AUDIENCE_CHANGED; reading the pressed batch passes.
         status, ans = PS.handle_press(self._body())
-        self.assertTrue(ans["verdict_may_press"])
+        self.assertTrue(ans["may_press"])
         self.assertIn("B-shown", self.w.batch_queries)
         self.assertNotIn("B-newer", self.w.batch_queries)
         inputs = PL.live_inputs("2026-09-15", 100, "B-shown")
@@ -208,6 +213,52 @@ class PressPath(unittest.TestCase):
             PL.record_approval("2026-09-15", "raivis", "B-shown", {}, press_id="Px",
                                verdict_id="no-such-verdict")
         self.assertEqual(self.w.rows("send_approval"), [])
+
+
+class ContractBv2(_PressBase):
+    """MAIN's contract B v2, 2026-09-11: exact body keys, exact answer keys, 200 on every verdict."""
+
+    def test_answer_has_exactly_the_contract_keys_fresh_and_replayed(self):
+        _, fresh = PS.handle_press(self._body(press_id="K1"))
+        _, again = PS.handle_press(self._body(press_id="K1"))
+        for ans in (fresh, again):
+            self.assertEqual(set(ans), set(PS.ANSWER_KEYS))
+        self.assertEqual(PS.ANSWER_KEYS, ("verdict_id", "press_id", "batch_id", "send_date",
+                                          "may_press", "approval_recorded", "checks",
+                                          "refusal_text_lv", "replayed"))
+        for c in fresh["checks"]:
+            self.assertEqual(set(c), {"id", "passed", "reason_lv", "detail"})
+
+    def test_no_alias_keys(self):
+        _, ans = PS.handle_press(self._body(press_id="K2"))
+        for alias in ("approved", "verdict", "failed_checks", "checks_failed", "shown_in_mail",
+                      "verdict_may_press", "credits_available"):
+            self.assertNotIn(alias, ans)
+
+    def test_send_date_is_required(self):
+        body = self._body(press_id="K3")
+        del body["send_date"]
+        status, ans = PS.handle_press(body)
+        self.assertEqual(status, 400)
+        self.assertEqual(ans["error"], "INCOMPLETE_PRESS")
+
+    def test_field_shapes(self):
+        for field, value in (("counts", "10"), ("pressed_at", "2026-09-15T06:00:00"),
+                             ("send_date", "15.09.2026"), ("press_id", 123)):
+            body = self._body(press_id="K4")
+            body[field] = value
+            status, ans = PS.handle_press(body)
+            self.assertEqual(status, 400, field)
+            self.assertEqual(ans["error"], "BAD_PRESS_FIELD", field)
+        self.assertEqual(self.w.rows("send_approval"), [])
+
+    def test_refusal_is_200_with_may_press_false(self):
+        self.w.overlap = 3
+        status, ans = PS.handle_press(self._body(press_id="K5"))
+        self.assertEqual(status, 200)
+        self.assertIs(ans["may_press"], False)
+        self.assertIs(ans["approval_recorded"], False)
+        self.assertTrue(ans["refusal_text_lv"])
 
 
 class SendTimeGate(unittest.TestCase):

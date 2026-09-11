@@ -515,71 +515,81 @@ def write_planned_snapshot(snapshot_id: str, master_keys: list, utm_campaigns: l
     return written
 
 
-UTM_DICTIONARY_SQL = f"""
--- Per-slug DELETE then INSERT, and the DELETE is NULL-safe on utm_content because the
--- whole-campaign row IS the row where utm_content is NULL. The declared primary key on
--- (utm_campaign, utm_content) is informational in BigQuery and enforces nothing, so a
--- retried run or a rebuilt slug would otherwise duplicate silently - and a carelessly
--- written NOT EXISTS never matches a NULL, which is how the duplicate would survive review.
---
--- Scoped to utm_content IS NULL on purpose. The per-link rows ('hero', 'pap-1', ...) belong
--- to the campaign layer, which knows the template; deleting them here would make this a
--- second writer of somebody else's rows rather than the single writer of its own.
-BEGIN TRANSACTION;
-
-DELETE FROM {C.T_UTM_DICTIONARY}
-WHERE utm_content IS NULL
-  AND utm_campaign IN UNNEST(@slugs);
-
-INSERT INTO {C.T_UTM_DICTIONARY}
-  (utm_campaign, utm_content, channel, internal_label, internal_campaign, added_at, added_by, notes)
-SELECT s, NULL, 'email', l, NULL, CURRENT_TIMESTAMP(), @added_by,
-       'Whole-campaign decode row, emitted at planning time. internal_campaign stays NULL '
-       'until a Brevo campaign exists; the per-link rows are written by the campaign layer.'
-FROM UNNEST(@slugs) AS s WITH OFFSET o
-JOIN UNNEST(@labels) AS l WITH OFFSET o2 ON o = o2;
-
-COMMIT TRANSACTION;
+# UTM SEAM v1 (MAIN, 2026-09-11): "mkt_control.utm_dictionary rindas raksta TIKAI kampaņu slānis, ar
+# MERGE, vienu rindu katram (utm_campaign, utm_content) pārim. Veidņu būvētājs tur neraksta."
+#
+# ONE statement for both writers in this repo - the planner's whole-campaign rows (utm_content NULL)
+# and the draft's per-link rows - so there is one form of write, not two. NULL-safe on utm_content
+# (the whole-campaign row IS the NULL one; a plain `=` never matches NULL, which is how a duplicate
+# survives review). Array parameters cannot carry NULL, so NULL travels as '' and is turned back
+# with NULLIF. WHEN NOT MATCHED only: an existing pair is never rewritten, never deleted - the
+# declared primary key is informational in BigQuery, so the MERGE is what keeps it one row.
+UTM_MERGE_SQL = f"""
+MERGE {C.T_UTM_DICTIONARY} t
+USING (
+  SELECT DISTINCT c AS utm_campaign, NULLIF(ct, '') AS utm_content, l AS internal_label
+  FROM UNNEST(@campaigns) AS c WITH OFFSET o
+  JOIN UNNEST(@contents) AS ct WITH OFFSET o1 ON o = o1
+  JOIN UNNEST(@labels) AS l WITH OFFSET o2 ON o = o2
+) s
+ON t.utm_campaign = s.utm_campaign AND IFNULL(t.utm_content, '') = IFNULL(s.utm_content, '')
+WHEN NOT MATCHED THEN
+  INSERT (utm_campaign, utm_content, channel, internal_label, internal_campaign, added_at, added_by,
+          notes)
+  VALUES (s.utm_campaign, s.utm_content, 'email', s.internal_label, NULL, CURRENT_TIMESTAMP(),
+          @added_by, @notes)
 """
+
+
+def merge_utm_rows(rows: list, added_by: str, notes: str) -> int:
+    """MERGE (utm_campaign, utm_content|None, internal_label) rows; return rows now present.
+
+    Refuses a pair that arrives with two different labels - the source would then hold two rows for
+    one key, and on NOT MATCHED both would be inserted. "Present afterwards" is READ back, not
+    assumed, and must equal the number of distinct pairs.
+    """
+    if not rows:
+        return 0
+    labels = {}
+    for c, ct, l in rows:
+        key = (c, ct or None)
+        if labels.setdefault(key, l) != l:
+            raise RuntimeError(f"utm pair {key} arrives with two labels: {labels[key]!r} and {l!r}")
+    from google.cloud.bigquery import ArrayQueryParameter as A
+    from google.cloud.bigquery import ScalarQueryParameter as P
+    keys = sorted(labels, key=lambda k: (k[0], k[1] or ""))
+    query(UTM_MERGE_SQL, [
+        A("campaigns", "STRING", [k[0] for k in keys]),
+        A("contents", "STRING", [k[1] or "" for k in keys]),
+        A("labels", "STRING", [labels[k] for k in keys]),
+        P("added_by", "STRING", added_by),
+        P("notes", "STRING", notes),
+    ])
+    present = int(scalar(
+        f"SELECT COUNT(*) FROM {C.T_UTM_DICTIONARY} t, UNNEST(@campaigns) AS c WITH OFFSET o "
+        f"JOIN UNNEST(@contents) AS ct WITH OFFSET o1 ON o = o1 "
+        f"WHERE t.utm_campaign = c AND IFNULL(t.utm_content, '') = ct",
+        [A("campaigns", "STRING", [k[0] for k in keys]),
+         A("contents", "STRING", [k[1] or "" for k in keys])]) or 0)
+    if present != len(keys):
+        raise RuntimeError(
+            f"utm_dictionary disagrees with itself after MERGE: {len(keys)} distinct pairs, "
+            f"{present} rows present for them. More means a duplicate already existed; fewer means "
+            f"the write did not land.")
+    return present
 
 
 def write_utm_dictionary(slug_label_pairs: list,
                          added_by: str = "tiktik-marketing-sender") -> int:
-    """Write one decode row per emitted slug: utm_campaign -> which variant it really is.
+    """The planner's whole-campaign decode row per emitted slug (utm_content NULL), via the MERGE.
 
-    A slug with no dictionary row is a slug nobody can read afterwards, and the pre-send check
-    treats a missing row as a blocker rather than a warning. Writing it at PLANNING time means
-    the blocker is satisfied by construction instead of remembered.
-
-    internal_label is the email_type and never the track: from the track, winback_1, winback_2
-    and winback_3 collapse into one label and the rungs become unreadable in exactly the
-    report that was supposed to tell them apart.
-
-    added_by names THIS writer, per the single-writer rule. The contract's literal
-    'campaign-layer' was written when one component was expected to own the whole table; the
-    split is now by KEY - whole-campaign row here, per-link rows there - so two names are
-    correct and one row still has one writer.
+    internal_label is the email_type and never the track: from the track the winback rungs
+    collapse into one label. Per-link rows come from the draft (campaign.create_draft pairs).
     """
-    if not slug_label_pairs:
-        return 0
-    from google.cloud.bigquery import ArrayQueryParameter as A
-    from google.cloud.bigquery import ScalarQueryParameter as P
-    slugs = [s for s, _ in slug_label_pairs]
-    labels = [l for _, l in slug_label_pairs]
-    query(UTM_DICTIONARY_SQL, [
-        P("added_by", "STRING", added_by),
-        A("slugs", "STRING", slugs),
-        A("labels", "STRING", labels),
-    ])
-    written = int(scalar(
-        f"SELECT COUNT(*) FROM {C.T_UTM_DICTIONARY} "
-        f"WHERE utm_content IS NULL AND utm_campaign IN UNNEST(@slugs)",
-        [A("slugs", "STRING", slugs)]) or 0)
-    if written != len(slugs):
-        raise RuntimeError(
-            f"utm_dictionary write disagrees with itself: {len(slugs)} slugs emitted, "
-            f"{written} whole-campaign rows present afterwards.")
-    return written
+    return merge_utm_rows(
+        [(s, None, l) for s, l in slug_label_pairs], added_by=added_by,
+        notes="Whole-campaign decode row, emitted at planning time. Per-link rows are written by "
+              "the campaign layer when the draft is built.")
 
 
 def assignment_build_id() -> str:

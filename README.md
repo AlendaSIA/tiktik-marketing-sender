@@ -60,7 +60,7 @@ exits 0.
 | `business_marts.brevo_contacts_snapshot` | Brevo contact state + list membership (refreshed here) |
 | `business_marts.email_send_log` | frequency history, counted per `master_key` |
 
-The assignment procedure has no copy in this repo: its only source is the live routine `mkt_control.sp_build_contact_weekly_assignment`, DDL history in `Company-Alenda-SIA/shared-platforms/_pavediens--tiktik-marketing-night-sync.md`.
+The assignment procedure has no copy in this repo: its only source is the live routine `mkt_control.sp_build_contact_weekly_assignment`, DDL history in `Company-Alenda-SIA/shared-platforms/_pavediens--sync-truth-audit.md` (section "VERSION-CONTROL RECORD").
 
 ## Outputs
 
@@ -102,3 +102,23 @@ run reports `orphans_mailable = 0` and `duplicate_sends = 0`.
 `Company-Alenda-SIA/shared-platforms/03-data-analytics.md` holds the data contract and the
 identity rules; the sender itself belongs to `tiktik.lv › Marketing › Email campaigns`.
 Build id `blk-tiktik-marketing-sender`.
+
+## Interfaces issued by MAIN — verbatim, identical on both sides
+
+These two texts were issued by MAIN on 2026-09-11 in the same words to both sides of each seam.
+They are quoted here literally, not paraphrased. If the code and this text disagree, the code is
+wrong; if the text does not fit, that goes to MAIN, never to the other builder.
+
+### Contract B v2 (relay → press) — `press_server.py`
+
+> Relejs sūta POST uz config.press_endpoint ar galvenēm Content-Type: application/json un X-Press-Secret: <press_endpoint_secret>. X-Press-Id netiek sūtīts. Ķermenis ir JSON ar tieši šīm atslēgām: press_id (virkne, uuid, tas pats katrā atkārtojumā), batch_id, build_id, send_date (YYYY-MM-DD), pressed_by, pressed_at (ISO-8601 ar zonu), counts (objekts: tieši tie skaitļi, kas bija redzami e-pastā; tikai audita ieraksts, prese ar tiem neko nesalīdzina). Atslēga shown_in_mail vairs neeksistē — tā ir counts. board_token netiek sūtīts. Prese uz katru spriedumu atbild ar HTTP 200 un atslēgām verdict_id, press_id, batch_id, send_date, may_press (bool), approval_recorded (bool), checks [{id, passed, reason_lv, detail}], refusal_text_lv, replayed (bool). Relejs uzskata spiedienu par apstiprinātu TIKAI tad, ja may_press === true UN approval_recorded === true. 200 ar citu vērtību ir atteikums: žetons tiek izlietots, un cilvēkam rāda refusal_text_lv. Neizdevušās pārbaudes ir checks ieraksti ar passed=false. Jebkura ne-2xx atbilde (400, 401, 404, 409, 5xx) vai taimauts pēc 25 s NAV spriedums: žetons paliek, cilvēkam saka, ka savienojums neizdevās, un atkārtojums iet ar to pašu press_id. Aizstājvārdu nav: approved, verdict, failed_checks un checks_failed netiek lasīti.
+
+Where the code holds it: `REQUIRED`, `_field_errors`, `ANSWER_KEYS`, `_answer` in `press_server.py`;
+pinned by `tests/test_press.py::ContractBv2`.
+
+### UTM seam v1 (template builder ↔ campaign layer) — `campaign.apply_utm_week`, `bq.merge_utm_rows`
+
+> UTM SAŠUVE v1. Veidnes saitēs utm_campaign vērtība ir \_\_UTM_WEEK\_\_-<bāze>, kur <bāze> ir veidnes pastāvīgā, klientam droša daļa (piemēram, papildinam). Kampaņu slānis, veidojot melnrakstu, nolasa veidnes HTML, aizvieto katru \_\_UTM_WEEK\_\_ ar utm.py nedēļas daļu (YYYY-Www) un veido kampaņu ar šo HTML. Ja pēc aizvietošanas HTML vēl satur \_\_UTM_WEEK\_\_, melnraksts tiek atteikts. mkt_control.utm_dictionary rindas raksta TIKAI kampaņu slānis, ar MERGE, vienu rindu katram (utm_campaign, utm_content) pārim. Veidņu būvētājs tur neraksta.
+
+Pinned by `tests/test_utm_seam.py`.
+
