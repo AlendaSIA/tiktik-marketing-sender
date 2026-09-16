@@ -60,6 +60,11 @@ REPORT = f"{PROJECT}.mkt_control.campaign_run_report"
 TEST_LIST_ID = int(os.environ.get("TEST_LIST_ID", "62"))
 TEST_TEMPLATE_ID = int(os.environ.get("TEST_TEMPLATE_ID", "20"))
 TEST_CONTACT = os.environ.get("TEST_CONTACT", "alenda.jurmala@gmail.com")
+# The SECOND contact the resolved UTM seam is confirmed against. No default, and that is the
+# point: a name invented in code is how an address nobody checked reaches a customer, and a guard
+# that is skipped by leaving a variable unset is not a guard. Unset means a markerless draft
+# refuses, which is the safe direction.
+CONFIRM_CONTACT = os.environ.get("CONFIRM_CONTACT", "").strip()
 
 
 def _write(report: dict):
@@ -376,7 +381,8 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                     approved_attributes=approved,
                     name=f"[TEST {started:%Y-%m-%d}] {email_type} {week} tpl {TEST_TEMPLATE_ID}, "
                          f"list {TEST_LIST_ID}",
-                    list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID, week=week)
+                    list_id=TEST_LIST_ID, template_id=TEST_TEMPLATE_ID, week=week,
+                    resolve_as=TEST_CONTACT, confirm_as=CONFIRM_CONTACT or None)
                 cid = d["id"]
                 r["draft_campaign_id"] = cid
                 r["note"] = (f"draft {cid} from template {TEST_TEMPLATE_ID} "

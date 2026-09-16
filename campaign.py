@@ -391,6 +391,25 @@ class UtmSeamRefused(RuntimeError):
     """The template does not carry the seam form, or the replacement left something behind."""
 
 
+class UtmPairsVaryByContact(UtmSeamRefused):
+    """Two contacts' resolved links disagree about (utm_campaign, utm_content).
+
+    Only reachable on the RESOLVED seam, and that is the whole reason it exists. On the marker seam
+    the pairs are a property of the template's characters, so they are identical for every recipient
+    by construction and there is nothing to check. On the resolved seam they are a property of ONE
+    contact's attribute value, and "it does not vary today" is not a proof of anything.
+
+    A REFUSAL AND NOT A WARNING, because of where these pairs go: d["pairs"] is MERGEd into
+    mkt_control.utm_dictionary, which is what every later report decodes a click through. A pair
+    written from one sample that actually varies by contact breaks nothing visibly - it corrupts
+    attribution silently, months later, in a report nobody can re-derive.
+
+    Deliberately a subclass of UtmSeamRefused, so campaign_job.py reports it as the structural
+    refusal it is rather than crashing on it - and it keeps its own name, so the report says which
+    guard fired.
+    """
+
+
 def hrefs_in(html_text: str):
     """Every href value, Liquid-aware.
 
@@ -422,36 +441,105 @@ def utm_pairs(html_text: str):
     return sorted(pairs, key=lambda p: (p[0], p[1] or ""))
 
 
-def apply_utm_week(html_text: str, week: str):
-    """Replace every __UTM_WEEK__ with the ISO week part; refuse anything that is not the seam form.
+def resolved_pairs(html_text: str, attrs: dict):
+    """(utm_campaign, utm_content) read off the links AS ONE CONTACT WILL RECEIVE THEM.
 
-    Returns (html_after, pairs). Refuses, BEFORE any campaign exists, when:
-      - the template carries no marker at all (its week is hardcoded, so it would ship the same
-        week's slug every week - the collision the ISO week was introduced to remove);
-      - a marker survives the replacement in any spelling (the contract's own refusal);
-      - there is no utm_campaign at all (an untagged letter - rule #13);
-      - any utm_campaign after replacement does not start with `<week>-` (one link hardcoded).
+    utm_pairs() scans the template's own characters, so a utm arriving inside an attribute VALUE is
+    invisible to it. That is not a gap in the regex - it is the wrong artefact. This renders the
+    letter for the contact and substitutes the placeholders in EXACTLY the order check_links does,
+    so the pair recorded is the one on the URL the link check actually fetches, and not a second,
+    unrelated rendering of the same letter.
+
+    A href still carrying Liquid after substitution contributes NOTHING, on purpose: it must not be
+    able to smuggle a pair in. check_links refuses it separately under its own name
+    (PlaceholdersUnresolved), and a link nobody can resolve is a link nobody can click.
+    """
+    rendered = render_for_contact(html_text or "", attrs or {})
+    pairs = set()
+    for href in set(hrefs_in(rendered)):
+        h = _html.unescape(substitute(href, attrs or {})).strip()
+        if "{{" in h or "{%" in h:
+            continue
+        c = _UTM_CAMPAIGN.search(h)
+        if not c or not c.group(1):
+            continue
+        ct = _UTM_CONTENT.search(h)
+        pairs.add((c.group(1), (ct.group(1) or None) if ct else None))
+    return sorted(pairs, key=lambda p: (p[0], p[1] or ""))
+
+
+def apply_utm_week(html_text: str, week: str, *, resolve_with=None, confirm_with=None):
+    """TWO SEAMS. The second is an ADDITION (MAIN, 2026-09-16), never a replacement.
+
+    MARKER SEAM (unchanged, byte for byte): the template carries __UTM_WEEK__, it is replaced with
+    the ISO week, and the pairs are read from the replaced TEXT. Templates 181 and 183-188 live
+    here and keep living here until they are rebuilt. `resolve_with` is IGNORED on this path - not
+    politely tolerated, ignored - so a caller that passes it to everything cannot change what an
+    educational letter does.
+
+    RESOLVED SEAM (new): the template carries NO marker and the caller supplied one contact's
+    attributes. Commercial templates 179/180 are here by MAIN's decision - every link in them is
+    the bare `{{ contact.KABINETS_URL }}`, and that value already carries a query string, so
+    tagging in the template text would append `?utm_` to a PLACEHOLDER and produce a URL with two
+    `?` after substitution: malformed, and still passing a `utm_` substring check. The tag arrives
+    from the attribute value instead, so the pairs have to be read AFTER resolution. The HTML is
+    returned UNCHANGED here - there is nothing to replace, only something to read.
+
+    THE THIRD CASE IS THE ONE THAT MATTERS: no marker AND no attributes is today's refusal, word
+    for word. `resolve_with` defaults to None precisely so this addition cannot become a loophole.
+    test_template_without_marker_is_refused and test_refusal_creates_no_campaign are the pins; if
+    this argument were ever made positional, required, or defaulted to "resolve if you can", both
+    would go red, and they should.
+
+    Refuses, BEFORE any campaign exists, when:
+      - the week is not the utm.py form YYYY-Www;
+      - a marker survives the replacement in any spelling (marker seam);
+      - the template has no marker and there is no contact to resolve against;
+      - no link carries utm_campaign at all - an untagged letter (rule #13), on either seam;
+      - two contacts resolve to different pairs (resolved seam; see UtmPairsVaryByContact);
+      - any utm_campaign does not start with `<week>-` - a link with its week written in.
     """
     if not re.fullmatch(r"\d{4}-w\d{2}", week or ""):
         raise UtmSeamRefused(f"week {week!r} is not the utm.py form YYYY-Www")
-    if UTM_WEEK_MARKER not in (html_text or ""):
+    if UTM_WEEK_MARKER in (html_text or ""):
+        seam = "marker"
+        after = html_text.replace(UTM_WEEK_MARKER, week)
+        if UTM_WEEK_MARKER in after or _MARKER_LEFTOVER.search(after):
+            raise UtmSeamRefused(
+                f"a {UTM_WEEK_MARKER} marker survived the replacement (encoded or in another case). "
+                f"Refusing the draft: a literal marker would reach the customer's address bar.")
+        pairs = utm_pairs(after)
+        if not pairs:
+            raise UtmSeamRefused(
+                "no link carries utm_campaign after replacement - an untagged letter.")
+    elif resolve_with is not None:
+        seam = "resolved links"
+        after = html_text or ""
+        pairs = resolved_pairs(after, resolve_with)
+        if not pairs:
+            raise UtmSeamRefused(
+                f"no RESOLVED link carries utm_campaign - an untagged letter. This template has no "
+                f"{UTM_WEEK_MARKER}, so the tag has to arrive from the attribute value, and on this "
+                f"contact it did not. Refusing before the draft exists.")
+        if confirm_with is not None:
+            second = resolved_pairs(after, confirm_with)
+            if second != pairs:
+                raise UtmPairsVaryByContact(
+                    f"two contacts resolve to different UTM pairs: {pairs} vs {second}. These "
+                    f"pairs are MERGEd into mkt_control.utm_dictionary as the decode rows for the "
+                    f"WHOLE campaign, so one sample may not stand for everybody. Either the tag is "
+                    f"not contact-independent, or the second contact does not see the same links. "
+                    f"Refusing before the draft exists.")
+    else:
         found = sorted({c for c, _ in utm_pairs(html_text)})
         raise UtmSeamRefused(
             f"the template carries no {UTM_WEEK_MARKER}; its links say utm_campaign="
             f"{', '.join(found) or '(none)'}. A week written into the template ships the same slug "
             f"every week. The seam form is {UTM_WEEK_MARKER}-<base>; the template builder owns it.")
-    after = html_text.replace(UTM_WEEK_MARKER, week)
-    if UTM_WEEK_MARKER in after or _MARKER_LEFTOVER.search(after):
-        raise UtmSeamRefused(
-            f"a {UTM_WEEK_MARKER} marker survived the replacement (encoded or in another case). "
-            f"Refusing the draft: a literal marker would reach the customer's address bar.")
-    pairs = utm_pairs(after)
-    if not pairs:
-        raise UtmSeamRefused("no link carries utm_campaign after replacement - an untagged letter.")
     wrong = sorted({c for c, _ in pairs if not c.startswith(week + "-")})
     if wrong:
         raise UtmSeamRefused(
-            f"utm_campaign value(s) not built from the marker: {', '.join(wrong)} (expected "
+            f"utm_campaign value(s) not built from the {seam}: {', '.join(wrong)} (expected "
             f"{week}-<base>). At least one link has its week written in.")
     return after, pairs
 
@@ -492,7 +580,8 @@ def _guard_content(template_id: int, blob: str, approved_attributes):
 
 
 def create_draft(name: str, list_id: int, template_id: int, week: str,
-                 approved_attributes, reply_to: str = "info@tiktik.lv") -> dict:
+                 approved_attributes, reply_to: str = "info@tiktik.lv", *,
+                 resolve_as: str = None, confirm_as: str = None) -> dict:
     """Create the campaign as a DRAFT from the template's HTML after the UTM seam. Never sent.
 
     SINCE 2026-09-11 THE CAMPAIGN IS BUILT FROM htmlContent, NOT templateId (UTM seam v1): the
@@ -516,7 +605,25 @@ def create_draft(name: str, list_id: int, template_id: int, week: str,
             f"address. Widening it is a code change, on purpose.")
     t = template(template_id)
     subject = t.get("subject") or ""
-    html_after, pairs = apply_utm_week(t.get("htmlContent") or "", week)
+    html = t.get("htmlContent") or ""
+    # WHICH SEAM A TEMPLATE IS ON IS THE TEMPLATE'S ANSWER, NOT THE CALLER'S. A marker template
+    # needs no contact at all, so an educational letter costs exactly the Brevo calls it costs
+    # today and cannot be changed by a caller that passes resolve_as to everything.
+    needs_resolution = UTM_WEEK_MARKER not in html
+    attrs = confirm = None
+    if needs_resolution and resolve_as:
+        if not confirm_as:
+            raise UtmSeamRefused(
+                f"template {template_id} carries no {UTM_WEEK_MARKER}, so its pairs can only be "
+                f"read from ONE contact's resolved links - and one sample cannot prove that the "
+                f"pair is the same for everyone. Those pairs become the decode rows in "
+                f"mkt_control.utm_dictionary for the whole campaign, so a pair that varies by "
+                f"contact corrupts attribution silently instead of failing loudly. Pass "
+                f"confirm_as=<a second contact that receives this letter>. Refused before any "
+                f"HTTP: no contact was read and no draft exists.")
+        attrs = contact_attributes(resolve_as)
+        confirm = contact_attributes(confirm_as)
+    html_after, pairs = apply_utm_week(html, week, resolve_with=attrs, confirm_with=confirm)
     _guard_content(template_id, html_after + " " + subject, approved_attributes)
     reachable = effective_audience(list_id)
     if reachable == 0:
