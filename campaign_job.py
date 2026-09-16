@@ -397,6 +397,12 @@ def main() -> int:  # noqa: PLR0912, PLR0915
                 if links["failed"]:
                     refusals.append("LinksNot200:" + "; ".join(
                         f"{u} -> {s}" for u, s in links["failed"][:5]))
+                if links.get("dead"):
+                    # Deliberately NOT a new column in campaign_run_report: insert_rows_json
+                    # rejects a field the table does not have, and a refusal that cannot be
+                    # written is a refusal nobody sees. It rides in refusals, which exists.
+                    refusals.append("LinksDead:" + "; ".join(
+                        f"{u} -> {s}" for u, s in links["dead"][:5]))
                 if links.get("missing_utm"):
                     refusals.append("LinksWithoutOurUtm:" + "; ".join(links["missing_utm"][:5]))
                 if links["no_unsubscribe"]:

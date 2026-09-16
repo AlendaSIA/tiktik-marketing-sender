@@ -384,5 +384,79 @@ class DraftFromMarkerlessTemplate(unittest.TestCase):
         self.assertFalse([c for c in self.calls if c[0] == "POST"])
 
 
+DEAD_URL = ("https://plani.tiktik.lv/kabinets.php?k=abc&tab=preces"
+            "&utm_campaign=2026-w37-kabinets&utm_content=kabinets")
+DEAD_BODY = ('<html><form method="post"><input name="email" type="email">'
+             '<button name="do" value="sendlink">Sutit</button></form></html>')
+LIVE_BODY = '<html><body>Tavas preces</body></html>'
+
+
+class DeadCabinetLink(unittest.TestCase):
+    """A 200 is not proof the link is alive - an invalid cabinet token answers 200 too."""
+
+    def setUp(self):
+        self._saved = (C._call, C.urllib.request.urlopen)
+        self.body = LIVE_BODY
+        html = ('<a href="' + DEAD_URL.replace("&", "&amp;") + '">K</a>'
+                '<a href="{{ unsubscribe }}">u</a>')
+        C._call = lambda m, p, payload=None, timeout=30: {"htmlContent": html}
+        outer = self
+
+        class _Resp:
+            status = 200
+
+            def read(self):
+                return outer.body.encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        C.urllib.request.urlopen = lambda req, timeout=20: _Resp()
+
+    def tearDown(self):
+        C._call, C.urllib.request.urlopen = self._saved
+
+    def test_a_live_body_is_ok(self):
+        r = C.check_links(1, expect_utm="2026-w37-")
+        self.assertEqual([u for u, _ in r["ok"]], [DEAD_URL])
+        self.assertEqual(r["dead"], [])
+        self.assertEqual(r["checked"], 1)
+
+    def test_the_sign_in_form_body_is_dead_not_ok(self):
+        self.body = DEAD_BODY
+        r = C.check_links(1, expect_utm="2026-w37-")
+        self.assertEqual(r["ok"], [])
+        self.assertEqual([u for u, _ in r["dead"]], [DEAD_URL])
+        self.assertEqual(r["failed"], [])          # the server is not broken; the link is
+
+    def test_a_dead_link_still_counts_as_checked(self):
+        # Otherwise no_real_links would fire and hide the real reason behind a second refusal.
+        self.body = DEAD_BODY
+        self.assertEqual(C.check_links(1)["checked"], 1)
+
+    def test_a_dead_link_cannot_satisfy_the_utm_check(self):
+        # missing_utm is computed over `ok`; a dead link carrying a perfect slug must not make the
+        # utm check look satisfied. Empty refusals are how a broken letter reads as a good one.
+        self.body = DEAD_BODY
+        r = C.check_links(1, expect_utm="2026-w37-")
+        self.assertEqual(r["missing_utm"], [])
+        self.assertTrue(r["dead"])                 # ...and THIS is what refuses the draft
+
+    def test_both_halves_of_the_marker_are_required(self):
+        self.body = '<html><input name="email"></html>'
+        self.assertEqual(C.check_links(1)["dead"], [])
+        self.assertFalse(C.body_says_dead('<html><input name="email"></html>'))
+        self.assertTrue(C.body_says_dead(DEAD_BODY))
+
+    def test_the_guard_can_fail_and_can_pass(self):
+        self.body = LIVE_BODY
+        self.assertEqual(C.check_links(1)["dead"], [])
+        self.body = DEAD_BODY
+        self.assertTrue(C.check_links(1)["dead"])
+
+
 if __name__ == "__main__":
     unittest.main()

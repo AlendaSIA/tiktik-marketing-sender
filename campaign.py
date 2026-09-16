@@ -723,6 +723,34 @@ def is_brevo_system_link(href: str) -> bool:
     return bool(m) and m.group(1).lower() in BREVO_SYSTEM_TOKENS
 
 
+# A LINK CAN BE DEAD AND STILL ANSWER 200, AND THE STATUS CODE CANNOT SEE IT (MAIN, 2026-09-16).
+#
+# Measured live with this checker's own UA against plani.tiktik.lv: a VALID cabinet token answers
+# 200, an INVALID token answers 200, and a request with no k at all answers 200. The status code
+# cannot tell a live cabinet link from a dead one, and a guard that cannot fail is worse than no
+# guard - which is what this check was until now.
+#
+# The bodies DO differ: the dead page is the cabinet's own sign-in form and carries both
+# name="email" and value="sendlink"; the live page carries neither. Measured the same hour with a
+# negative control: the 88 KB tiktik.lv shop page carries neither either.
+#
+# BOTH halves are required, deliberately. Either one alone appears on any ordinary form on the
+# internet, and a false positive here refuses a draft whose link is fine. Narrow on purpose.
+#
+# AND BY BODY CONTENT, NOT BY LENGTH: the live page measured 4 536 bytes in the morning and 4 501
+# in the afternoon. A byte-count discriminator would have rotted the same day.
+#
+# THE PAGE IS SOMEBODY ELSE'S. This assertion goes red on the cabinet's next redesign; that is the
+# known cost, and MAIN ordered it with the cost named. The failure mode is a refused draft with
+# LinksDead on a link that is alive - loud, cheap, and the safe direction.
+DEAD_LINK_BODY_MARKERS = ('name="email"', 'value="sendlink"')
+
+
+def body_says_dead(body: str) -> bool:
+    """Is this 200 the cabinet's sign-in form rather than the customer's cabinet."""
+    return all(m in (body or "") for m in DEAD_LINK_BODY_MARKERS)
+
+
 def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None):
     """Every link in the campaign's HTML must answer 200 before the campaign may be scheduled.
 
@@ -758,7 +786,7 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
             dynamic.append(resolved)
         else:
             static.append(resolved)
-    ok, failed = [], []
+    ok, failed, dead = [], [], []
     for url in sorted(static):
         if not url.lower().startswith("http"):
             continue
@@ -766,7 +794,16 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
             req = urllib.request.Request(url, method="GET")
             req.add_header("user-agent", "tiktik-campaign-linkcheck/1.0")
             with urllib.request.urlopen(req, timeout=20) as r:
-                (ok if r.status == 200 else failed).append((url, r.status))
+                status, body = r.status, r.read().decode("utf-8", "replace")
+            if status != 200:
+                failed.append((url, status))
+            elif body_says_dead(body):
+                # THREE OUTCOMES, THREE WORDS. Not reachable (failed), reachable but not the
+                # customer's page (dead), reachable and theirs (ok). Folding dead into failed would
+                # report a working server as unreachable and send the reader to the wrong system.
+                dead.append((url, "200, but the body is the cabinet sign-in form"))
+            else:
+                ok.append((url, status))
         except Exception as e:  # noqa: BLE001
             failed.append((url, repr(e)))
     # Because the campaign-level utmCampaign field cannot hold our slug shape (see create_draft),
@@ -780,8 +817,11 @@ def check_links(campaign_id: int, as_contact: str = None, expect_utm: str = None
     # does not see). EXACTLY one: zero means nobody can leave; two means two footers, which is a
     # template assembled twice. Either refuses as no_unsubscribe.
     unsub = unsubscribe_links(html)
-    return {"ok": ok, "failed": failed, "dynamic_unresolved": sorted(dynamic),
-            "brevo_system": sorted(system), "checked": len(ok) + len(failed),
+    # A DEAD LINK IS NOT IN `ok`, SO IT CANNOT SATISFY missing_utm EITHER. That matters more than it
+    # looks: a dead link carrying a perfect utm_campaign would otherwise report an empty
+    # missing_utm, and an empty refusal list reads as success.
+    return {"ok": ok, "failed": failed, "dead": dead, "dynamic_unresolved": sorted(dynamic),
+            "brevo_system": sorted(system), "checked": len(ok) + len(failed) + len(dead),
             "missing_utm": missing_utm, "unsubscribe_links": unsub,
             "no_unsubscribe": unsub != 1}
 
