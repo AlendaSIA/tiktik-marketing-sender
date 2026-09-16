@@ -218,5 +218,171 @@ class DictionaryMerge(unittest.TestCase):
         self.assertEqual(self.table, [("2026-w37-papildinam", None, "reorder_1")])
 
 
+# RESOLVED SEAM (MAIN, 2026-09-16). An ADDITION: every test above this line is untouched, and two
+# of them - test_template_without_marker_is_refused and test_refusal_creates_no_campaign - are the
+# pins that stop this addition from becoming a loophole. The shape below is the LIVE shape of
+# template 179, read from Brevo 2026-09-16: every href is the bare {{ contact.KABINETS_URL }}, the
+# product block sits inside {% if contact.KABINETS_HAS_PRODUCTS %}, and the only other href is
+# Brevo's own {{ unsubscribe }}.
+KAB = "{{ contact.KABINETS_URL }}"
+MARKERLESS = ('<!DOCTYPE html><html><body>{{ contact.SVEICIENS | default : "Sveiki!" }}'
+              '{% if contact.KABINETS_HAS_PRODUCTS %}'
+              '<a href="' + KAB + '"><img src="i.png"></a>'
+              '<a href="' + KAB + '">P1</a>'
+              '<a href="' + KAB + '">Atvert savu kabinetu</a>'
+              '{% endif %}'
+              '<a href="{{ unsubscribe }}">Atrakstities</a></body></html>')
+
+
+def _kab_url(week="2026-w37", k="7fb16c97949d63dae4521aebd3b79270", content="kabinets"):
+    """What the sync node is to write into KABINETS_URL: query string first, then the utm."""
+    return ("https://plani.tiktik.lv/kabinets.php?k=" + k + "&tab=preces"
+            "&utm_source=brevo&utm_medium=email&utm_campaign=" + week + "-kabinets"
+            "&utm_content=" + content)
+
+
+LIVE = {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": _kab_url(), "SVEICIENS": "Sveiki!"}
+
+
+class ResolvedSeam(unittest.TestCase):
+
+    def test_pairs_come_from_the_attribute_value_not_the_template(self):
+        self.assertEqual(C.utm_pairs(MARKERLESS), [])      # the template text says nothing
+        _, pairs = C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE)
+        self.assertEqual(pairs, [("2026-w37-kabinets", "kabinets")])
+
+    def test_the_html_is_returned_unchanged(self):
+        after, _ = C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE)
+        self.assertEqual(after, MARKERLESS)
+
+    def test_markerless_without_resolution_still_refuses(self):
+        # THE LOOPHOLE PIN. This addition must not make the old refusal reachable-past.
+        with self.assertRaises(C.UtmSeamRefused):
+            C.apply_utm_week(MARKERLESS, WEEK)
+
+    def test_resolved_week_must_be_the_drafts_week(self):
+        stale = dict(LIVE, KABINETS_URL=_kab_url(week="2026-w38"))
+        with self.assertRaises(C.UtmSeamRefused) as e:
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with=stale)
+        self.assertIn("2026-w38-kabinets", str(e.exception))
+
+    def test_resolved_link_without_any_utm_is_refused(self):
+        bare = dict(LIVE, KABINETS_URL="https://plani.tiktik.lv/kabinets.php?k=abc&tab=preces")
+        with self.assertRaises(C.UtmSeamRefused):
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with=bare)
+
+    def test_an_unresolved_placeholder_contributes_no_pair(self):
+        with self.assertRaises(C.UtmSeamRefused):
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with={"KABINETS_HAS_PRODUCTS": True})
+
+    def test_a_contact_who_sees_no_links_is_refused(self):
+        with self.assertRaises(C.UtmSeamRefused):
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with={"KABINETS_URL": _kab_url()})
+
+    def test_the_marker_seam_ignores_resolution_entirely(self):
+        after, pairs = C.apply_utm_week(TEMPLATE, WEEK, resolve_with=LIVE, confirm_with=LIVE)
+        self.assertEqual(pairs, [("2026-w37-papildinam", "hero"),
+                                 ("2026-w37-papildinam", "shop-all")])
+        self.assertNotIn(C.UTM_WEEK_MARKER, after)
+
+
+class TwoContactGuard(unittest.TestCase):
+    """One sample may not stand for everybody, because these pairs become the decode rows."""
+
+    def test_two_contacts_that_agree_pass(self):
+        other = dict(LIVE, KABINETS_URL=_kab_url(k="0000ffff0000ffff0000ffff0000ffff"))
+        _, pairs = C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE, confirm_with=other)
+        self.assertEqual(pairs, [("2026-w37-kabinets", "kabinets")])
+
+    def test_a_pair_that_varies_by_contact_is_refused(self):
+        other = dict(LIVE, KABINETS_URL=_kab_url(content="kabinets-b"))
+        with self.assertRaises(C.UtmPairsVaryByContact) as e:
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE, confirm_with=other)
+        self.assertIn("kabinets-b", str(e.exception))
+
+    def test_a_second_contact_who_sees_no_link_is_refused(self):
+        with self.assertRaises(C.UtmPairsVaryByContact):
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE,
+                             confirm_with={"KABINETS_URL": _kab_url()})
+
+    def test_the_guard_is_reported_as_a_seam_refusal(self):
+        self.assertTrue(issubclass(C.UtmPairsVaryByContact, C.UtmSeamRefused))
+
+    def test_the_guard_can_fail_and_can_pass(self):
+        agree = dict(LIVE, KABINETS_URL=_kab_url(k="aaaa"))
+        disagree = dict(LIVE, KABINETS_URL=_kab_url(content="other"))
+        C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE, confirm_with=agree)
+        with self.assertRaises(C.UtmPairsVaryByContact):
+            C.apply_utm_week(MARKERLESS, WEEK, resolve_with=LIVE, confirm_with=disagree)
+
+
+class DraftFromMarkerlessTemplate(unittest.TestCase):
+    """create_draft on the resolved seam: who is read, what is posted, what refuses first."""
+
+    def setUp(self):
+        self.calls = []
+        self._saved = (C._call, C.effective_audience)
+        self.html = MARKERLESS
+        self.contacts = {"a@x.lv": LIVE,
+                         "b@x.lv": dict(LIVE, KABINETS_URL=_kab_url(k="bbbb"))}
+
+        def fake_call(method, path, payload=None, timeout=30):
+            self.calls.append((method, path, payload))
+            if method == "GET" and path.startswith("/smtp/templates/"):
+                return {"htmlContent": self.html, "subject": "Laiks papildinat krajumus?",
+                        "isActive": False}
+            if method == "GET" and path.startswith("/contacts/"):
+                for email, attrs in self.contacts.items():
+                    if email.replace("@", "%40") in path or email in path:
+                        return {"attributes": attrs}
+                raise AssertionError(f"unexpected contact {path}")
+            if method == "POST" and path == "/emailCampaigns":
+                return {"id": 1001}
+            raise AssertionError(f"unexpected Brevo call {method} {path}")
+        C._call = fake_call
+        C.effective_audience = lambda list_id: 1
+        self.approved = {"SVEICIENS", "KABINETS_URL", "KABINETS_HAS_PRODUCTS"}
+
+    def tearDown(self):
+        C._call, C.effective_audience = self._saved
+
+    def _draft(self, **kw):
+        return C.create_draft(name="t", list_id=62, template_id=179, week=WEEK,
+                              approved_attributes=self.approved, **kw)
+
+    def test_a_second_contact_is_required_and_nothing_is_created(self):
+        with self.assertRaises(C.UtmSeamRefused) as e:
+            self._draft(resolve_as="a@x.lv")
+        self.assertIn("confirm_as", str(e.exception))
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+        self.assertFalse([c for c in self.calls if c[1].startswith("/contacts/")])
+
+    def test_draft_posts_the_unchanged_html_and_the_resolved_pairs(self):
+        d = self._draft(resolve_as="a@x.lv", confirm_as="b@x.lv")
+        post = [c for c in self.calls if c[0] == "POST"][0][2]
+        self.assertEqual(post["htmlContent"], MARKERLESS)
+        self.assertNotIn("templateId", post)
+        self.assertEqual(post["recipients"]["exclusionListIds"], [4])
+        self.assertEqual(d["pairs"], [("2026-w37-kabinets", "kabinets")])
+        self.assertEqual(d["id"], 1001)
+
+    def test_both_contacts_are_actually_read(self):
+        self._draft(resolve_as="a@x.lv", confirm_as="b@x.lv")
+        read = [c[1] for c in self.calls if c[1].startswith("/contacts/")]
+        self.assertEqual(len(read), 2)
+
+    def test_a_marker_template_reads_no_contact_at_all(self):
+        self.html = TEMPLATE
+        self.approved = self.approved | {"HERO_PRODUCT_URL"}   # TEMPLATE renders it; 179 does not
+        self._draft(resolve_as="a@x.lv")      # no confirm_as, and it must not be needed
+        self.assertFalse([c for c in self.calls if c[1].startswith("/contacts/")])
+        self.assertTrue([c for c in self.calls if c[0] == "POST"])
+
+    def test_markerless_without_resolve_as_creates_no_campaign(self):
+        with self.assertRaises(C.UtmSeamRefused):
+            self._draft()
+        self.assertFalse([c for c in self.calls if c[0] == "POST"])
+
+
 if __name__ == "__main__":
     unittest.main()
