@@ -79,3 +79,8 @@ def test_uzruna_validity_rule7():
     assert not D.uzruna_valid('SIA "BR', {})
     assert not D.uzruna_valid("Sandis Masulis", {"FIRSTNAME": "Sandis Masulis"})
     assert not D.uzruna_valid("Sandis", {"FIRSTNAME": "Sandis"})
+
+
+def test_liquid_tags_are_not_percent_text():
+    s = D.static_checks("<!DOCTYPE html><html><head></head><body>{% if contact.X %}a{% endif %}</body></html>", "")
+    assert s["percent_in_text"] == []
