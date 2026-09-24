@@ -21,11 +21,18 @@ Two of the three dead-link shapes answer 200. A check that trusts 200 passes the
 An UNKNOWN body is a FAIL (fail-closed): the first false negative is visible and costs one line
 in MARKERS; a false positive would reach a customer.
 
+V2 (MAIN 2026-09-24, command "all letters A to Z"): 1 to 3 contacts; --variant and --seq put
+"[TESTS <id> · <variant> · N/M]" in the subject so Raivis can take the letters in order; --send-limit K sends
+only the first K rendered letters (the order says ONE letter per template); the report carries the live
+template's sha256 (proof that Brevo holds the reviewed file byte for byte) and every visible price-slot
+placeholder (⟦…⟧). A placeholder is REPORTED, not failed: the price slot is known to be outside contract v2.7.
+
 THE SEAM (rule 11 + MAIN's order): the send refuses unless, on EVERY contact, KABINETS_HAS_PRODUCTS
 is a real boolean and KABINETS_URL carries utm_campaign=<week>-. Both come from Nakts
 sinhronizacija D1+D2. The refusal is here so the seam holds even if someone runs --send early.
 """
 import argparse
+import hashlib
 import html as _html
 import json
 import re
@@ -39,6 +46,8 @@ import campaign as C
 # THE ONLY RECIPIENT. Not a parameter. Widening it is a code change with a commit message.
 TEST_RECIPIENT = "raivis@alenda.lv"
 UA = "tiktik-campaign-linkcheck/1.0"
+# Visible placeholders for slots the contract does not carry yet (e.g. the winback/lost price slot).
+PLACEHOLDER = re.compile(r"⟦[^⟧]*⟧")
 
 # Contract v2.7, THE FIELDS (47) + KABINETS_URL (rule 10). Nothing else may be rendered.
 CONTRACT_FIELDS = frozenset(
@@ -204,13 +213,21 @@ def contact_checks(tpl_html, subject, email, week):
     return r
 
 
-def send_to_raivis(template_id, idx, n, res):
+def test_prefix(template_id, idx, n, variant=None, seq=None):
+    """[TESTS 179 · 1/3] (v1 form) or, with a variant and a sequence, [TESTS 231 · winback_2 · 4/8]."""
+    if variant and seq:
+        return f"[TESTS {template_id} · {variant} · {seq}]"
+    return f"[TESTS {template_id} · {idx}/{n}]"
+
+
+def send_to_raivis(template_id, idx, n, res, variant=None, seq=None):
+    tag = test_prefix(template_id, idx, n, variant, seq)[1:-1]
     banner = ("<div style=\"background:#fff3cd;padding:10px 14px;font:13px Arial;color:#5c4400;\">"
-              f"TESTS · šablons {template_id} · {idx}/{n} · renderēts kā {_html.escape(res['contact'])}. "
+              f"{_html.escape(tag)} · renderēts kā {_html.escape(res['contact'])}. "
               "Klientam NAV sūtīts. Kabineta saite ir klienta — neizvēlies tur paroli/bez paroles.</div>")
     body = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + banner, res["html"], count=1)
     payload = {"sender": {"id": C.SENDER_ID}, "to": [{"email": TEST_RECIPIENT}],
-               "subject": f"[TESTS {template_id} · {idx}/{n}] {res['subject']}",
+               "subject": f"{test_prefix(template_id, idx, n, variant, seq)} {res['subject']}",
                "htmlContent": body, "tags": ["draft-test", f"tpl-{template_id}"]}
     assert payload["to"] == [{"email": TEST_RECIPIENT}], "recipient guard"
     return C._call("POST", "/smtp/email", payload)
@@ -219,15 +236,24 @@ def send_to_raivis(template_id, idx, n, res):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--template", type=int, required=True)
-    ap.add_argument("--contacts", required=True, help="comma-separated, exactly 3")
+    ap.add_argument("--contacts", required=True, help="comma-separated, 1 to 3")
     ap.add_argument("--week", required=True, help="utm.py form, e.g. 2026-w39")
     ap.add_argument("--send", action="store_true")
+    ap.add_argument("--variant", default=None, help="email_type, printed in the test subject")
+    ap.add_argument("--seq", default=None, help="N/M, printed in the test subject")
+    ap.add_argument("--send-limit", type=int, default=0, help="send only the first K letters (0 = all)")
     a = ap.parse_args(argv)
     contacts = [c.strip() for c in a.contacts.split(",") if c.strip()]
-    if len(contacts) != 3:
-        sys.exit("exactly 3 contacts")
+    if not 1 <= len(contacts) <= 3:
+        sys.exit("1 to 3 contacts")
     if not re.fullmatch(r"\d{4}-w\d{2}", a.week):
         sys.exit("week must be YYYY-Www")
+    if a.variant is not None and not re.fullmatch(r"[a-z0-9_]{3,40}", a.variant):
+        sys.exit("variant must be an email_type")
+    if a.seq is not None and not re.fullmatch(r"\d{1,2}/\d{1,2}", a.seq):
+        sys.exit("seq must be N/M")
+    if a.send_limit < 0:
+        sys.exit("send-limit must be >= 0")
     t = C.template(a.template)
     tpl, subject = t.get("htmlContent") or "", t.get("subject") or ""
     st = static_checks(tpl, subject)
@@ -235,6 +261,10 @@ def main(argv=None):
         or st["template_side_utm"] or st["percent_in_text"]
     results = [contact_checks(tpl, subject, e, a.week) for e in contacts]
     report = {"template": a.template, "template_name": t.get("name"), "week": a.week,
+              "variant": a.variant, "seq": a.seq, "template_subject": subject,
+              "template_sha256": hashlib.sha256(tpl.encode("utf-8")).hexdigest(),
+              "template_active": t.get("isActive"),
+              "placeholders": sorted(set(PLACEHOLDER.findall(tpl + " " + subject))),
               "static": st, "static_ok": not static_bad,
               "contacts": [{k: v for k, v in r.items() if k != "html"} for r in results],
               "all_ok": (not static_bad) and all(r["ok"] for r in results), "sent": []}
@@ -242,8 +272,9 @@ def main(argv=None):
         if not report["all_ok"]:
             report["send_refused"] = "not all checks green - nothing sent"
         else:
-            for i, r in enumerate(results, 1):
-                report["sent"].append(send_to_raivis(a.template, i, len(results), r))
+            chosen = results[:a.send_limit] if a.send_limit else results
+            for i, r in enumerate(chosen, 1):
+                report["sent"].append(send_to_raivis(a.template, i, len(chosen), r, a.variant, a.seq))
     print(json.dumps(report, ensure_ascii=False, indent=1, default=str))
     return 0 if report["all_ok"] else 2
 
