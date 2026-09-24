@@ -64,3 +64,18 @@ def test_empty_category_is_dead_even_on_200(monkeypatch):
     monkeypatch.setattr(D, "fetch", lambda u, timeout=25: (200, "text/html", b"<title>x</title>"))
     v = D.link_verdict("https://www.tiktik.lv/veikals/category/nav/")
     assert not v["ok"]
+
+
+def test_neutral_greeting_ladder_renders_with_campaign_renderer():
+    import template_greeting_edit as G
+    assert D.render(G.NEW, {"UZRUNA": "Sandi", "VARDS": "Sandis"}).endswith("Sveiki, Sandi!</p>")
+    assert D.render(G.NEW, {"VARDS": "Sandis"}).endswith("Sveiki, Sandis!</p>")
+    assert D.render(G.NEW, {}).endswith("Sveiki!</p>")
+    assert "{%" not in D.render(G.NEW, {})
+
+
+def test_uzruna_validity_rule7():
+    assert D.uzruna_valid("Sandi", {"FIRSTNAME": "Sandis Masulis"})
+    assert not D.uzruna_valid('SIA "BR', {})
+    assert not D.uzruna_valid("Sandis Masulis", {"FIRSTNAME": "Sandis Masulis"})
+    assert not D.uzruna_valid("Sandis", {"FIRSTNAME": "Sandis"})
