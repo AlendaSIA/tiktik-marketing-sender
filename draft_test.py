@@ -142,6 +142,16 @@ def static_checks(tpl_html, subject):
     return out
 
 
+_COMPANY = re.compile(r"(^|[\s\"'«])(SIA|IK|AS|Z/S|ZS)([\s\"'»]|$)", re.I)
+
+
+def uzruna_valid(uz, attrs):
+    """Rule 7: VALID = a single token, no company designation, not equal to the full name."""
+    full = str(attrs.get("FIRSTNAME") or "").strip()
+    return (len(uz.split()) == 1 and not _COMPANY.search(uz)
+            and uz.casefold() != full.casefold())
+
+
 def contact_checks(tpl_html, subject, email, week):
     attrs = C.contact_attributes(email)
     body = render(tpl_html, attrs)
@@ -159,6 +169,9 @@ def contact_checks(tpl_html, subject, email, week):
     ku = str(attrs.get("KABINETS_URL") or "")
     if f"utm_campaign={week}-" not in ku:
         p.append(f"SEAM: KABINETS_URL has no utm_campaign={week}- (rule 10 / D1)")
+    uz = str(attrs.get("UZRUNA") or "").strip()
+    if uz and not uzruna_valid(uz, attrs):
+        p.append(f"UZRUNA {uz!r} is not VALID (rule 7) - the writer must blank it so the ladder falls back")
     for k, v in attrs.items():
         if re.fullmatch(r"[PR][1-8]_PRICE", k) and v not in (None, "") and not _PRICE_OK.match(str(v)):
             p.append(f"{k}={v!r} breaks rule 2 format")
