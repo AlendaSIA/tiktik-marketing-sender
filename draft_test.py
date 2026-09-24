@@ -137,7 +137,8 @@ def static_checks(tpl_html, subject):
     out["nested_double_quote_hrefs"] = re.findall(r'href="\{\{[^}]*"[^}]*\}\}', h)
     # UTM must not be written into the template (rule 10) except via the contact's own URL value.
     out["template_side_utm"] = sorted(set(re.findall(r"utm_campaign=([^&\"'\s]+)", h)))
-    visible = re.sub(r"(?s)<(style|script)[^>]*>.*?</\1>|<[^>]+>", " ", h)
+    visible = re.sub(r"(?s)\{%.*?%\}|\{\{.*?\}\}", " ", h)  # Liquid tags are not text
+    visible = re.sub(r"(?s)<(style|script)[^>]*>.*?</\1>|<[^>]+>", " ", visible)
     out["percent_in_text"] = re.findall(r"[^\s]{0,20}%[^\s]{0,20}", _html.unescape(visible))
     return out
 
