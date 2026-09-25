@@ -114,7 +114,9 @@ def display_checks(tpl_html, rendered, subject, attrs):
           "fresh_line_expected": fresh_want, "ok": not gate and fresh_shown == fresh_want}
 
     h1 = _text((_H1.search(rendered) or [None, ""])[1])
-    claims = [ln for ln in lines if _CLAIM.search(ln) and ln != h1]
+    # The TAVA CENA label is part of the P2 display, checked above. A price in force that was agreed with the
+    # customer (v2.8.1 A1) can carry it without an OFFER_VALID_UNTIL, so it is not a claim that needs the date.
+    claims = [ln for ln in lines if _CLAIM.search(ln) and ln != h1 and ln != "TAVA CENA"]
     left = sorted(set(re.findall(chr(0x27E6) + "[^" + chr(0x27E7) + "]*" + chr(0x27E7),
                                  (tpl_html or "") + (subject or "") + rendered)))
     head_claims = bool(_CLAIM.search(subject or "") or _CLAIM.search(h1))

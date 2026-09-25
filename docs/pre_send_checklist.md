@@ -18,4 +18,4 @@ Started 2026-09-25 on MAIN's command 5.
 | 10 | 235 data: R rows already bought (421) or also a D line (68) fixed; co-purchase table refreshed | sync side (issued by MAIN) | open |
 | 11 | 236: someone owns the featured page ("Nedelas akcijas") - no weekly refresh since 23.09 | MAIN / shop | open |
 | 12 | Draft test all_ok on 3 real contacts of the send week, and the test letter read by Raivis | `draft_test.py` | done 25.09 for 229-236 |
-| 13 | 232/233 go only to a contact with a personal price (OFFER_VALID_UNTIL non-empty): their subject and h1 promise one, and a subject cannot switch in the template (the body does: v2.8 P2/P4) | Sutisanas dzinejs (gate) + MAIN | open |
+| 13 | 232/233 go only to a contact with a personal price (OFFER_VALID_UNTIL non-empty): their subject and h1 promise one, and a subject cannot switch in the template (the body does: v2.8 P2/P4) | Sutisanas dzinejs (gate) + MAIN | BLOCKING - accepted by MAIN 25.09 and issued to Sutisanas dzinejs; stays blocking until the engine reports the gate built |

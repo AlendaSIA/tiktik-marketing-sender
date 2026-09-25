@@ -139,5 +139,15 @@ class ContractV28Display(unittest.TestCase):
             for n in range(1, 9):
                 self.assertEqual(tpl(tid).count(cell % (n, n, n, n)), 2 if n == 1 else 1, (tid, n))
 
+    def test_a_reference_without_a_date_is_still_clean(self):
+        # v2.8.1 A1: a negotiated price in force shows under P2; if the writer leaves OFFER_VALID_UNTIL empty the
+        # letter shows the struck reference and the label, but no date line and no "sava cena" sentence.
+        attrs = dict(WITH_REF, OFFER_VALID_UNTIL="")
+        for tid in ALL:
+            out = D.render(tpl(tid), attrs)
+            r = V.display_checks(tpl(tid), out, "S", attrs)
+            self.assertTrue(r["ok"], (tid, r))
+            self.assertEqual(out.count(V._LABEL), 1, tid)
+
 if __name__ == "__main__":
     unittest.main()
