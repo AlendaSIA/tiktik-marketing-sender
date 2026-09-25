@@ -4,7 +4,11 @@ import json
 import os
 import sys
 
-import pytest
+try:
+    import pytest
+except ImportError:  # the image runs `python -m unittest discover -s tests` without pytest
+    import unittest
+    raise unittest.SkipTest("pytest-style module: run it with python -m pytest")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import template_put as T  # noqa: E402
