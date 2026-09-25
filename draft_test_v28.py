@@ -7,15 +7,18 @@ things in Brevo". So the no_ref case WRITES every v2.8 field - empty, false or 0
 
     python draft_test_v28.py --template 232 --commit <40-hex sha> --week 2026-w39 --case with_ref|no_ref
 
-1. The template is the FILE the manifest names, fetched at --commit and refused unless its git blob sha AND its
-   sha256 equal the manifest's (template_put.fetch / blob_sha). Never the live Brevo template: v2.8 has not
-   reached Brevo (MAIN: "prepare, do not update live Brevo templates").
+1. The template is the FILE the manifest names (its "templates" rows, 229-236, or its "live_mapped" rows, 179 and
+   180), fetched at --commit and refused unless its git blob sha AND its sha256 equal the manifest's
+   (template_put.fetch / blob_sha). Never the live Brevo template: v2.8 has not reached Brevo (MAIN: "prepare, do
+   not update live Brevo templates").
 2. The contact is TEST_CONTACT, read live from Brevo (GET only), with the v2.8 fields of --case laid over it.
 3. draft_test's own checks run unchanged (static_checks, contact_checks: unresolved tags, rule-2 price format -
    now including P<n>_REF_PRICE -, every link 200, every image), plus the v2.8 rules this node enforces:
      P2 display  a slot shows its crossed-out reference, and the TAVA CENA label, iff P<n>_REF_PRICE is non-empty;
      P4 display  the "valid until" line (and the preheader that carries it) shows iff OFFER_VALID_UNTIL is non-empty;
-     P6          the fresh-batch line sits inside {% if contact.P1_FRESH %} and shows iff P1_FRESH is true;
+                 a letter without such a line never shows one;
+     P6          the fresh-batch line sits inside {% if contact.P1_FRESH %} and shows iff P1_FRESH is true (232-234;
+                 the other letters have no fresh line);
    no U+27E6 placeholder is left, and without a personal price the body claims none.
 Nothing is sent and nothing is written: there is no send path in this file.
 """
@@ -92,14 +95,23 @@ def display_checks(tpl_html, rendered, subject, attrs):
     body = "\n".join(lines)
     pre = preheader(rendered) or ""
     line_shown = SPEKA_LIDZ in body
-    p4 = {"offer_valid_until": until, "valid_until_line": line_shown, "preheader": pre,
-          "ok": ((SPEKA_LIDZ + " " + until) in body and bool(pre)) if until else (not line_shown and pre == "")}
+    # Only 232-234 carry a valid-until line (and a preheader that depends on it). A letter without one must
+    # never show one; its preheader is its own and is not judged here.
+    has_until = "contact.OFFER_VALID_UNTIL" in (tpl_html or "")
+    if has_until:
+        p4_ok = ((SPEKA_LIDZ + " " + until) in body and bool(pre)) if until else (not line_shown and pre == "")
+    else:
+        p4_ok = not line_shown
+    p4 = {"template_has_line": has_until, "offer_valid_until": until, "valid_until_line": line_shown,
+          "preheader": pre, "ok": p4_ok}
 
+    has_fresh = bool(P.fresh_line_blockers(tpl_html, None))  # the letter has a fresh-batch line at all
     gate = P.fresh_line_blockers(tpl_html, "P1_FRESH")
     fresh_shown = "partij" in body.lower()
-    fresh_want = bool(attrs.get("KABINETS_HAS_PRODUCTS")) and bool(attrs.get("P1_NAME")) and attrs.get("P1_FRESH") is True
-    p6 = {"ungated_fresh_lines": len(gate), "fresh_line_shown": fresh_shown, "fresh_line_expected": fresh_want,
-          "ok": not gate and fresh_shown == fresh_want}
+    fresh_want = (has_fresh and bool(attrs.get("KABINETS_HAS_PRODUCTS")) and bool(attrs.get("P1_NAME"))
+                  and attrs.get("P1_FRESH") is True)
+    p6 = {"template_has_line": has_fresh, "ungated_fresh_lines": len(gate), "fresh_line_shown": fresh_shown,
+          "fresh_line_expected": fresh_want, "ok": not gate and fresh_shown == fresh_want}
 
     h1 = _text((_H1.search(rendered) or [None, ""])[1])
     claims = [ln for ln in lines if _CLAIM.search(ln) and ln != h1]
@@ -124,7 +136,8 @@ def main(argv=None):
         sys.exit("commit must be a full 40-hex sha")
     if not re.fullmatch(r"\d{4}-w\d{2}", a.week):
         sys.exit("week must be YYYY-Www")
-    rows = [r for r in json.load(open(a.manifest, encoding="utf-8"))["templates"] if r["id"] == a.template]
+    m = json.load(open(a.manifest, encoding="utf-8"))
+    rows = [r for r in m["templates"] + m.get("live_mapped", []) if r["id"] == a.template]
     if len(rows) != 1:
         sys.exit("template %d is not in the manifest" % a.template)
     row = rows[0]
