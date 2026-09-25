@@ -63,7 +63,9 @@ CONTRACT_FIELDS = frozenset(
     [f"P{i}_{s}" for i in range(1, 9) for s in ("NAME", "IMG", "PRICE")]
     + [f"R{i}_{s}" for i in range(1, 5) for s in ("NAME", "IMG", "PRICE")]
     + [f"D{i}_{s}" for i in range(1, 5) for s in ("NAME", "URL")]
-    + ["KABINETS_HAS_PRODUCTS", "VARDS", "UZRUNA", "KABINETS_URL"])
+    + ["KABINETS_HAS_PRODUCTS", "VARDS", "UZRUNA", "KABINETS_URL"]
+    # Contract v2.8 (d1f506313dc1, 2026-09-25): +11 price fields, 47 -> 58.
+    + [f"P{i}_REF_PRICE" for i in range(1, 9)] + ["P1_FRESH", "OFFER_VALID_UNTIL", "OFFER_RUNG"])
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
 # Rule 6: an R row with spread reads "no <price>".
@@ -268,8 +270,10 @@ def links_to(tpl_html, attrs, field):
     return any(re.search(r"\{\{\s*contact\." + field + r"\b", h) for h in C.hrefs_in(blocks))
 
 
-def contact_checks(tpl_html, subject, email, week):
-    attrs = C.contact_attributes(email)
+def contact_checks(tpl_html, subject, email, week, attrs=None):
+    """attrs=None reads the contact from Brevo; draft_test_v28 passes the rule-11 TEST_CONTACT with the v2.8
+    fields laid over it, because Brevo does not carry those fields yet."""
+    attrs = C.contact_attributes(email) if attrs is None else attrs
     body = render(tpl_html, attrs)
     subj = render(subject, attrs)
     r = {"contact": email, "problems": []}
@@ -295,7 +299,7 @@ def contact_checks(tpl_html, subject, email, week):
     if uz and not uzruna_valid(uz, attrs):
         p.append(f"UZRUNA {uz!r} is not VALID (rule 7) - the writer must blank it so the ladder falls back")
     for k, v in attrs.items():
-        if re.fullmatch(r"[PR][1-8]_PRICE", k) and v not in (None, "") and not _PRICE_OK.match(str(v)):
+        if re.fullmatch(r"[PR][1-8]_PRICE|P[1-8]_REF_PRICE", k) and v not in (None, "") and not _PRICE_OK.match(str(v)):
             p.append(f"{k}={v!r} breaks rule 2 format")
     links = []
     for href in sorted(set(C.hrefs_in(body))):
