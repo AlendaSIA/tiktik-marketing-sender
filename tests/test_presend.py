@@ -18,9 +18,13 @@ DOT = chr(0xB7)  # the middle dot draft_test puts between the prefix parts
 
 class FreshLine(unittest.TestCase):
 
-    def test_no_flag_in_the_contract_blocks_every_fresh_line(self):
+    def test_no_flag_blocks_every_fresh_line(self):
         self.assertEqual(len(P.fresh_line_blockers(GATED, flag=None)), 1)
-        self.assertIsNone(P.FRESH_FLAG_FIELD)
+
+    def test_the_flag_is_the_one_contract_v28_names(self):
+        self.assertEqual(P.FRESH_FLAG_FIELD, "P1_FRESH")  # v2.8 rule P6
+        self.assertEqual(P.fresh_line_blockers(GATED), [])
+        self.assertEqual(len(P.fresh_line_blockers(UNGATED)), 1)  # the live 232-234 today
 
     def test_inside_the_flag_passes(self):
         self.assertEqual(P.fresh_line_blockers(GATED, flag="P1_FRESH"), [])

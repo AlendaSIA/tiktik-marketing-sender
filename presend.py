@@ -6,8 +6,9 @@ the letters themselves, read live from Brevo (GET /smtp/templates/{id} only - no
   FRESH_LINE_UNGATED - MAIN, command 5, 2026-09-25, verbatim: "the 'jauna partija' line in 232/233/234 is
       today inside {% if contact.P1_NAME %} only. It must be wrapped in the v2.8 fresh flag before any send -
       add this as a blocking check to your pre-send list so it cannot be forgotten." Every "partij..." word
-      must stand inside {% if contact.<FRESH_FLAG_FIELD> %} (its true branch, at any depth). The field name
-      comes with contract v2.8; until it is written below, EVERY such line is ungated and blocks.
+      must stand inside {% if contact.<FRESH_FLAG_FIELD> %} (its true branch, at any depth). Contract v2.8
+      (d1f506313dc1, rule P6) names the field: P1_FRESH. The check reads the LIVE Brevo template, so it keeps
+      blocking until the wrapped templates are actually in Brevo ("until that wrap is live").
   PLACEHOLDER_LEFT - any U+27E6 bracket left in subject, preheader or HTML (the same rule campaign.send_now
       enforces since F7, listed here so the pre-send list shows it before a send is even attempted).
 
@@ -20,7 +21,7 @@ import sys
 
 import campaign as C
 
-FRESH_FLAG_FIELD = None          # contract v2.8 names it; None = not in the contract yet = every fresh line blocks
+FRESH_FLAG_FIELD = "P1_FRESH"    # contract v2.8 rule P6 (was None = not in the contract yet = every fresh line blocks)
 DEFAULT_TEMPLATES = (229, 230, 231, 232, 233, 234, 235, 236)
 _FRESH = re.compile(r"partij", re.I)                         # partija / partiju / partijas / partijai
 _TAG = re.compile(r"\{%\s*(if\s+(.+?)|else|endif)\s*%\}", re.S)
