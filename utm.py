@@ -41,6 +41,7 @@ THEMES = {
     "active_xsell": "komplekts",
     "reorder_1": "papildinam",
     "reorder_2": "papildinam-2",
+    "reorder_3": "papildinam-3",
     "winback_1": "tava-cena",
     "winback_2": "tava-cena-2",
     "winback_3": "tava-cena-3",
