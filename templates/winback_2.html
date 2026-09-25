@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Jauna preču partija — par tavu cenu</title>
+<title>Tava cena tavām ierastajām precēm</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#222;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Tieši tās preces, ko tu pie mums parasti ņem.</div>
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Tā ir spēkā līdz ⟦LĪDZ DATUMAM⟧.</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;">
 <tr><td align="center" style="padding:18px 12px;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
@@ -16,12 +16,12 @@
 </td></tr>
 
 <tr><td align="center" style="padding:14px 28px 0;">
-<h1 style="margin:0;font-size:22px;line-height:1.3;color:#111;">Jauna preču partija — par tavu cenu</h1>
+<h1 style="margin:0;font-size:22px;line-height:1.3;color:#111;">Tava cena tavām ierastajām precēm</h1>
 </td></tr>
 
 <tr><td style="padding:14px 28px 4px;font-size:15px;line-height:1.6;">
 <p style="margin:0 0 10px;">{% if contact.UZRUNA %}Sveiki, {{ contact.UZRUNA }}!{% else %}{% if contact.VARDS %}Sveiki, {{ contact.VARDS }}!{% else %}Sveiki!{% endif %}{% endif %}</p>
-{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">Tikko iepirkām jaunu partiju tavu ierasto preču. Domājām arī par tevi — tev ir sava cena. To redzi zemāk, pie katras tavas preces.</p>{% else %}<p style="margin:0 0 4px;">Tikko iepirkām jaunu preču partiju. Ja kaut ko vajag, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
+{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.P1_NAME %}Tikko iepirkām jaunu partiju ({{ contact.P1_NAME }}).{% else %}Šonedēļ pārskatījām tavu ierasto preču cenas.{% endif %} Domājām arī par tevi — tev ir sava cena. To redzi zemāk, pie katras tavas preces.</p>{% else %}<p style="margin:0 0 4px;">Šonedēļ pārskatījām preču cenas. Ja kaut ko vajag, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
 </td></tr>
 
 {% if contact.KABINETS_HAS_PRODUCTS %}
@@ -35,7 +35,7 @@
 </td></tr>
 
 <tr><td style="padding:14px 28px 0;font-size:15px;line-height:1.6;">
-<p style="margin:0 0 4px;">Šī cena tev ir spēkā līdz ⟦LĪDZ DATUMAM⟧ — kamēr jaunā partija ir noliktavā.</p>
+<p style="margin:0 0 4px;">Šī cena tev ir spēkā līdz ⟦LĪDZ DATUMAM⟧ — kamēr prece ir noliktavā.</p>
 </td></tr>
 
 {% if contact.R1_NAME %}

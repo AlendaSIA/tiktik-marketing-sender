@@ -21,13 +21,13 @@
 
 <tr><td style="padding:14px 28px 4px;font-size:15px;line-height:1.6;">
 <p style="margin:0 0 10px;">{% if contact.UZRUNA %}Sveiki, {{ contact.UZRUNA }}!{% else %}{% if contact.VARDS %}Sveiki, {{ contact.VARDS }}!{% else %}Sveiki!{% endif %}{% endif %}</p>
-{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">Vakar paskatījāmies, ko pie mums ņem tie, kas pērk to pašu, ko tu. {% if contact.R1_NAME %}Daudzi paņem arī preces, kas iet kopā ar tavējām. Salikām tās zemāk — lai nav jāmeklē pa visu veikalu.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Vakar paskatījāmies, ko pie mums ņem tie, kas pērk to pašu, ko tu. Ja gribi sarakstu, atbildi uz šo vēstuli — saliksim.</p>{% endif %}
+{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">Paskatījāmies, ko pie mums ņem tie, kas pērk to pašu, ko tu. {% if contact.R1_NAME %}Kopā ar tavām precēm viņi ņem arī citas. Salikām tās zemāk — lai nav jāmeklē pa visu veikalu.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Paskatījāmies, ko pie mums ņem tie, kas pērk to pašu, ko tu. Ja gribi sarakstu, atbildi uz šo vēstuli — saliksim.</p>{% endif %}
 </td></tr>
 
 {% if contact.KABINETS_HAS_PRODUCTS %}
 {% if contact.R1_NAME %}
 <tr><td style="padding:14px 28px 0;font-size:15px;line-height:1.6;">
-<p style="margin:0 0 4px;"><strong>Bieži vienā kastē ar tavējām</strong></p>
+<p style="margin:0 0 4px;"><strong>Citi tās ņem kopā ar tavējām</strong></p>
 <p style="margin:0 0 4px;font-size:14px;color:#555;">Kad nākamreiz pasūtīsi savas preces, vari pielikt klāt — nav jāpasūta divreiz.</p>
 </td></tr>
 <tr><td style="padding:12px 28px 0;">
