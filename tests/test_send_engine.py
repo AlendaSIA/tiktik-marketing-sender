@@ -129,3 +129,23 @@ class ShadowPipedrive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShadowJobCannotSend(unittest.TestCase):
+    def test_imports_no_send_module(self):
+        import ast
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        names = set()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Import):
+                names |= {a.name for a in node.names}
+            elif isinstance(node, ast.ImportFrom):
+                names.add(node.module)
+        self.assertFalse(names & {"brevo", "campaign", "campaign_job", "main", "push", "press_live",
+                                  "draft_test", "requests"}, names)
+        self.assertNotIn("api.brevo.com", src)
+        self.assertNotIn("pipedrive.com", src)
+
+    def test_history_switch_is_locked(self):
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertIn('assert not APPLY_HISTORY', src)
