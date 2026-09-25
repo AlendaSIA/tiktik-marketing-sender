@@ -10,10 +10,10 @@ Started 2026-09-25 on MAIN's command 5.
 | 2 | PLACEHOLDER_LEFT - no U+27E6 bracket in subject, preheader or HTML (price slots 232-234, weekly theme/offer 236) | `campaign.send_now` refuses (F7, live in e4b8116) and `presend.py` | BLOCKED - 232/233/234/236 carry tokens |
 | 3 | Contract v2.8 delivers the price fields and the fresh flag; tokens replaced | sync side + MAIN | open |
 | 4 | Raivis approved the letter ("der N") and a `mkt_control.template_approval` row exists | MAIN | open |
-| 5 | Mapping in `mkt_control.email_template_map_manual` for the variant | MAIN, after 4 | open (only 179, 180 mapped) |
+| 5 | Mapping in `mkt_control.email_template_map_manual` for the variant | `sql/email_template_map_229_236.sql` (Vestulu sabloni), applied on MAIN's word, after 4 | prepared 25.09, NOT applied (229-235; 236 waits on the akcija_weekly guard) |
 | 6 | Template active in Brevo | MAIN, after 4 | all inactive |
 | 7 | Track switched on in `mkt_control.track_enabled` | Raivis / MAIN | 0 of 9 on |
-| 8 | The send path is built (`campaign.send_now` still raises "not built") and the day's press approval exists | MAIN | not built |
+| 8 | The send path is built (`campaign.send_now` still raises "not built") and the day's press approval exists | Sutisanas dzinejs (owner of the send path since 25.09) + MAIN | not built |
 | 9 | Slot gates live (179, 180, 232-234 need P1; 235 needs R1) | `bq.PLAN_SQL` in e4b8116 | done |
 | 10 | 235 data: R rows already bought (421) or also a D line (68) fixed; co-purchase table refreshed | sync side (issued by MAIN) | open |
 | 11 | 236: someone owns the featured page ("Nedelas akcijas") - no weekly refresh since 23.09 | MAIN / shop | open |
