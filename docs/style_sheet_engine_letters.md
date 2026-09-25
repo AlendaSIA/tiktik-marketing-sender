@@ -63,7 +63,7 @@ B4. **Welcome** never discounts. **akcija** is the weekly residual letter (brand
 C1. **"mēs" speaks, the reader is "tu".** "Paskatījāmies, ko tu pie mums pērc visbiežāk." [221] · "ko tu mēdz ņemt" [179, 180].
     "jūs/jums/jūsu" occur 0 times in 9 sources. "es" only in his personal 1:1 mails.
 C2. **Open with what we did or noticed, past tense + a time word — never with thanks, a slogan or the offer.**
-    "Šodien staigājām pa noliktavu…" [179] · "Šoredēļ nolaidām cenas visai Mercator Medical līnijai — …" [222] ·
+    "Šodien staigājām pa noliktavu…" [179] · "Šonedēļ nolaidām cenas visai Mercator Medical līnijai — …" [222] ·
     "Sen neesam redzējušies. Paskatījāmies — tavas preces joprojām ir plauktā…" [180].
 C3. **About the reader's own goods and habits.** "Tieši tās, ko tu mēdz ņemt." [179] · "tava cena tavām TOP precēm" [221].
 C4. **Take work away, then promise what we do.** "Grozs jau salikts. … nekas nav jāpasūta uzreiz." [221] ·
