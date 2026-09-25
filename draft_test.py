@@ -20,6 +20,8 @@ campaign.py's own UA, no redirect following:
 Two of the three dead-link shapes answer 200. A check that trusts 200 passes them.
 An UNKNOWN body is a FAIL (fail-closed): the first false negative is visible and costs one line
 in MARKERS; a false positive would reach a customer.
+Re-measured 2026-09-25: a valid KABINETS_URL now answers a small LOADER page that boots the cabinet
+through its own link (+ &boot=1). The facts, and the one follow they allow, are at MARKERS.
 
 V2 (MAIN 2026-09-24, command "all letters A to Z"): 1 to 3 contacts; --variant and --seq put
 "[TESTS <id> · <variant> · N/M]" in the subject so Raivis can take the letters in order; --send-limit K sends
@@ -30,6 +32,13 @@ placeholder (⟦…⟧). A placeholder is REPORTED, not failed: the price slot i
 THE SEAM (rule 11 + MAIN's order): the send refuses unless, on EVERY contact, KABINETS_HAS_PRODUCTS
 is a real boolean and KABINETS_URL carries utm_campaign=<week>-. Both come from Nakts
 sinhronizacija D1+D2. The refusal is here so the seam holds even if someone runs --send early.
+
+V3 (MAIN 2026-09-25). F1: the cabinet LOADER is followed through its own boot link, once, and passes
+only as a booted cabinet (link_verdict). F6: a template that carries campaign.UTM_WEEK_MARKER is
+checked AS THE SEND PATH SENDS IT - campaign.apply_utm_week(template, week) first, the call
+campaign.create_draft makes, then rendering and every check (send_path_html). A template without the
+marker is rendered as stored: the engine templates carry none, their UTM rides on the attribute values
+(rule 10). static_checks accepts the seam form __UTM_WEEK__-<base> and still flags a written-in week.
 """
 import argparse
 import hashlib
@@ -60,14 +69,35 @@ CONTRACT_FIELDS = frozenset(
 # Rule 6: an R row with spread reads "no <price>".
 _PRICE_OK = re.compile(r"^(no )?\d{1,3}( \d{3})*,\d{2} €$")
 
+# THE CABINET, measured live 2026-09-25 on a real customer's KABINETS_URL (execution
+# tiktik-draft-test-pbh8f; the customer stays anonymous here), this file's UA, no redirect following:
+#   letter URL      kabinets.php?k=<32 hex>&tab=preces&utm_source=brevo&utm_medium=email
+#                   &utm_campaign=2026-w39-kabinets
+#                   -> 200, 1 771-1 782 B, <title>tiktik.lv dokumentu kabinets</title>, h1 "Uzgaidi,
+#                   ielādējam tavu kabinetu", text "Sameklējam tavus pasūtījumus un preču dokumentus — tas
+#                   aizņem pāris sekundes." A LOADER. Its one link, "Turpināt", is the letter URL + &boot=1
+#                   (&amp;-escaped); its script fetch()es the same URL and document.write()s the answer.
+#                   4 refetches over 30 s: the same loader every time.
+#   letter + &boot=1 -> 200, 23 839 B, <title>Mans kabinets</title>, 0.4 s: the booted cabinet. It holds
+#                   neither "Laipni lūdzam kabinetā" nor a login marker.
+#   invalid token   -> 200, 4 275 B, the login page ("Atsūtīt man saiti"): DEAD, as on 2026-09-24.
+# So the loader is a KNOWN body, but it passes only through its own boot link, followed ONCE and checked
+# against the letter URL (link_verdict). A "Mans kabinets" page reached DIRECTLY was not measured and
+# stays UNKNOWN_BODY. The 2026-09-24 access-choice page ("Laipni lūdzam kabinetā") still passes as is.
+KABINETS_LOADER = "Uzgaidi, ielādējam tavu kabinetu"
+KABINETS_BOOTED = "<title>Mans kabinets</title>"
+_KABINETS = re.compile(r"^https://plani\.tiktik\.lv/kabinets\.php\?")
+
 # Body markers, keyed by URL shape. (must_have_any, must_not_have_any, min_item_links)
 MARKERS = [
-    (re.compile(r"^https://plani\.tiktik\.lv/kabinets\.php\?"),
-     ("Laipni lūdzam kabinetā",),            # UNVERIFIED: the in-cabinet page (a customer who
-                                             # already chose) has its own marker, not measured yet
+    (_KABINETS,
+     ("Laipni lūdzam kabinetā",              # access-choice page, 2026-09-24
+      KABINETS_LOADER),                      # loader, 2026-09-25 - passes only via its boot link
      ("Atsūtīt man saiti", "Ieej savā kabinetā"), 0),
     (re.compile(r"^https://www\.tiktik\.lv/veikals/item/"),
      ('itemprop="price"',), ("<title>Tiktik - Veikals</title>",), 0),
+    # Also the shop's featured page (rule 14 fallback; akcija_weekly's no-cabinet box, F6). Measured
+    # 2026-09-25 with the week's utm query: 200, 180 565 B, 61 distinct /veikals/item/ links - passes as is.
     (re.compile(r"^https://www\.tiktik\.lv/veikals/(category|params/category)/"),
      ("/veikals/item/",), ("<title>Tiktik - Veikals</title>",), 1),
 ]
@@ -104,11 +134,72 @@ def link_verdict(url):
                 return {"url": url, "ok": False, "why": f"dead-page marker {bad[0]!r} (status was 200)"}
             if not any(m in text for m in must):
                 return {"url": url, "ok": False, "why": f"UNKNOWN_BODY: none of {list(must)}"}
+            if rx is _KABINETS and KABINETS_LOADER in text:
+                # Checked before the access-choice marker on purpose: a body carrying both takes the
+                # stricter road.
+                return _loader_verdict(url, text, len(body), must_not)
             items = len(set(re.findall(r'href="[^"]*/veikals/item/[^"]*"', text)))
             if items < min_items:
                 return {"url": url, "ok": False, "why": f"{items} product links < {min_items}"}
             return {"url": url, "ok": True, "bytes": len(body)}
     return {"url": url, "ok": False, "why": "UNKNOWN_URL_SHAPE: no body marker defined, fail-closed"}
+
+
+_A_HREF = re.compile(r"""<a\b[^>]*?\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.I | re.S)
+
+
+def _boot_link(url, loader_text):
+    """(boot_url, None) or (None, why). The boot link is taken from the loader's own <a href> (never
+    from its script), html-unescaped and resolved against the letter URL. It must keep the letter
+    URL's scheme, host and path, and its query must be exactly the letter's query + &boot=1."""
+    found = set()
+    for m in _A_HREF.finditer(loader_text):
+        href = _html.unescape(next(g for g in m.groups() if g is not None)).strip()
+        query = urllib.parse.urlsplit(href).query
+        if any(k == "boot" for k, _ in urllib.parse.parse_qsl(query, keep_blank_values=True)):
+            found.add(urllib.parse.urljoin(url, href))
+    if not found:
+        return None, "LOADER_NO_BOOT_LINK: the loader page has no <a href> carrying boot="
+    if len(found) > 1:
+        return None, f"LOADER_AMBIGUOUS: {len(found)} different boot links in the loader page"
+    boot = found.pop()
+    L, B = urllib.parse.urlsplit(url), urllib.parse.urlsplit(boot)
+    if (B.scheme, B.netloc, B.path) != (L.scheme, L.netloc, L.path):
+        return None, (f"LOADER_BOOT_LINK_ELSEWHERE: the boot link goes to {B.scheme}://{B.netloc}{B.path}, "
+                      f"not to the letter's {L.scheme}://{L.netloc}{L.path}")
+    want = f"{L.query}&boot=1" if L.query else "boot=1"
+    if B.query == want and not B.fragment:
+        return boot, None
+    lq = urllib.parse.parse_qsl(L.query, keep_blank_values=True)
+    bq = urllib.parse.parse_qsl(B.query, keep_blank_values=True)
+    if B.fragment:
+        why = "it carries a #fragment"
+    elif bq[-1:] != [("boot", "1")]:
+        why = "its query does not end in boot=1"
+    elif bq[:-1] != lq:
+        why = ("it changes the letter's query (" +
+               (", ".join(sorted({k for k, _ in set(lq) ^ set(bq[:-1])})) or "parameter order") + ")")
+    else:
+        why = "its query is encoded differently from the letter's (byte-exact match required)"
+    return None, f"LOADER_BOOT_LINK_MISMATCH: {why}; it must be the letter URL + &boot=1"
+
+
+def _loader_verdict(url, loader_text, loader_bytes, must_not):
+    """The loader's boot link, followed ONCE with fetch() (no redirects). Passes only as a booted cabinet:
+    200, no dead-page marker, <title>Mans kabinets</title>. Everything else fails with its own why."""
+    boot, why = _boot_link(url, loader_text)
+    if why:
+        return {"url": url, "ok": False, "why": why}
+    status, ctype, body = fetch(boot)
+    if status != 200:
+        return {"url": url, "ok": False, "why": f"LOADER>BOOT: status {status} {ctype}"[:160]}
+    text = body.decode("utf-8", "replace")
+    bad = [m for m in must_not if m in text]
+    if bad:
+        return {"url": url, "ok": False, "why": f"LOADER>BOOT: dead-page marker {bad[0]!r} (status was 200)"}
+    if KABINETS_BOOTED not in text:
+        return {"url": url, "ok": False, "why": f"LOADER>BOOT: UNKNOWN_BODY: no {KABINETS_BOOTED}"}
+    return {"url": url, "ok": True, "via": "loader>boot", "bytes": len(body), "loader_bytes": loader_bytes}
 
 
 _FILTERED = re.compile(r"\{\{\s*contact\.([A-Za-z0-9_]+)((?:\s*\|\s*[a-z_]+(?:\s*:\s*(?:\"[^\"]*\"|'[^']*'))?)*)\s*\}\}")
@@ -134,6 +225,11 @@ def render(text, attrs):
     return _FILTERED.sub(one, text)
 
 
+# The seam value as a template writes it: the marker, "-", and a utm.py-style base (lowercase, digits,
+# single hyphens - the customer-safe slug form, e.g. papildinam, tava-cena, akcija).
+_SEAM_VALUE = re.compile(re.escape(C.UTM_WEEK_MARKER) + r"-[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
 def static_checks(tpl_html, subject):
     """Checks on the TEMPLATE itself, independent of any contact."""
     out = {}
@@ -144,8 +240,11 @@ def static_checks(tpl_html, subject):
     out["outside_contract"] = [a for a in rendered_attrs if a not in CONTRACT_FIELDS]
     # DEFECT 2026-09-17: a double quote inside a Liquid tag inside a double-quoted href.
     out["nested_double_quote_hrefs"] = re.findall(r'href="\{\{[^}]*"[^}]*\}\}', h)
-    # UTM must not be written into the template (rule 10) except via the contact's own URL value.
-    out["template_side_utm"] = sorted(set(re.findall(r"utm_campaign=([^&\"'\s]+)", h)))
+    # UTM must not be written into the template (rule 10) except via the contact's own URL value - or in
+    # the UTM SEAM v1 form __UTM_WEEK__-<base>, which carries no week until campaign.apply_utm_week puts
+    # it in (F6, 2026-09-25). A written-in week is still flagged, and so is a marker without a base.
+    out["template_side_utm"] = sorted(set(v for v in re.findall(r"utm_campaign=([^&\"'\s]+)", h)
+                                          if not _SEAM_VALUE.fullmatch(v)))
     visible = re.sub(r"(?s)\{%.*?%\}|\{\{.*?\}\}", " ", h)  # Liquid tags are not text
     visible = re.sub(r"(?s)<(style|script)[^>]*>.*?</\1>|<[^>]+>", " ", visible)
     out["percent_in_text"] = re.findall(r"[^\s]{0,20}%[^\s]{0,20}", _html.unescape(visible))
@@ -213,21 +312,40 @@ def contact_checks(tpl_html, subject, email, week):
     return r
 
 
-def test_prefix(template_id, idx, n, variant=None, seq=None):
-    """[TESTS 179 · 1/3] (v1 form) or, with a variant and a sequence, [TESTS 231 · winback_2 · 4/8]."""
+def subject_prefix(template_id, idx, n, variant=None, seq=None):
+    """[TESTS 179 · 1/3] (v1 form) or, with a variant and a sequence, [TESTS 231 · winback_2 · 4/8].
+    Not named test_*: pytest collects this file (it matches *_test.py) and took it for a test."""
     if variant and seq:
         return f"[TESTS {template_id} · {variant} · {seq}]"
     return f"[TESTS {template_id} · {idx}/{n}]"
 
 
+def send_path_html(tpl_html, week):
+    """(html, seam) - the HTML the send path turns into the letter, and what happened on the UTM seam.
+
+    campaign.create_draft runs campaign.apply_utm_week on the template and builds the campaign from
+    THAT html, so a template carrying campaign.UTM_WEEK_MARKER is rendered and checked after the same
+    call. Without the marker the template is returned as stored and apply_utm_week is never called: the
+    engine templates carry none, their UTM rides on the attribute values (rule 10). A seam refusal is
+    returned, not raised (html None), so the report can say why.
+    """
+    if C.UTM_WEEK_MARKER not in (tpl_html or ""):
+        return tpl_html, {"marker": False}
+    try:
+        after, pairs = C.apply_utm_week(tpl_html, week)
+    except C.UtmSeamRefused as e:
+        return None, {"marker": True, "refused": str(e)}
+    return after, {"marker": True, "pairs": pairs}
+
+
 def send_to_raivis(template_id, idx, n, res, variant=None, seq=None):
-    tag = test_prefix(template_id, idx, n, variant, seq)[1:-1]
+    tag = subject_prefix(template_id, idx, n, variant, seq)[1:-1]
     banner = ("<div style=\"background:#fff3cd;padding:10px 14px;font:13px Arial;color:#5c4400;\">"
               f"{_html.escape(tag)} · renderēts kā {_html.escape(res['contact'])}. "
               "Klientam NAV sūtīts. Kabineta saite ir klienta — neizvēlies tur paroli/bez paroles.</div>")
     body = re.sub(r"(<body[^>]*>)", lambda m: m.group(1) + banner, res["html"], count=1)
     payload = {"sender": {"id": C.SENDER_ID}, "to": [{"email": TEST_RECIPIENT}],
-               "subject": f"{test_prefix(template_id, idx, n, variant, seq)} {res['subject']}",
+               "subject": f"{subject_prefix(template_id, idx, n, variant, seq)} {res['subject']}",
                "htmlContent": body, "tags": ["draft-test", f"tpl-{template_id}"]}
     assert payload["to"] == [{"email": TEST_RECIPIENT}], "recipient guard"
     return C._call("POST", "/smtp/email", payload)
@@ -259,12 +377,16 @@ def main(argv=None):
     st = static_checks(tpl, subject)
     static_bad = (not st["complete_html"]) or st["outside_contract"] or st["nested_double_quote_hrefs"] \
         or st["template_side_utm"] or st["percent_in_text"]
-    results = [contact_checks(tpl, subject, e, a.week) for e in contacts]
+    sent_html, seam = send_path_html(tpl, a.week)
+    if "refused" in seam:
+        static_bad = True  # create_draft would refuse this template: nothing to render
+    results = [] if sent_html is None else [contact_checks(sent_html, subject, e, a.week) for e in contacts]
     report = {"template": a.template, "template_name": t.get("name"), "week": a.week,
               "variant": a.variant, "seq": a.seq, "template_subject": subject,
               "template_sha256": hashlib.sha256(tpl.encode("utf-8")).hexdigest(),
               "template_active": t.get("isActive"),
               "placeholders": sorted(set(PLACEHOLDER.findall(tpl + " " + subject))),
+              "utm_seam": seam,
               "static": st, "static_ok": not static_bad,
               "contacts": [{k: v for k, v in r.items() if k != "html"} for r in results],
               "all_ok": (not static_bad) and all(r["ok"] for r in results), "sent": []}

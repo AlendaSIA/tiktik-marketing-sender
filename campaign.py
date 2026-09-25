@@ -25,6 +25,10 @@ THREE LAYERS, and they are deliberately not the same kind of thing:
      this morning: step6_send wraps each message in `except Exception`, which is correct for "Brevo
      rejected this address" and destructive for "this must not happen", where one structural
      refusal becomes 6 156 quiet failures and a run that still exits 0.
+
+SINCE 2026-09-25 (MAIN, F7) THE SEND PATH ALSO REFUSES ON CONTENT, before it asks about approval:
+any ⟦ left in the subject, preheader or HTML of the campaign as it stands raises PlaceholderLeft, a
+SendRefused. Drafts may carry the tokens; see send_now.
 """
 import html as _html
 import json
@@ -32,6 +36,7 @@ import logging
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 log = logging.getLogger("campaign")
@@ -59,6 +64,35 @@ class EmptyAudience(RuntimeError):
 
 class SendRefused(RuntimeError):
     """A send was attempted without an approval row. Deliberately outside BrevoError."""
+
+
+class PlaceholderLeft(SendRefused):
+    """The campaign still carries a ⟦…⟧ placeholder in its subject, preheader or HTML.
+
+    MAIN, 2026-09-25 (F7), verbatim: "BUILD: a hard block in the send path — any '⟦' in subject,
+    preheader or HTML = REFUSED, before any customer send. Prove it with a negative test."
+
+    WHY THE TOKENS EXIST AT ALL. Style sheet A15: a slot the data contract does not carry yet (the
+    personal price, its date, the week's theme) is marked with a visible plain-text token such as
+    ⟦TAVA CENA P1⟧, U+27E6 ... U+27E7, so it cannot pass for a real value. A campaign from template
+    236 (weekly akcija) is created as a draft WITH its tokens and filled per week before it goes out,
+    so the block sits at SEND time on the campaign's current content, never at draft creation.
+    Review B (2026-09-25, A-2) named the failure it prevents: one week with a token left in ships
+    "⟦NEDĒĻAS TĒMA⟧ nedēļa: lētāk nekā parasti" as the subject to the whole list.
+
+    A SUBCLASS of SendRefused, so every path that stops on SendRefused stops here too - including
+    SendRefused's other property: no per-item handler may catch it. `hits` is the list
+    placeholder_hits() returned, so a caller can report the tokens without parsing the message.
+    """
+
+    def __init__(self, campaign_id, hits):
+        self.campaign_id = campaign_id
+        self.hits = [dict(h) for h in hits]
+        listed = "; ".join(f"{h['part']}: {h['token']}" for h in self.hits)
+        super().__init__(
+            f"campaign {campaign_id} still carries {len(self.hits)} placeholder(s) (⟦…⟧) and is "
+            f"refused before any customer send: {listed}. Fill every slot in the campaign itself - "
+            f"subject, preview text, hidden preheader, body - and send again. There is no override.")
 
 
 class TemplateUsesUnapprovedAttribute(RuntimeError):
@@ -689,8 +723,88 @@ def unsubscribe_links(html_text: str) -> int:
     return n
 
 
-def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, approval_lookup):
-    """Send a campaign. Raises unless Raivis approved exactly THIS batch at THIS build.
+# --------------------------------------------------------------------------- #
+# THE PLACEHOLDER BLOCK (MAIN 2026-09-25, F7) - the send-time refusal is PlaceholderLeft
+# --------------------------------------------------------------------------- #
+PLACEHOLDER_OPEN = "⟦"  # U+27E6 - style sheet A15, the visible mark of a slot nobody filled
+_PLACEHOLDER_TOKEN = re.compile("⟦[^⟦⟧\r\n]{0,80}⟧")
+# The hidden preheader: the first <div style="display:none..."> inside <body>, which is how the
+# templates carry the inbox preview line. It is located only to LABEL a hit "preheader" - the whole
+# HTML is scanned either way, so a letter shaped differently loses the label, never the block.
+_BODY_OPEN = re.compile(r"<body\b[^>]*>", re.I)
+_HIDDEN_DIV = re.compile(
+    r"<div\b[^>]*?\bstyle\s*=\s*([\"'])(?:(?!\1)[^>])*?\bdisplay\s*:\s*none\b[^>]*>.*?</div\s*>",
+    re.I | re.S)
+
+
+def _decoded_views(text: str):
+    """The text in every form a ⟦ can hide in: raw; HTML-unescaped (&#10214; &#x27E6; &lobrk;
+    &LeftDoubleBracket;, which a mail client renders as the bracket); %-decoded (%E2%9F%A6 in a
+    link, either case); and both decoders in either order, for a link that is escaped twice over."""
+    ent = _html.unescape(text)
+    pct = urllib.parse.unquote(text)
+    return (text, ent, pct, urllib.parse.unquote(ent), _html.unescape(pct))
+
+
+def _placeholder_tokens(text) -> list:
+    """One entry per ⟦ in `text`, in order: the ⟦…⟧ token it opens, or the characters around it
+    when no ⟧ closes it on the same line. Read from the view that decodes the most brackets, so an
+    encoded token is reported as it reads (⟦TAVA CENA P1⟧), not as its escapes."""
+    view = max(_decoded_views("" if text is None else str(text)),
+               key=lambda v: v.count(PLACEHOLDER_OPEN))
+    out = []
+    for m in re.finditer(PLACEHOLDER_OPEN, view):
+        tok = _PLACEHOLDER_TOKEN.match(view, m.start())
+        out.append(tok.group(0) if tok else
+                   " ".join(view[max(0, m.start() - 30): m.start() + 30].split()))
+    return out
+
+
+def placeholder_hits(subject, preview_text, html) -> list:
+    """Every ⟦ a reader could meet in this letter: [{"part": ..., "token": ...}], one per bracket.
+
+    part is "subject"; "preheader" - the campaign's previewText AND the hidden preheader div, the
+    two places an inbox shows before the letter is opened; or "html" - everything else in the HTML,
+    <title> and link targets included. Pure: no client, no clock, no network, so the refusal it
+    feeds is provable without Brevo.
+    """
+    html = "" if html is None else str(html)
+    body = _BODY_OPEN.search(html)
+    div = _HIDDEN_DIV.search(html, body.end() if body else 0)
+    pieces = [("subject", subject), ("preheader", preview_text)]
+    if div:
+        pieces += [("preheader", div.group(0)),
+                   ("html", html[:div.start()]), ("html", html[div.end():])]
+    else:
+        pieces.append(("html", html))
+    return [{"part": part, "token": tok}
+            for part, text in pieces for tok in _placeholder_tokens(text)]
+
+
+def _current_content(campaign_id: int) -> dict:
+    """The campaign as Brevo holds it NOW - what a send would deliver, not the draft as it was built
+    (the akcija draft is filled by hand after creation, so only the current state means anything)."""
+    c = campaign(campaign_id)
+    return {"subject": c.get("subject"), "previewText": c.get("previewText"),
+            "htmlContent": c.get("htmlContent")}
+
+
+def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, approval_lookup,
+             content_reader=None):
+    """Send a campaign. Raises unless its content is free of ⟦…⟧ AND Raivis approved exactly THIS
+    batch at THIS build.
+
+    FIRST, THE CONTENT (MAIN, 2026-09-25, F7): "any '⟦' in subject, preheader or HTML = REFUSED,
+    before any customer send." The campaign's CURRENT content is read - from Brevo through
+    campaign(campaign_id) by default, through `content_reader(campaign_id)` when one is injected - and
+    a ⟦ anywhere in the subject, the preview text, the hidden preheader div or the HTML, raw or HTML-
+    or %-encoded, raises PlaceholderLeft naming every hit and the campaign. This runs BEFORE the
+    approval is looked up: an approval is for a letter, and a letter with a hole in it is not the one
+    anybody approved. Content that cannot be read, or that comes back without HTML, is refused as
+    well (SendRefused): an unread letter is not a clean one. The block is here and not in
+    create_draft on purpose - the weekly akcija draft is BUILT with its tokens and filled per week.
+    KNOWN LIMIT, stated rather than hidden: this reads the campaign, not each contact's render, so a
+    ⟦ that arrives inside a contact attribute VALUE is not seen here.
 
     THE SEND-TIME GATE (MAIN, 2026-09-11). NO_APPROVAL_ROW used to be a press check, which made the
     press wait for its own approval. It lives here now, with the same words - silence is not
@@ -704,6 +818,23 @@ def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, app
     There is no flag that turns this off. SEND_MODE, DRY_RUN and an absent key are all things a
     person can change in thirty seconds under pressure; a raise at the call site is not.
     """
+    try:
+        content = (content_reader or _current_content)(campaign_id)
+    except SendRefused:
+        raise
+    except Exception as e:  # noqa: BLE001 - whatever the reason, nobody read this letter
+        raise SendRefused(
+            f"campaign {campaign_id}: its current content could not be read ({e!r}), so nobody can "
+            f"say it is free of ⟦…⟧ placeholders. Refused before the approval is looked up.") from e
+    html_text = content.get("htmlContent") if isinstance(content, dict) else None
+    if not isinstance(html_text, str) or not html_text.strip():
+        raise SendRefused(
+            f"campaign {campaign_id}: the content read back carries no htmlContent, so there is no "
+            f"letter to check for ⟦…⟧ placeholders. Refused before the approval is looked up.")
+    hits = placeholder_hits(content.get("subject"), content.get("previewText"), html_text)
+    if hits:
+        raise PlaceholderLeft(campaign_id, hits)
+
     import press  # pure module: no client, no clock
     gate = press.send_gate(send_date=send_date, batch_id=batch_id, build_id=build_id,
                            approval_row=approval_lookup(batch_id, build_id))

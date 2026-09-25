@@ -3,6 +3,7 @@ readable in one file.
 """
 import datetime as dt
 import logging
+import re
 from google.cloud import bigquery
 
 import config as C
@@ -149,6 +150,48 @@ ASSIGNMENT_ROWS_SQL = f"""
 # --------------------------------------------------------------------------- #
 # The plan
 # --------------------------------------------------------------------------- #
+# THE SLOT GATES (MAIN 2026-09-25, F5): "APPROVED: 232–234 send only with P1_NAME filled; 235 only
+# with R1_NAME filled." They live in PLAN_SQL because PLAN_SQL is the ONE definition of who may go:
+# its SEND rows are what main.step4b freezes into the planned snapshot, and the day batch's variant
+# lists read that snapshot. A gate anywhere later would be a second definition that the approval
+# e-mail never sees. Every fragment is generated from config.SLOT_GATES, so the template ids are
+# written once; a gate on another field gets its own decision, SLOT_GATE_<slot>_EMPTY.
+# SLOT_GATE_* is the one word below with no twin in mkt_control.track_send_readiness, on purpose:
+# that view judges a TEMPLATE per email_type, a slot gate judges one PERSON's attributes. In the
+# per-email_type comparison a slot-gated row sits under a READY email_type: the letter is ready,
+# this person's copy of it is not.
+def _slot_name(field: str) -> str:
+    """P1_NAME -> P1, the slot a gate is named after (SLOT_GATE_P1_EMPTY, as MAIN's F5 reads)."""
+    return field[: -len("_NAME")] if field.endswith("_NAME") else field
+
+
+def slot_gate_sql(gates) -> dict:
+    """The three PLAN_SQL fragments for a {template_id: FIELD} map: slots CTE columns, the columns
+    `joined` carries, and one ladder line per field. Pure, so a test can feed it any map.
+
+    The field is interpolated into SQL, so it must look like a contract field and the id like an
+    id; anything else raises here, at import, rather than as a broken query in the night run.
+    """
+    for tid, field in gates.items():
+        if isinstance(tid, bool) or not isinstance(tid, int) \
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*", str(field)):
+            raise ValueError(f"slot gate {tid!r}: {field!r} is not <int template id>: <FIELD>")
+    by_field = {}
+    for tid, field in sorted(gates.items()):
+        by_field.setdefault(field, []).append(tid)
+    columns, joined, whens = [], [], []
+    for field, ids in by_field.items():
+        slot = _slot_name(field)
+        col = f"{slot.lower()}_filled"
+        columns.append(f",\n         LOGICAL_AND(IFNULL(TRIM({field}), '') != '') AS {col}")
+        joined.append(f",\n         sl.{col}")
+        head = f"    WHEN template_id IN ({', '.join(str(i) for i in ids)}) AND {col} IS NOT TRUE"
+        whens.append(f"{(head + ' ').ljust(72)}THEN 'SLOT_GATE_{slot}_EMPTY'")
+    return {"columns": "".join(columns), "joined": "".join(joined), "whens": "\n".join(whens)}
+
+
+_SLOT_GATE = slot_gate_sql(C.SLOT_GATES)
+
 # The verdict vocabulary and its ORDER are copied deliberately from
 # mkt_control.track_send_readiness. Two surfaces that answer "may this go out" must not
 # invent two vocabularies: on 2026-09-04 the readiness view said TEMPLATE_INACTIVE_IN_BREVO
@@ -194,6 +237,14 @@ history AS (
   WHERE l.master_key IS NOT NULL AND l.send_status = 'sent'
   GROUP BY 1
 ),
+-- The slot gates' input (MAIN 2026-09-25, F5). Grouped by the join key, so the LEFT JOIN below can
+-- never multiply a plan row, and LOGICAL_AND is the conservative direction: a duplicate row without
+-- the slot wins. A contact with no row at all joins as NULL, which the gate reads as not filled.
+slots AS (
+  SELECT LOWER(TRIM(email)) AS email{_SLOT_GATE['columns']}
+  FROM {C.T_BREVO_ATTRS}
+  GROUP BY LOWER(TRIM(email))
+),
 joined AS (
   SELECT a.*,
          c.full_name, c.gender_greeting, c.language, c.segment, c.lifecycle_stage,
@@ -207,13 +258,16 @@ joined AS (
          tm.map_sendable,
          ts.brevo_active,
          ts.brevo_status_age_h,
-         (ts.template_id IS NOT NULL) AS has_status_row
+         (ts.template_id IS NOT NULL) AS has_status_row{_SLOT_GATE['joined']}
   FROM assignment a
   LEFT JOIN {C.T_LIFECYCLE} c ON c.master_key = a.master_key AND LOWER(TRIM(c.email)) = a.email
   LEFT JOIN history h ON h.master_key = a.master_key
   LEFT JOIN tracks tr ON tr.track = a.track
   LEFT JOIN tmap tm ON tm.email_type = a.email_type
   LEFT JOIN tstatus ts ON ts.template_id = a.template_id
+  -- a.email is already LOWER(TRIM()) (0 of 9 935 rows otherwise, read live 2026-09-25), the same
+  -- assumption the lifecycle join above makes.
+  LEFT JOIN slots sl ON sl.email = a.email
 )
 SELECT *,
   CASE
@@ -228,6 +282,9 @@ SELECT *,
     WHEN brevo_status_age_h IS NULL
       OR brevo_status_age_h > @status_max_age_h                         THEN 'TEMPLATE_STATUS_STALE'
     WHEN brevo_active IS NOT TRUE                                       THEN 'TEMPLATE_INACTIVE_IN_BREVO'
+    -- The slot gates (config.SLOT_GATES): after every template check, so a letter that cannot go
+    -- out at all still says so first; before SEND, so no row reaches the snapshot without its slot.
+{_SLOT_GATE['whens']}
     WHEN full_name IS NULL                                              THEN 'NOT_IN_LIFECYCLE'
     ELSE 'SEND'
   END AS decision,
@@ -244,6 +301,7 @@ SELECT *,
     WHEN brevo_status_age_h IS NULL
       OR brevo_status_age_h > @status_max_age_h                         THEN 'TEMPLATE_STATUS_STALE'
     WHEN brevo_active IS NOT TRUE                                       THEN 'TEMPLATE_INACTIVE_IN_BREVO'
+{_SLOT_GATE['whens']}
     WHEN full_name IS NULL                                              THEN 'NOT_IN_LIFECYCLE'
     ELSE 'READY'
   END AS decision_if_enabled
