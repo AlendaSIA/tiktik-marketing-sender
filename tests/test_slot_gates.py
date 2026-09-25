@@ -47,7 +47,7 @@ import config as C  # noqa: E402
 
 TEMPLATE_CHECKS = ("'NO_TEMPLATE'", "'TEMPLATE_NOT_SENDABLE'", "'TEMPLATE_STATUS_UNKNOWN'",
                    "'TEMPLATE_STATUS_STALE'", "'TEMPLATE_INACTIVE_IN_BREVO'")
-GATE_P1 = ("WHEN template_id IN (232, 233, 234) AND p1_filled IS NOT TRUE",
+GATE_P1 = ("WHEN template_id IN (179, 180, 232, 233, 234) AND p1_filled IS NOT TRUE",
            "THEN 'SLOT_GATE_P1_EMPTY'")
 GATE_R1 = ("WHEN template_id IN (235) AND r1_filled IS NOT TRUE", "THEN 'SLOT_GATE_R1_EMPTY'")
 _GATE_LINE = re.compile(
@@ -68,8 +68,9 @@ def _ladders():
 class GatesStandInBothLadders(unittest.TestCase):
 
     def test_config_is_mains_f5(self):
-        self.assertEqual(C.SLOT_GATES, {232: "P1_NAME", 233: "P1_NAME", 234: "P1_NAME",
-                                        235: "R1_NAME"})
+        # F5 (232-235) plus MAIN's command 4, item 2 (179, 180), 2026-09-25.
+        self.assertEqual(C.SLOT_GATES, {179: "P1_NAME", 180: "P1_NAME", 232: "P1_NAME",
+                                        233: "P1_NAME", 234: "P1_NAME", 235: "R1_NAME"})
 
     def test_both_gates_in_both_ladders_in_the_right_place(self):
         for name, ladder in zip(("decision", "decision_if_enabled"), _ladders()):

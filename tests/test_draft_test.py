@@ -363,3 +363,44 @@ def test_akcija_cabinet_contact_passes_through_the_loader_end_to_end(monkeypatch
     r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
     assert r["ok"], r["problems"]
     assert [(l["url"], l.get("via")) for l in r["links"]] == [(LETTER, "loader>boot")]
+
+
+# --- command 4, item 4 (MAIN 2026-09-25): KABINETS_URL only where the letter links to it ------------
+def _akcija_featured_page():
+    return ("<title>medēļās akcijas</title>"
+            + "".join(f'<a href="/veikals/item/c/p{i}/">p</a>' for i in range(61))).encode("utf-8")
+
+
+def test_no_cabinet_contact_without_kabinets_url_is_not_red(monkeypatch):
+    # The real shape, read from Brevo 2026-09-25: flag false and NO KABINETS_URL attribute at all.
+    monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
+        "KABINETS_HAS_PRODUCTS": False, "VARDS": "Tatjana", "UZRUNA": "Tatjana"})
+    _site(monkeypatch, {FEATURED_W39: (200, "text/html; charset=UTF-8", _akcija_featured_page())})
+    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    assert r["kabinets_linked"] is False
+    assert r["ok"], r["problems"]
+
+
+def test_cabinet_contact_without_kabinets_url_is_still_red(monkeypatch):
+    monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
+        "KABINETS_HAS_PRODUCTS": True, "VARDS": "Līga", "UZRUNA": ""})
+    _site(monkeypatch, {})
+    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    assert r["kabinets_linked"] is True
+    assert any(x.startswith("SEAM: KABINETS_URL has no utm_campaign=2026-w39-") for x in r["problems"])
+
+
+def test_cabinet_link_without_the_weeks_utm_is_still_red(monkeypatch):
+    stale = LETTER.replace("2026-w39", "2026-w38")
+    monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
+        "KABINETS_HAS_PRODUCTS": True, "VARDS": "Līga", "UZRUNA": "", "KABINETS_URL": stale})
+    _site(monkeypatch, {stale: (200, "text/html", "Laipni lūdzam kabinetā".encode("utf-8"))})
+    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    assert any(x.startswith("SEAM: KABINETS_URL has no utm_campaign=2026-w39-") for x in r["problems"])
+
+
+def test_a_link_in_a_branch_the_contact_does_not_see_does_not_count():
+    html = ('<html><body>{% if contact.KABINETS_HAS_PRODUCTS %}<a href="{{ contact.KABINETS_URL }}">k</a>'
+            '{% else %}<a href="https://www.tiktik.lv/">f</a>{% endif %}</body></html>')
+    assert D.links_to(html, {"KABINETS_HAS_PRODUCTS": False}, "KABINETS_URL") is False
+    assert D.links_to(html, {"KABINETS_HAS_PRODUCTS": True}, "KABINETS_URL") is True
