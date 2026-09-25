@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Varbūt ir kādas vajadzības?</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#222;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Pietiek atbildēt ar vienu rindiņu — pārējo sagatavosim mēs.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;">
+<tr><td align="center" style="padding:18px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
+
+<tr><td align="center" style="padding:22px 24px 6px;">
+<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+</td></tr>
+
+<tr><td align="center" style="padding:14px 28px 0;">
+<h1 style="margin:0;font-size:22px;line-height:1.3;color:#111;">Varbūt ir kādas vajadzības?</h1>
+</td></tr>
+
+<tr><td style="padding:14px 28px 4px;font-size:15px;line-height:1.6;">
+<p style="margin:0 0 10px;">{% if contact.UZRUNA %}Sveiki, {{ contact.UZRUNA }}!{% else %}{% if contact.VARDS %}Sveiki, {{ contact.VARDS }}!{% else %}Sveiki!{% endif %}{% endif %}</p>
+{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">Pamanījām — pēdējā laikā no tevis tāds garāks klusums. Ja šobrīd neko nevajag, viss kārtībā — kad vajadzēs, tavas preces gaida kabinetā. Vai arī vienkārši atbildi uz šo vēstuli — sagatavosim.</p>{% else %}<p style="margin:0 0 4px;">Pamanījām — pēdējā laikā no tevis tāds garāks klusums. Ja kaut ko vajag, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
+</td></tr>
+
+{% if contact.KABINETS_HAS_PRODUCTS %}
+<tr><td style="padding:14px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+{% if contact.P1_NAME %}<tr>{% if contact.P2_NAME %}<td width="50%" valign="top" style="padding:0 6px 12px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P1_IMG }}" alt="{{ contact.P1_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P1_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P1_PRICE }}</div></td></tr></table></td><td width="50%" valign="top" style="padding:0 0 12px 6px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P2_IMG }}" alt="{{ contact.P2_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P2_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P2_PRICE }}</div></td></tr></table></td>{% else %}<td colspan="2" align="center" valign="top" style="padding:0 0 12px;"><table role="presentation" cellpadding="0" cellspacing="0" align="center" style="width:100%;max-width:280px;"><tr><td><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:320px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P1_IMG }}" alt="{{ contact.P1_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P1_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P1_PRICE }}</div></td></tr></table></td></tr></table></td>{% endif %}</tr>{% endif %}
+{% if contact.P3_NAME %}<tr><td width="50%" valign="top" style="padding:0 6px 12px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P3_IMG }}" alt="{{ contact.P3_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P3_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P3_PRICE }}</div></td></tr></table></td><td width="50%" valign="top" style="padding:0 0 12px 6px;">{% if contact.P4_NAME %}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P4_IMG }}" alt="{{ contact.P4_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P4_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P4_PRICE }}</div></td></tr></table>{% endif %}</td></tr>{% endif %}
+{% if contact.P5_NAME %}<tr><td width="50%" valign="top" style="padding:0 6px 12px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P5_IMG }}" alt="{{ contact.P5_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P5_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P5_PRICE }}</div></td></tr></table></td><td width="50%" valign="top" style="padding:0 0 12px 6px;">{% if contact.P6_NAME %}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P6_IMG }}" alt="{{ contact.P6_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P6_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P6_PRICE }}</div></td></tr></table>{% endif %}</td></tr>{% endif %}
+{% if contact.P7_NAME %}<tr><td width="50%" valign="top" style="padding:0 6px 12px 0;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P7_IMG }}" alt="{{ contact.P7_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P7_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P7_PRICE }}</div></td></tr></table></td><td width="50%" valign="top" style="padding:0 0 12px 6px;">{% if contact.P8_NAME %}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e9e9ec;border-radius:8px;max-width:600px;"><tr><td align="center" height="150" valign="middle" style="height:150px;padding:12px 12px 0;"><a href="{{ contact.KABINETS_URL }}"><img src="{{ contact.P8_IMG }}" alt="{{ contact.P8_NAME }}" width="150" loading="lazy" decoding="async" style="display:block;border:0;border-radius:6px;width:auto;max-width:150px;height:auto;max-height:140px;"></a></td></tr><tr><td align="center" style="padding:8px 12px 14px;font-size:13px;line-height:1.4;"><div style="margin-bottom:6px;"><a href="{{ contact.KABINETS_URL }}" style="color:#1f6fb2;text-decoration:underline;font-weight:bold;">{{ contact.P8_NAME }}</a></div><div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P8_PRICE }}</div></td></tr></table>{% endif %}</td></tr>{% endif %}
+</table>
+</td></tr>
+
+<tr><td style="padding:20px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f7f4;border-radius:10px;">
+<tr><td style="padding:18px 20px;font-size:15px;line-height:1.6;color:#1c2b23;">
+<p style="margin:0 0 8px;"><strong>Kabinetā viss jau ir gatavs.</strong></p>
+<p style="margin:0 0 4px;">Ieraksti daudzumu un nosūti — adrese un rekvizīti nav jāievada no jauna.</p>
+</td></tr>
+<tr><td align="center" style="padding:0 20px 20px;">
+<a href="{{ contact.KABINETS_URL }}" style="display:inline-block;background:#12603f;color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:6px;font-size:16px;">Atvērt savu kabinetu &rarr;</a>
+</td></tr>
+</table>
+</td></tr>
+{% endif %}
+
+{% if contact.D1_NAME %}
+<tr><td style="padding:22px 28px 0;">
+<p style="margin:0 0 6px;font-size:13px;line-height:1.5;color:#8a8a8a;"><strong style="color:#6f6f6f;">Šobrīd nav noliktavā — apskati, kas šai grupā ir pieejams</strong></p>
+<p style="margin:0;font-size:13px;line-height:1.7;color:#8a8a8a;"><a href="{{ contact.D1_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D1_NAME }}</a>{% if contact.D2_NAME %}<br><a href="{{ contact.D2_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D2_NAME }}</a>{% endif %}{% if contact.D3_NAME %}<br><a href="{{ contact.D3_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D3_NAME }}</a>{% endif %}{% if contact.D4_NAME %}<br><a href="{{ contact.D4_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D4_NAME }}</a>{% endif %}</p>
+</td></tr>
+{% endif %}
+
+<tr><td style="padding:16px 28px 22px;border-top:1px solid #eee;font-size:11px;line-height:1.5;color:#999;">
+<p style="margin:0;">Šo vēstuli sūtām tiktik.lv klientiem. Jautājumi? Vienkārši atbildi uz šo vēstuli vai raksti uz info@tiktik.lv &middot; SIA Alenda &middot; tiktik.lv</p>
+<p style="margin:6px 0 0;"><a href="{{ unsubscribe }}" style="color:#999;text-decoration:underline;">Atrakstīties no šīm vēstulēm</a></p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>

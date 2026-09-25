@@ -125,4 +125,23 @@ T_DAY_OVERLAP = t(CONTROL, "day_list_overlap")
 T_LIST_PLAN = t(CONTROL, "variant_list_plan")
 T_BUILD_LOG = t(CONTROL, "assignment_build_log")
 
+# The contract v2.7 attributes as they are written to Brevo: one row per contact e-mail, and the 47
+# contract fields as columns (KABINETS_HAS_PRODUCTS, VARDS, UZRUNA, P1..P8, R1..R4, D1..D4). The
+# assignment procedure reads the same table for rule 8a. Read live on 2026-09-25: 8 078 rows,
+# 8 078 distinct LOWER(TRIM(email)), none un-normalised.
+T_BREVO_ATTRS = t(MARTS, "marketing_brevo_attrs")
+
+# --- slot gates (MAIN 2026-09-25, F5) ----------------------------------------
+# Verbatim: "APPROVED: 232–234 send only with P1_NAME filled; 235 only with R1_NAME filled."
+# Keyed on the TEMPLATE ID, exactly as MAIN phrased it. 232 winback_2, 233 winback_3 and
+# 234 lost_quarterly print the customer's own goods (P1..P8) at a personal price; 235 active_xsell
+# leads with the R1..R4 "bought together" items. Without P1 (resp. R1) the letter talks about goods
+# it never shows. bq.PLAN_SQL generates its gate decisions from this map - one per field,
+# SLOT_GATE_<slot>_EMPTY (P1_NAME -> SLOT_GATE_P1_EMPTY) - so the ids live here and nowhere else.
+# MAIN 2026-09-25 13:30 (command 4, item 2): "add 179 and 180 to SLOT_GATES (P1 empty = held)".
+# 179 reorder_1 and 180 winback_1 print the same P grid; measured that day, 10 reorder_1 and 32
+# winback_1 rows of the week had the cabinet flag true and P1 empty.
+SLOT_GATES = {179: "P1_NAME", 180: "P1_NAME", 232: "P1_NAME", 233: "P1_NAME", 234: "P1_NAME",
+              235: "R1_NAME"}
+
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"

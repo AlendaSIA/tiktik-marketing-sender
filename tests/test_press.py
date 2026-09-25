@@ -267,7 +267,11 @@ class SendTimeGate(unittest.TestCase):
         self.row = {"batch_id": "B-shown", "assignment_build_id": BUILD_SHOWN}
 
     def _send(self, row):
-        return campaign.send_now(1, "2026-09-15", "B-shown", BUILD_SHOWN, lambda b, i: row)
+        # F7 (2026-09-25): send_now reads the campaign's content before the approval gate. A clean
+        # letter is injected so these tests reach the gate they pin, without Brevo.
+        clean = {"subject": "s", "previewText": "", "htmlContent": "<html><body>ok</body></html>"}
+        return campaign.send_now(1, "2026-09-15", "B-shown", BUILD_SHOWN, lambda b, i: row,
+                                 content_reader=lambda campaign_id: clean)
 
     def test_no_approval_refuses_with_the_same_words(self):
         with self.assertRaises(campaign.SendRefused) as e:

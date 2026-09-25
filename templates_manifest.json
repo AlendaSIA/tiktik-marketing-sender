@@ -1,0 +1,134 @@
+{
+ "about": "Engine templates written for MAIN's command 'all letters A to Z' (2026-09-24/25), reviewed against docs/style sheet v1 (pavediens section 24) and contract v2.7 (2154106c033c). All stay isActive=false. Order n = the order Raivis reads the test letters in.",
+ "templates": [
+  {
+   "n": 1,
+   "variant": "welcome_1",
+   "id": 229,
+   "file": "templates/welcome_1.html",
+   "git_blob": "ae82e5bfcbf68cadec8db8c494ccd87c830c5421",
+   "sha256": "344fdfd2a18c6e02a79c55409717f14ee0003b6ce02a4f413cb305e35f88b769",
+   "subject": "Tavs kabinets ir gatavs",
+   "preheader": "Tur jau ir preces no tava pirmā pasūtījuma.",
+   "name": "money:welcome_1 v1 — pēc pirmā pasūtījuma: preces kabinetā, viens ieteikums, piegādes rinda (2026-09-24)",
+   "purpose": "First letter after a customer's first tiktik.lv order: their goods already sit in their kabinets, so the second order is one step; one affinity item (R1 only) and the free-shipping line; no discount, no deadline, normal price."
+  },
+  {
+   "n": 2,
+   "variant": "reorder_2",
+   "id": 230,
+   "file": "templates/reorder_2.html",
+   "git_blob": "51dc09114281b9c4567950455f6ca0e4550ecfd7",
+   "sha256": "4dcef662eb482a721492089b6fa936cffe04726c854090abbb7e19125cf7d95f",
+   "subject": "Kā tev ar ierastajām precēm?",
+   "preheader": "Tavas preces gaida kabinetā — pasūtīt var vienā solī.",
+   "name": "money:reorder_2 v1 — maigs atgādinājums, parastā cena, kabinets (2026-09-24)",
+   "purpose": "Second reorder rung: a gentle check-in at the normal price for a customer whose usual re-order moment has come and who did not order after reorder_1 (179)."
+  },
+  {
+   "n": 3,
+   "variant": "reorder_3",
+   "id": 231,
+   "file": "templates/reorder_3.html",
+   "git_blob": "73e01306736dfcfcf658d1fc9dc8dcf1af3f0894",
+   "sha256": "8c1cee6c573816b204719503d3a68c9ae41d659f24e05e2a72dee755b3207c14",
+   "subject": "Varbūt ir kādas vajadzības?",
+   "preheader": "Pietiek atbildēt ar vienu rindiņu — pārējo sagatavosim mēs.",
+   "name": "money:reorder_3 v1 — klusais jautājums, parastā cena, bez ieteikumu bloka (2026-09-24)",
+   "purpose": "Third and last reorder rung after 179 and reorder_2 got no order: the quietest letter, a C11-register check-in at the normal price (no discount, deadline or struck price); R block dropped, P grid, shortened cabinet box and D block kept."
+  },
+  {
+   "n": 4,
+   "variant": "winback_2",
+   "id": 232,
+   "file": "templates/winback_2.html",
+   "git_blob": "93a34ffb9ae39e50a9592be877ad9453b39900a7",
+   "sha256": "fc4131c5559c51b6d65cfe79e7be6f0a75086d3c31295c8fd3d87a36f51ae22c",
+   "subject": "Tava cena tavām ierastajām precēm",
+   "preheader": "Tieši tās preces, ko tu pie mums parasti ņem.",
+   "name": "money:winback_2 v2 — viena neitrāla galva visiem; 'jauna partija' tikai P1 (2026-09-25)",
+   "purpose": "Second win-back rung for customers silent for many months: a fresh batch of their usual goods has arrived and they get their own price for 7 days while it is in stock (price and date are A15 placeholder tokens until the contract carries them)."
+  },
+  {
+   "n": 5,
+   "variant": "winback_3",
+   "id": 233,
+   "file": "templates/winback_3.html",
+   "git_blob": "0a8e4ae533a763d9ea4c4963c9108073cf829e86",
+   "sha256": "6c1d9b8f7cfc1ecde878e30ed39b37b23e604f52303111dcee9407f994146e26",
+   "subject": "Tavu cenu turam vēl šoreiz",
+   "preheader": "Tava cena spēkā līdz ⟦LĪDZ DATUMAM⟧ — kamēr partija ir noliktavā.",
+   "name": "money:winback_3 v2 — viena neitrāla galva visiem; 'partija' tikai P1 (2026-09-25)",
+   "purpose": "Third and last winback rung: calm, the batch is still in stock and the customer price still holds until the date; shorter than 180."
+  },
+  {
+   "n": 6,
+   "variant": "lost_quarterly",
+   "id": 234,
+   "file": "templates/lost_quarterly.html",
+   "git_blob": "42a517805bab04065bf034005be616dd920f79ad",
+   "sha256": "b626421b24b3e8ad20a189f6f7a2d85fa78acb1d930f55548f293075b3160618",
+   "subject": "Atceramies, ko tu mēdzi ņemt",
+   "preheader": "Tām pašām precēm tev tagad ir sava cena.",
+   "name": "money:lost_quarterly v2 — viena neitrāla galva visiem; 'jauna partija' tikai P1 (2026-09-25)",
+   "purpose": "Quarterly wave to customers with no order for 12+ months: warm re-introduction, their restocked goods at a personal price for 14 days (price placeholders until the contract carries it), ordering via the cabinet."
+  },
+  {
+   "n": 7,
+   "variant": "active_xsell",
+   "id": 235,
+   "file": "templates/active_xsell.html",
+   "git_blob": "d10552ccea44034407bc3e0683fae22592ae583c",
+   "sha256": "85bbab0c18531aa06a9483be3cdd0181033e26be2c45f6d9f78de90ef929ca70",
+   "subject": "Ko citi ņem pie tavām precēm",
+   "preheader": "Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.",
+   "name": "money:active_xsell v2 — bez 'Vakar', 'Daudzi', 'Bieži' pēc R rindu mērījuma (2026-09-25)",
+   "purpose": "Category widening for recent customers not yet due to re-order: the R1..R4 'bought together' items lead at their normal price, own goods follow as a quiet reminder; no discount, no deadline."
+  },
+  {
+   "n": 8,
+   "variant": "akcija_weekly",
+   "id": 236,
+   "file": "templates/akcija_weekly.html",
+   "git_blob": "6a9b3448f8bab2953ee91066d334703f48f9cb08",
+   "sha256": "f6eb7a16287181a49264905fc0a14603ecdfc933c46689127d4557ca59d743cc",
+   "subject": "⟦NEDĒĻAS TĒMA⟧ nedēļa: lētāk nekā parasti",
+   "preheader": "Cenas spēkā, kamēr prece ir noliktavā.",
+   "name": "money:akcija_weekly v2 — nedēļas akcijas rāmis; bez kabineta preču → nedēļas akciju lapa (2026-09-25)",
+   "purpose": "Weekly residual letter for everyone with no personal step this week (incl. empty kabinets): a fixed frame around the brand/theme Raivis picks, with the weekly product block inserted per campaign."
+  }
+ ],
+ "neutral_twins_about": "MAIN 2026-09-25: 232/233/234 carry ONE neutral subject + preheader for everyone; only the body line that names the P1 (hero) product as a fresh batch switches, on the fresh flag that contract v2.8 brings. The fresh versions are the Brevo templates; these NEUTRAL twins differ from them only in that one sentence. NOT in Brevo and NOT read by template_put.py (it reads 'templates' only).",
+ "neutral_twins": [
+  {
+   "variant": "winback_2",
+   "twin_of_id": 232,
+   "file": "templates/neutral/winback_2.html",
+   "sha256": "bff7f35337d95f527b3cf196c850323a30a56505913df748f58d97517fb0e446",
+   "git_blob": "e6bd2b856e19f34409e9ba3f61867ac0e48609af",
+   "subject": "Tava cena tavām ierastajām precēm",
+   "preheader": "Tā ir spēkā līdz ⟦LĪDZ DATUMAM⟧.",
+   "name": "money:winback_2 v1n — neitrālā galva (bez 'jauna partija'), tava cena līdz datumam (2026-09-25)"
+  },
+  {
+   "variant": "winback_3",
+   "twin_of_id": 233,
+   "file": "templates/neutral/winback_3.html",
+   "sha256": "82aafcc717ec757356cb0d5860398e82ec58b916d0f1f57932cc5972850b9d05",
+   "git_blob": "27efb547e470f6ba9d56cd7c88056eb923fa6658",
+   "subject": "Tavu cenu turam vēl šoreiz",
+   "preheader": "Tava cena spēkā līdz ⟦LĪDZ DATUMAM⟧ — kamēr prece ir noliktavā.",
+   "name": "money:winback_3 v1n — neitrālā galva (bez 'jauna partija'), tava cena līdz datumam (2026-09-25)"
+  },
+  {
+   "variant": "lost_quarterly",
+   "twin_of_id": 234,
+   "file": "templates/neutral/lost_quarterly.html",
+   "sha256": "6e0dbbc2a6b519ce96888df4ec2b21593ff9dd08c527c04d969abfe9b4999431",
+   "git_blob": "87604751d421a44744e087267e5a20fa3a16aff8",
+   "subject": "Atceramies, ko tu mēdzi ņemt",
+   "preheader": "Tām pašām precēm tev tagad ir sava cena.",
+   "name": "money:lost_quarterly v1n — neitrālā galva (bez 'jauna partija'), tava cena līdz datumam (2026-09-25)"
+  }
+ ]
+}

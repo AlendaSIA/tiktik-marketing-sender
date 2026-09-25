@@ -1,4 +1,6 @@
 # BUILD ONLY. Deployment is a separate, explicit command - see README.
+# Repository "tiktik" (2026-09-25): the one Artifact Registry repo that exists and that all three
+# jobs pull from; the earlier "jobs" repo does not exist. Manual build: --substitutions=SHORT_SHA=<7>.
 #
 # The predecessor repo (tiktik-marketing-sync) carried a deploy step whose unquoted
 # META_AUDIENCE_MAP={...} was brace-expanded by bash, so `gcloud run jobs deploy` died with
@@ -6,8 +8,8 @@
 # failure and keeps env changes reviewable.
 steps:
   - name: gcr.io/cloud-builders/docker
-    args: ["build", "-t", "europe-west1-docker.pkg.dev/$PROJECT_ID/jobs/tiktik-marketing-sender:$SHORT_SHA", "."]
+    args: ["build", "-t", "europe-west1-docker.pkg.dev/$PROJECT_ID/tiktik/tiktik-marketing-sender:$SHORT_SHA", "."]
 images:
-  - "europe-west1-docker.pkg.dev/$PROJECT_ID/jobs/tiktik-marketing-sender:$SHORT_SHA"
+  - "europe-west1-docker.pkg.dev/$PROJECT_ID/tiktik/tiktik-marketing-sender:$SHORT_SHA"
 options:
   logging: CLOUD_LOGGING_ONLY

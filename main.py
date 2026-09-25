@@ -219,8 +219,15 @@ def step4_plan():
     by_layer = {ly: sum(1 for p in plan if p["layer"] == ly) for ly in C.LAYERS}
     send_by_layer = {ly: sum(1 for p in sendable if p["layer"] == ly) for ly in C.LAYERS}
     log.info("PLAN_BY_LAYER rows=%s send=%s", by_layer, send_by_layer)
-    log.info("PLAN rows=%s send=%s track_off=%s template_blocked=%s suppressed=%s frequency=%s other=%s",
-             len(plan), len(sendable), track_off, template_blocked,
+    # Slot gates (MAIN 2026-09-25, F5, config.SLOT_GATES): rows held back because the letter would
+    # show goods the person has no P1 / R1 for. Either column counts, for the same reason as
+    # template_blocked above: while a track is off, `decision` says TRACK_OFF and hides the gate.
+    # Log line only - sender_run_report has no column for it, and an unknown key fails the insert.
+    slot_gated = sum(1 for p in plan if str(p["decision"]).startswith("SLOT_GATE")
+                     or str(p["decision_if_enabled"]).startswith("SLOT_GATE"))
+    log.info("PLAN rows=%s send=%s track_off=%s template_blocked=%s slot_gated=%s suppressed=%s "
+             "frequency=%s other=%s",
+             len(plan), len(sendable), track_off, template_blocked, slot_gated,
              sum(1 for p in plan if p["decision"] == "SUPPRESSED"),
              sum(1 for p in plan if str(p["decision"]).startswith("FREQUENCY")),
              sum(1 for p in plan if p["decision"] == "NOT_IN_LIFECYCLE"))
