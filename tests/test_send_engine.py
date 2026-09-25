@@ -105,6 +105,11 @@ class ShadowPipedrive(unittest.TestCase):
         r1 = pd_record.render(**REC)
         pd_record.write(r1, shadow=True, pd_writer=lambda r: 1 / 0, shadow_sink=shadow_rows.append)
         r2 = pd_record.render(**REC)
+        r1 = {**r1}; r2 = {**r2}
+        for r in (r1, r2):
+            r["type_key"], r["type_id"] = "TEST_TYPE", 999
+        shadow_rows.clear()
+        pd_record.write(r1, shadow=True, pd_writer=lambda r: 1 / 0, shadow_sink=shadow_rows.append)
         pd_record.write(r2, shadow=False, pd_writer=lambda r: seen.setdefault("live", pd_record.canonical(r)),
                         shadow_sink=lambda row: 1 / 0)
         self.assertEqual(shadow_rows[0]["record_json"].encode(), seen["live"])
@@ -117,9 +122,17 @@ class ShadowPipedrive(unittest.TestCase):
             pd_record.write(rec, shadow=True, pd_writer=calls.append, shadow_sink=lambda row: None)
         self.assertEqual(calls, [])
 
-    def test_type_is_chosen_by_key(self):
+    def test_type_is_unresolved_config_and_never_whatsapp(self):
         r = pd_record.render(**REC)
-        self.assertEqual((r["type_key"], r["type_id"], r["done"]), ("whatsapp_chat", 21, True))
+        self.assertIsNone(r["type_key"]); self.assertIsNone(r["type_id"]); self.assertTrue(r["done"])
+        self.assertNotIn("whatsapp_chat", open(os.path.join(ROOT, "pd_record.py")).read().split('"""', 2)[2])
+
+    def test_live_without_type_is_refused_shadow_is_not(self):
+        rows = []
+        pd_record.write(pd_record.render(**REC), shadow=True, pd_writer=lambda r: 1 / 0, shadow_sink=rows.append)
+        self.assertEqual(len(rows), 1)
+        with self.assertRaises(ValueError):
+            pd_record.write(pd_record.render(**REC), shadow=False, pd_writer=lambda r: None, shadow_sink=lambda r: None)
 
     def test_live_without_person_is_refused(self):
         with self.assertRaises(ValueError):
@@ -129,6 +142,16 @@ class ShadowPipedrive(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfferDeadline(unittest.TestCase):
+    def test_winback_7_days_lost_14_reorder_none(self):
+        d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1)), D(2026, 10, 6))
+        self.assertEqual(d.offer_valid_until, D(2026, 10, 12))
+        d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1)), D(2026, 10, 6))
+        self.assertEqual(d.offer_valid_until, D(2026, 10, 19))
+        d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
+        self.assertIsNone(d.offer_valid_until)
 
 
 class ShadowJobCannotSend(unittest.TestCase):
@@ -146,6 +169,21 @@ class ShadowJobCannotSend(unittest.TestCase):
         self.assertNotIn("api.brevo.com", src)
         self.assertNotIn("pipedrive.com", src)
 
-    def test_history_switch_is_locked(self):
+    def test_history_needs_review_and_counts_flag(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
-        self.assertIn('assert not APPLY_HISTORY', src)
+        self.assertIn("c.counts_for_sequence AND c.reviewed_by IS NOT NULL", src)
+
+
+class History(unittest.TestCase):
+    H221 = {"track": "winback", "email_type": "winback_1", "rung": 1, "sent_on": D(2026, 9, 22), "source": "brevo_history"}
+
+    def test_221_puts_person_at_rung_1_no_second_drop_in_september(self):
+        st, src = S.apply_history(S.State("h1"), [self.H221])
+        self.assertEqual((st.step, st.rung, st.rung_month, src), (1, 1, "2026-09", "brevo_history"))
+        d = S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 9, 26))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 10, 1), 2))
+
+    def test_history_is_applied_once(self):
+        st, _ = S.apply_history(S.State("h2"), [self.H221])
+        st2, src = S.apply_history(st, [self.H221])
+        self.assertEqual((st2.step, src), (1, None))

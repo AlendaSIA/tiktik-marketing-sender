@@ -43,6 +43,11 @@ LADDER_TYPES = {"winback_1", "winback_2", "winback_3", "lost_quarterly"}
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}
 RUNG_CAP = 3
 
+# Offer deadline (MAIN 2026-09-25 17:45 from A-Z amendment 2026-09-02, Raivis): a personal price is
+# valid 7 days for reorder/winback rungs, 14 days for the lost wave. Counted INCLUDING the send day,
+# so OFFER_VALID_UNTIL = send date + (days - 1). reorder has no rung (P5) -> no deadline from here.
+OFFER_VALID_DAYS = {"winback_1": 7, "winback_2": 7, "winback_3": 7, "lost_quarterly": 14}
+
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
 REORDER_STEP_GAP_DAYS = 14        # UNCONFIRMED - nothing in the tree sets reorder_2/3 spacing
 ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
@@ -80,6 +85,7 @@ class Decision:
     reason: str
     hold_reason: str | None
     changes: list                       # [(field, before, after)] for contact_sequence_log
+    offer_valid_until: dt.date | None = None   # contract v2.8 OFFER_VALID_UNTIL (None -> "")
 
 
 def _month(d: dt.date) -> str:
@@ -158,7 +164,8 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         rung = min(RUNG_CAP, s.rung + 1)          # next calendar month without purchase
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
-    return Decision(s, nxt, due, rung, reason, None, changes)
+    valid = due + dt.timedelta(days=OFFER_VALID_DAYS[nxt] - 1) if rung and nxt in OFFER_VALID_DAYS else None
+    return Decision(s, nxt, due, rung, reason, None, changes, valid)
 
 
 def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State:
@@ -172,6 +179,20 @@ def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State
             assert s.rung_month != _month(sent_on), "price dropped twice in one calendar month"
             s.rung, s.rung_set_on, s.rung_month = rung, sent_on, _month(sent_on)
     return s
+
+
+def apply_history(s: State, rows) -> tuple:
+    """Apply counted sends (dicts with track, email_type, rung, sent_on, source) newer than
+    s.last_sent_on, in order. Returns (state, source of the last applied row or None)."""
+    src = None
+    for h in rows:
+        if s.last_sent_on is not None and h["sent_on"] <= s.last_sent_on:
+            continue
+        if s.track != h["track"]:
+            s = dc.replace(s, track=h["track"], track_entered_on=h["sent_on"], step=0)
+        s = record_sent(s, h["email_type"], h["sent_on"], h["rung"] or 0)
+        src = h["source"]
+    return s, src
 
 
 def template_disagreements(template_map: dict) -> list:

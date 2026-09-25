@@ -6,9 +6,11 @@
 3. writes, for every would-send row due within HORIZON_DAYS, the exact Pipedrive record the live
    path would write (pd_record.render + pd_record.write(shadow=True)) to mkt_control.shadow_pd_writes
 
-It imports no Brevo module, no Pipedrive client and no send function (tests pin that). History
-(send_log / brevo_campaign_class) is NOT applied until MAIN has reviewed brevo_campaign_class
-(MAIN 2026-09-25 17:08, D-4) - APPLY_HISTORY stays false until then.
+It imports no Brevo module, no Pipedrive client and no send function (tests pin that).
+History: MAIN reviewed brevo_campaign_class 2026-09-25 17:45 (reviewed_by='MAIN 2026-09-25'). Only
+send_log rows whose campaign is classified counts_for_sequence=TRUE AND reviewed advance a person's
+state (today: campaign 221 = winback_1 at rung 1, 22.09). Everything else in send_log is frequency
+history only. A row is applied once: only sends after the person's state.last_sent_on.
 """
 import datetime as dt
 import logging
@@ -30,9 +32,17 @@ T_PLAN = f"{P}.mkt_control.shadow_send_plan"
 T_PDW = f"{P}.mkt_control.shadow_pd_writes"
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
-APPLY_HISTORY = os.environ.get("APPLY_HISTORY", "false").lower() == "true"
 LADDER_POLICY = "defaults-UNCONFIRMED"
-assert not APPLY_HISTORY, "history is applied only after MAIN reviews brevo_campaign_class"
+HISTORY_SQL = f"""
+SELECT l.master_key, l.email_type, l.track, l.rung, DATE(l.sent_at, 'Europe/Riga') AS sent_on,
+       l.campaign_id, l.source
+FROM `{P}.mkt_control.send_log` l
+LEFT JOIN `{P}.mkt_control.brevo_campaign_class` c ON c.campaign_id = l.campaign_id
+WHERE l.master_key IS NOT NULL
+  AND (l.source = 'engine_live'
+       OR (l.source = 'brevo_history' AND c.counts_for_sequence AND c.reviewed_by IS NOT NULL))
+ORDER BY l.master_key, l.sent_at
+"""
 
 INPUT_SQL = f"""
 WITH lc AS (
@@ -64,6 +74,9 @@ def main():
     tmap = {r["email_type"]: r["template_id"] for r in bq.query(
         f"SELECT email_type, ANY_VALUE(template_id) AS template_id FROM `{P}.mkt_control.email_template_map` "
         f"GROUP BY 1").result()}
+    history = {}
+    for r in bq.query(HISTORY_SQL).result():
+        history.setdefault(r["master_key"], []).append(r)
     last_plan = {r["master_key"]: r for r in bq.query(f"""
         SELECT master_key, email_type, planned_send_date, would_send, offer_rung FROM `{T_PLAN}`
         WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE())""").result()}
@@ -76,6 +89,7 @@ def main():
         st = S.State(mk) if p is None else S.State(
             mk, p["track"], _d(p["track_entered_on"]), p["step"] or 0, p["rung"], _d(p["rung_set_on"]),
             p["rung_month"], _d(p["ladder_cleared_on"]), p["last_email_type"], _d(p["last_sent_on"]))
+        st, src = S.apply_history(st, history.get(mk, []))
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
                                   bool(f["suppressed"])), today)
         tid = tmap.get(d.next_email_type) if d.next_email_type else None
@@ -87,8 +101,9 @@ def main():
             "step": s.step, "rung": s.rung, "rung_set_on": s.rung_set_on and s.rung_set_on.isoformat(),
             "rung_month": s.rung_month, "ladder_cleared_on": s.ladder_cleared_on and s.ladder_cleared_on.isoformat(),
             "last_email_type": s.last_email_type, "last_sent_on": s.last_sent_on and s.last_sent_on.isoformat(),
-            "last_send_source": None, "next_email_type": d.next_email_type, "next_template_id": tid,
+            "last_send_source": src or (p and p["last_send_source"]), "next_email_type": d.next_email_type, "next_template_id": tid,
             "next_due_on": d.next_due_on and d.next_due_on.isoformat(), "next_offer_rung": d.offer_rung,
+            "next_offer_valid_until": d.offer_valid_until and d.offer_valid_until.isoformat(),
             "next_reason": d.reason, "hold_reason": hold,
             "last_order_on": _d(f["last_order"]) and _d(f["last_order"]).isoformat(),
             "suppressed": bool(f["suppressed"]), "ladder_policy": LADDER_POLICY, "run_id": RUN_ID,
@@ -109,6 +124,7 @@ def main():
             "email_type": d.next_email_type, "template_id": tid,
             "interface_template_id": S.INTERFACE_V1.get(d.next_email_type),
             "offer_rung": d.offer_rung, "planned_send_date": d.next_due_on and d.next_due_on.isoformat(),
+            "offer_valid_until": d.offer_valid_until and d.offer_valid_until.isoformat(),
             "would_send": would, "hold_reason": hold, "reason": d.reason,
             "diff_vs_prev": "new" if lp is None else ("same" if key == prev_key else "changed"),
             "planned_at": now})

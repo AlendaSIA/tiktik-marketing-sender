@@ -7,17 +7,20 @@ path is this same code with shadow=False, so what Raivis reviews is exactly what
 written. Proven by tests/test_send_engine.py: the record renders byte-for-byte identically in
 both modes, and shadow mode makes 0 calls to the Pipedrive writer.
 
-Activity type: key `whatsapp_chat` (id 21, shown "Rakstīt (WhatsApp/e-pasts)") - the account has
-no active `email` type (read live 2026-09-25). Chosen by KEY, never by label (labels are known
-to be renamed). Flagged to MAIN for confirmation.
+Activity type: a CONFIG value, deliberately UNRESOLVED (MAIN 2026-09-25 17:45, point 4). The
+account has no active `email` type (read live 2026-09-25) and whatsapp_chat must NOT be used.
+Env PD_ACTIVITY_TYPE_KEY / PD_ACTIVITY_TYPE_ID; unset = None. Shadow rows carry None; the live
+path refuses a record without a type. Chosen by KEY, never by label (labels are renamed).
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
 
-PD_ACTIVITY_TYPE_KEY = "whatsapp_chat"
-PD_ACTIVITY_TYPE_ID = 21
+import os
+
+PD_ACTIVITY_TYPE_KEY = os.environ.get("PD_ACTIVITY_TYPE_KEY") or None
+PD_ACTIVITY_TYPE_ID = int(os.environ["PD_ACTIVITY_TYPE_ID"]) if os.environ.get("PD_ACTIVITY_TYPE_ID") else None
 RECORD_VERSION = "pd-record-v1"
 
 # customer-facing wording never says winback/lost; the PD subject is internal, but it is shown to
@@ -73,4 +76,6 @@ def write(record: dict, *, shadow: bool, pd_writer, shadow_sink) -> dict:
         return {"mode": "shadow", "bytes": len(body)}
     if record["target_person_id"] is None:
         raise ValueError("live PD write without a person_id is refused")
+    if not record["type_key"]:
+        raise ValueError("live PD write without an activity type is refused (PD_ACTIVITY_TYPE_KEY unresolved)")
     return {"mode": "live", "result": pd_writer(record), "bytes": len(body)}
