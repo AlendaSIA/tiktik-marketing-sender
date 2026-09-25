@@ -138,6 +138,10 @@ T_BREVO_ATTRS = t(MARTS, "marketing_brevo_attrs")
 # leads with the R1..R4 "bought together" items. Without P1 (resp. R1) the letter talks about goods
 # it never shows. bq.PLAN_SQL generates its gate decisions from this map - one per field,
 # SLOT_GATE_<slot>_EMPTY (P1_NAME -> SLOT_GATE_P1_EMPTY) - so the ids live here and nowhere else.
-SLOT_GATES = {232: "P1_NAME", 233: "P1_NAME", 234: "P1_NAME", 235: "R1_NAME"}
+# MAIN 2026-09-25 13:30 (command 4, item 2): "add 179 and 180 to SLOT_GATES (P1 empty = held)".
+# 179 reorder_1 and 180 winback_1 print the same P grid; measured that day, 10 reorder_1 and 32
+# winback_1 rows of the week had the cabinet flag true and P1 empty.
+SLOT_GATES = {179: "P1_NAME", 180: "P1_NAME", 232: "P1_NAME", 233: "P1_NAME", 234: "P1_NAME",
+              235: "R1_NAME"}
 
 SNAPSHOT_TABLE_PLAIN = f"{PROJECT}.{MARTS}.brevo_contacts_snapshot"

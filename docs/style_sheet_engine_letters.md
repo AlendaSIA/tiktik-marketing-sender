@@ -111,8 +111,9 @@ E1. **akcija_weekly only (F6):** a contact WITHOUT cabinet products gets a featu
     This is the ONE exception to A6 and A10, for this href in this letter.
 E2. **Tokens and the send path (F7):** A15 tokens may stay in templates and drafts and in test letters to Raivis;
     the send path refuses any ⟦ in the subject, preheader or HTML of a campaign (campaign.send_now → PlaceholderLeft).
-E3. **Fresh-batch wording (F4):** "jauna partija", "iepirkām", "partija … noliktavā" only when P1 carries fresh_batch
-    (the switch field comes with contract v2.8); otherwise the neutral twin in templates/neutral/ ("… kamēr prece ir
-    noliktavā", C8 verbatim).
-E4. **Slot gates (F5):** 232–234 go only to contacts with P1_NAME filled, 235 only with R1_NAME filled
-    (sender plan decisions SLOT_GATE_P1_EMPTY / SLOT_GATE_R1_EMPTY).
+E3. **Fresh-batch wording (F4; MAIN command 4):** 232/233/234 carry ONE neutral subject and preheader for everyone.
+    Only ONE body sentence switches on the fresh flag (contract v2.8), and it names ONLY the P1 (hero) product, inside
+    `{% if contact.P1_NAME %}` — e.g. "Tikko iepirkām jaunu partiju ({{ contact.P1_NAME }})." — never P2–P8; everything
+    else (deadline lines included) is neutral: "… kamēr prece ir noliktavā" (C8). The neutral twin is in templates/neutral/.
+E4. **Slot gates (F5; MAIN command 4):** 179, 180 and 232–234 go only to contacts with P1_NAME filled, 235 only with
+    R1_NAME filled (sender plan decisions SLOT_GATE_P1_EMPTY / SLOT_GATE_R1_EMPTY).

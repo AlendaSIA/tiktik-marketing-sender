@@ -261,6 +261,13 @@ def uzruna_valid(uz, attrs):
             and uz.casefold() != full.casefold())
 
 
+def links_to(tpl_html, attrs, field):
+    """Does the letter AS THIS CONTACT SEES IT link to contact.<field>? Blocks are resolved with the
+    campaign renderer first, so a link inside a branch this contact does not see does not count."""
+    blocks = C.render_for_contact(tpl_html or "", attrs)
+    return any(re.search(r"\{\{\s*contact\." + field + r"\b", h) for h in C.hrefs_in(blocks))
+
+
 def contact_checks(tpl_html, subject, email, week):
     attrs = C.contact_attributes(email)
     body = render(tpl_html, attrs)
@@ -275,8 +282,14 @@ def contact_checks(tpl_html, subject, email, week):
     r["has_products"] = hp
     if not isinstance(hp, bool):
         p.append(f"SEAM: KABINETS_HAS_PRODUCTS is {type(hp).__name__}, not a Brevo boolean (rule 1)")
+    # KABINETS_URL is demanded only where THIS contact's letter links to it (MAIN 2026-09-25, command 4,
+    # item 4). Measured that day: a contact without cabinet products carries no KABINETS_URL at all
+    # (3 of 3 read from Brevo), and akcija_weekly v2 gives that contact the featured-page box instead of
+    # the cabinet box - demanding the attribute there made a correct letter red (execution smdp7).
+    # Where the rendered letter DOES link to it, the rule stands exactly as before.
+    r["kabinets_linked"] = links_to(tpl_html, attrs, "KABINETS_URL")
     ku = str(attrs.get("KABINETS_URL") or "")
-    if f"utm_campaign={week}-" not in ku:
+    if r["kabinets_linked"] and f"utm_campaign={week}-" not in ku:
         p.append(f"SEAM: KABINETS_URL has no utm_campaign={week}- (rule 10 / D1)")
     uz = str(attrs.get("UZRUNA") or "").strip()
     if uz and not uzruna_valid(uz, attrs):
