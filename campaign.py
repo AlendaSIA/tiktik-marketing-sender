@@ -840,7 +840,8 @@ def send_now(campaign_id: int, send_date: str, batch_id: str, build_id: str, app
                            approval_row=approval_lookup(batch_id, build_id))
     if not gate["passed"]:
         raise SendRefused(f"{gate['reason_lv']} ({gate['detail']})")
-    raise SendRefused(
-        f"the send path is not built. Raivis' condition of 2026-09-09 stands - 'visam japaliek dry "
-        f"run kamer nav viss lidz galam gatavs' - and enabling it is his call, not a code change "
-        f"anyone here may make. campaign_id={campaign_id} send_date={send_date} batch_id={batch_id}")
+    # D4 (Sūtīšanas dzinējs, 2026-09-25): the path is BUILT behind six locks (send_path.py). It
+    # raises SendLocked (a SendRefused) while any lock is closed - today all of them are.
+    import send_path
+    send_path.production_dispatch(campaign_id, send_date, batch_id, build_id)
+    raise SendRefused(f"send path returned without sending - refused. campaign_id={campaign_id}")

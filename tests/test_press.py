@@ -293,7 +293,7 @@ class SendTimeGate(unittest.TestCase):
     def test_matching_approval_still_does_not_send(self):
         with self.assertRaises(campaign.SendRefused) as e:
             self._send(self.row)
-        self.assertIn("the send path is not built", str(e.exception))
+        self.assertIn("SEND PATH LOCKED", str(e.exception))
 
     def test_gate_is_pure_and_keyed_on_both(self):
         ok = press.send_gate(send_date="d", batch_id="B-shown", build_id=BUILD_SHOWN,
