@@ -63,7 +63,7 @@ B4. **Welcome** never discounts. **akcija** is the weekly residual letter (brand
 C1. **"mēs" speaks, the reader is "tu".** "Paskatījāmies, ko tu pie mums pērc visbiežāk." [221] · "ko tu mēdz ņemt" [179, 180].
     "jūs/jums/jūsu" occur 0 times in 9 sources. "es" only in his personal 1:1 mails.
 C2. **Open with what we did or noticed, past tense + a time word — never with thanks, a slogan or the offer.**
-    "Šodien staigājām pa noliktavu…" [179] · "Šonedēļ nolaidām cenas visai Mercator Medical līnijai — …" [222] ·
+    "Šodien staigājām pa noliktavu…" [179] · "Šoredēļ nolaidām cenas visai Mercator Medical līnijai — …" [222] ·
     "Sen neesam redzējušies. Paskatījāmies — tavas preces joprojām ir plauktā…" [180].
 C3. **About the reader's own goods and habits.** "Tieši tās, ko tu mēdz ņemt." [179] · "tava cena tavām TOP precēm" [221].
 C4. **Take work away, then promise what we do.** "Grozs jau salikts. … nekas nav jāpasūta uzreiz." [221] ·
@@ -101,3 +101,18 @@ Never change: attribute names, `{% if %}` conditions and their nesting, the grid
 (#12603f button, #f2f7f4 cabinet box, #1f6fb2 product links, #e9e9ec card borders), fonts (Arial 15px/1.6), widths, the D block, the footer.
 Price-block style for B2 cards (A-layout convention from 221): old price `<span style="color:#98a2ad;text-decoration:line-through;font-size:13px;">`,
 new price `<span style="color:#12603f;font-weight:bold;font-size:17px;">`, label `<div style="color:#12603f;font-size:11px;font-weight:bold;letter-spacing:.5px;">TAVA CENA</div>`.
+
+## E. AMENDMENTS — MAIN 2026-09-25 (command 3). Binding like A.
+
+E1. **akcija_weekly only (F6):** a contact WITHOUT cabinet products gets a featured-page box in the `{% else %}` branch
+    of `{% if contact.KABINETS_HAS_PRODUCTS %}` (same style as the cabinet box). Its href is exactly
+    `https://www.tiktik.lv/veikals/params/category/featured/?utm_source=brevo&amp;utm_medium=email&amp;utm_campaign=__UTM_WEEK__-akcija`
+    — rule 14's fallback page, UTM by the campaign layer's seam v1 marker (campaign.apply_utm_week fills the week).
+    This is the ONE exception to A6 and A10, for this href in this letter.
+E2. **Tokens and the send path (F7):** A15 tokens may stay in templates and drafts and in test letters to Raivis;
+    the send path refuses any ⟦ in the subject, preheader or HTML of a campaign (campaign.send_now → PlaceholderLeft).
+E3. **Fresh-batch wording (F4):** "jauna partija", "iepirkām", "partija … noliktavā" only when P1 carries fresh_batch
+    (the switch field comes with contract v2.8); otherwise the neutral twin in templates/neutral/ ("… kamēr prece ir
+    noliktavā", C8 verbatim).
+E4. **Slot gates (F5):** 232–234 go only to contacts with P1_NAME filled, 235 only with R1_NAME filled
+    (sender plan decisions SLOT_GATE_P1_EMPTY / SLOT_GATE_R1_EMPTY).

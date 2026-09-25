@@ -21,7 +21,7 @@
 
 <tr><td style="padding:14px 28px 4px;font-size:15px;line-height:1.6;">
 <p style="margin:0 0 10px;">{% if contact.UZRUNA %}Sveiki, {{ contact.UZRUNA }}!{% else %}{% if contact.VARDS %}Sveiki, {{ contact.VARDS }}!{% else %}Sveiki!{% endif %}{% endif %}</p>
-<p style="margin:0 0 4px;">Šonedēļ nolaidām cenas ⟦NEDĒĻAS TĒMA⟧ precēm. Tās ir tepat zemāk — nav jāpārmeklē viss veikals. Ja vajag citu izmēru vai kaut ko, kā šeit nav — atbildi uz šo vēstuli, saliksim.</p>
+<p style="margin:0 0 4px;">Šoredēļ nolaidām cenas ⟦NEDĒĻAS TĒMA⟧ precēm. Tās ir tepat zemāk — nav jāpārmeklē viss veikals. Ja vajag citu izmēru vai kaut ko, kā šeit nav — atbildi uz šo vēstuli, saliksim.</p>
 </td></tr>
 
 <tr><td style="padding:14px 28px 0;font-size:15px;line-height:1.6;">⟦NEDĒĻAS PIEDĀVĀJUMS⟧</td></tr>
@@ -39,6 +39,17 @@
 </td></tr>
 <tr><td align="center" style="padding:0 20px 20px;">
 <a href="{{ contact.KABINETS_URL }}" style="display:inline-block;background:#12603f;color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:6px;font-size:16px;">Atvērt savu kabinetu &rarr;</a>
+</td></tr>
+</table>
+</td></tr>
+{% else %}
+<tr><td style="padding:20px 28px 0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f7f4;border-radius:10px;">
+<tr><td style="padding:18px 20px;font-size:15px;line-height:1.6;color:#1c2b23;">
+<p style="margin:0 0 8px;"><strong>Nedēļas akcijas — vienā lapā.</strong></p>
+</td></tr>
+<tr><td align="center" style="padding:0 20px 20px;">
+<a href="https://www.tiktik.lv/veikals/params/category/featured/?utm_source=brevo&amp;utm_medium=email&amp;utm_campaign=__UTM_WEEK__-akcija" style="display:inline-block;background:#12603f;color:#fff;text-decoration:none;font-weight:bold;padding:14px 28px;border-radius:6px;font-size:16px;">Skatīt nedēļas akcijas &rarr;</a>
 </td></tr>
 </table>
 </td></tr>
