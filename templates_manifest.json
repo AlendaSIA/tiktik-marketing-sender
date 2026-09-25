@@ -1,16 +1,16 @@
 {
- "about": "Engine templates written for MAIN's command 'all letters A to Z' (2026-09-24/25), reviewed against docs/style sheet v1 (pavediens section 24) and contract v2.7 (2154106c033c). All stay isActive=false. Order n = the order Raivis reads the test letters in. 232-234 v3 (2026-09-25) read contract v2.8 (d1f506313dc1): P2 display, P4 display, P6.",
+ "about": "Engine templates written for MAIN's command 'all letters A to Z' (2026-09-24/25), reviewed against docs/style sheet v1 (pavediens section 24) and contract v2.7 (2154106c033c). All stay isActive=false. Order n = the order Raivis reads the test letters in. 232-234 v3 (2026-09-25) read contract v2.8 (d1f506313dc1): P2 display, P4 display, P6. 229-231 and 235 read P<n>_REF_PRICE too (P2 display), and so do the live_mapped 179/180.",
  "templates": [
   {
    "n": 1,
    "variant": "welcome_1",
    "id": 229,
    "file": "templates/welcome_1.html",
-   "git_blob": "ae82e5bfcbf68cadec8db8c494ccd87c830c5421",
-   "sha256": "344fdfd2a18c6e02a79c55409717f14ee0003b6ce02a4f413cb305e35f88b769",
+   "git_blob": "22092783f14e51bf72e6141b138c5d1e4b5437c4",
+   "sha256": "6bfe8240fa2df3d969dc52df32b713a1898905283421289b1de568cdab953d11",
    "subject": "Tavs kabinets ir gatavs",
    "preheader": "Tur jau ir preces no tava pirmā pasūtījuma.",
-   "name": "money:welcome_1 v1 — pēc pirmā pasūtījuma: preces kabinetā, viens ieteikums, piegādes rinda (2026-09-24)",
+   "name": "money:welcome_1 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
    "purpose": "First letter after a customer's first tiktik.lv order: their goods already sit in their kabinets, so the second order is one step; one affinity item (R1 only) and the free-shipping line; no discount, no deadline, normal price."
   },
   {
@@ -18,11 +18,11 @@
    "variant": "reorder_2",
    "id": 230,
    "file": "templates/reorder_2.html",
-   "git_blob": "51dc09114281b9c4567950455f6ca0e4550ecfd7",
-   "sha256": "4dcef662eb482a721492089b6fa936cffe04726c854090abbb7e19125cf7d95f",
+   "git_blob": "5254b140dd0560b235ff2adedbe5d2736d0f1b63",
+   "sha256": "0b1781566458af7e7654ded3d50133a8211b423b4b04117a6068e69647b45203",
    "subject": "Kā tev ar ierastajām precēm?",
    "preheader": "Tavas preces gaida kabinetā — pasūtīt var vienā solī.",
-   "name": "money:reorder_2 v1 — maigs atgādinājums, parastā cena, kabinets (2026-09-24)",
+   "name": "money:reorder_2 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
    "purpose": "Second reorder rung: a gentle check-in at the normal price for a customer whose usual re-order moment has come and who did not order after reorder_1 (179)."
   },
   {
@@ -30,11 +30,11 @@
    "variant": "reorder_3",
    "id": 231,
    "file": "templates/reorder_3.html",
-   "git_blob": "73e01306736dfcfcf658d1fc9dc8dcf1af3f0894",
-   "sha256": "8c1cee6c573816b204719503d3a68c9ae41d659f24e05e2a72dee755b3207c14",
+   "git_blob": "598ff378c861814cc393b7ba180abcdf8d428b2c",
+   "sha256": "2df212b6e13bb27989a90c61d041da5851fccab9b3a2e1c600eaea24666f0701",
    "subject": "Varbūt ir kādas vajadzības?",
    "preheader": "Pietiek atbildēt ar vienu rindiņu — pārējo sagatavosim mēs.",
-   "name": "money:reorder_3 v1 — klusais jautājums, parastā cena, bez ieteikumu bloka (2026-09-24)",
+   "name": "money:reorder_3 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
    "purpose": "Third and last reorder rung after 179 and reorder_2 got no order: the quietest letter, a C11-register check-in at the normal price (no discount, deadline or struck price); R block dropped, P grid, shortened cabinet box and D block kept."
   },
   {
@@ -78,11 +78,11 @@
    "variant": "active_xsell",
    "id": 235,
    "file": "templates/active_xsell.html",
-   "git_blob": "d10552ccea44034407bc3e0683fae22592ae583c",
-   "sha256": "85bbab0c18531aa06a9483be3cdd0181033e26be2c45f6d9f78de90ef929ca70",
+   "git_blob": "645778df67cd9be6cda8b7cd6145dfeea2b6c526",
+   "sha256": "4f808ccba3615c1dff71b308bc2262ad80c4c19901eaa6c06ad6efce42a22101",
    "subject": "Ko citi ņem pie tavām precēm",
    "preheader": "Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.",
-   "name": "money:active_xsell v2 — bez 'Vakar', 'Daudzi', 'Bieži' pēc R rindu mērījuma (2026-09-25)",
+   "name": "money:active_xsell v3 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
    "purpose": "Category widening for recent customers not yet due to re-order: the R1..R4 'bought together' items lead at their normal price, own goods follow as a quiet reminder; no discount, no deadline."
   },
   {
@@ -129,6 +129,31 @@
    "subject": "Atceramies, ko tu mēdzi ņemt",
    "preheader": "Tām pašām precēm tev tagad ir sava cena.",
    "name": "money:lost_quarterly v1n — neitrālā galva (bez 'jauna partija'), tava cena līdz datumam (2026-09-25)"
+  }
+ ],
+ "live_mapped_about": "Templates that are MAPPED today (mkt_control.email_template_map_manual, active=TRUE since 2026-09-24) and existed only in Brevo until 2026-09-25. Their live htmlContent was copied into the repo unchanged (commit b85344f, checked against live_sha256), then changed for contract v2.8 P2 display. NOT read by template_put.py (it reads \"templates\", ALLOWED 229-236): putting them needs MAIN and a template_put change.",
+ "live_mapped": [
+  {
+   "variant": "reorder_1",
+   "id": 179,
+   "file": "templates/reorder_1.html",
+   "git_blob": "3ad962f87dbe82092e4d65c033edaf73907673fb",
+   "sha256": "2a24481c3b534ce47f73c93d66565d5142cc7bf6a9c3f2ba0cfb22778a9602ab",
+   "subject": "Laiks papildināt krājumus?",
+   "name": "money:reorder_1 v6 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "live_name": "money:reorder_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
+   "live_sha256": "25742af5d1483af3a9679f8be57e51c0fe304882850921b84919054f29cd4e70"
+  },
+  {
+   "variant": "winback_1",
+   "id": 180,
+   "file": "templates/winback_1.html",
+   "git_blob": "4d70bcd471dcdb28d4ef68afd528d959155e2f11",
+   "sha256": "c64b68bc26515eedd0d4c06a0d296603f4454f97badca7cb20ad45e71d7760fa",
+   "subject": "Sen neesam redzējušies",
+   "name": "money:winback_1 v6 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
+   "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
   }
  ]
 }
