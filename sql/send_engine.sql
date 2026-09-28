@@ -64,3 +64,18 @@ CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.shadow_run_repor
   pd_persons_ingested_at TIMESTAMP, pd_persons_age_h FLOAT64)
 PARTITION BY plan_date
 OPTIONS(description="One row per shadow run: counts, PD target split, MAX(built_at) of the rung-price table (A7 stale measured, not inferred) and PD persons snapshot age. Writer = Sūtīšanas dzinējs.");
+
+-- COMMAND 5 (MAIN 2026-09-28): held PD records wait in a queue; the e-mail is never held by them.
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.pd_write_pending` (
+  pending_key STRING, master_key STRING, email STRING, email_type STRING, hold_reason STRING, pd_class STRING,
+  template_id INT64, send_date DATE, offer_rung INT64, reason STRING,
+  first_held_at TIMESTAMP, last_tried_at TIMESTAMP, tries INT64,
+  resolved_at TIMESTAMP, resolved_kind STRING, resolved_person_id INT64, resolved_org_id INT64,
+  resolved_record_json STRING)
+OPTIONS(description="Held Pipedrive records (pd_duplicate_person / pd_ambiguous_org / pd_no_person / pd_persons_stale), retried every run until the target resolves. Key master_key|email_type|send_ref (shadow: 'shadow'). Single writer = Sūtīšanas dzinējs. Nothing here was written to Pipedrive.");
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
+  ADD COLUMN IF NOT EXISTS pending_open INT64,
+  ADD COLUMN IF NOT EXISTS pending_new INT64,
+  ADD COLUMN IF NOT EXISTS pending_resolved INT64,
+  ADD COLUMN IF NOT EXISTS pending_oldest_h FLOAT64,
+  ADD COLUMN IF NOT EXISTS pending_by_reason ARRAY<STRUCT<reason STRING, n INT64>>;

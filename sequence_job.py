@@ -19,6 +19,7 @@ import uuid
 
 from google.cloud import bigquery
 
+import pd_pending
 import pd_record
 import pd_target
 import sequence as S
@@ -33,6 +34,7 @@ T_PLAN = f"{P}.mkt_control.shadow_send_plan"
 T_PDW = f"{P}.mkt_control.shadow_pd_writes"
 T_RUN = f"{P}.mkt_control.shadow_run_report"
 T_OVERRIDE = f"{P}.mkt_control.pd_target_override"
+T_PEND = f"{P}.mkt_control.pd_write_pending"
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
 LADDER_POLICY = "defaults-UNCONFIRMED"
@@ -156,7 +158,11 @@ def main():
     master_addr = {r["master_key"]: list(r["emails"]) for r in bq.query(MASTER_ADDR_SQL).result()}
     overrides = {r["email"]: (r["person_id"], r["org_id"]) for r in bq.query(OVERRIDE_SQL).result()}
 
-    states, log_rows, plan_rows, pd_rows = [], [], [], []
+    states, log_rows, plan_rows, pd_rows, held_today = [], [], [], [], []
+
+    def resolve_now(email, mk):
+        return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
+                                 org_by_address=org_by_address, overrides=overrides, persons_age_h=persons_age_h)
     seen = set()
     for f in facts:
         mk = f["master_key"]; seen.add(mk)
@@ -205,10 +211,12 @@ def main():
             "diff_vs_prev": "new" if lp is None else ("same" if key == prev_key else "changed"),
             "planned_at": now})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
-            tg = pd_target.resolve(f["send_email"], by_address=by_address,
-                                   master_other_addresses=master_addr.get(mk, ()),
-                                   org_by_address=org_by_address, overrides=overrides,
-                                   persons_age_h=persons_age_h)
+            tg = resolve_now(f["send_email"], mk)
+            if tg.kind == "held":   # COMMAND 5 (2): the e-mail is NOT held; the PD write waits in the queue
+                held_today.append({"master_key": mk, "email": f["send_email"], "email_type": d.next_email_type,
+                                   "hold_reason": tg.hold_reason, "pd_class": tg.cls, "template_id": tid,
+                                   "send_date": d.next_due_on.isoformat(), "offer_rung": d.offer_rung,
+                                   "reason": d.reason})
             rec = pd_record.render(person_id=tg.person_id, org_id=tg.org_id, master_key=mk,
                                    email=f["send_email"], email_type=d.next_email_type, template_id=tid,
                                    send_date=d.next_due_on, offer_rung=d.offer_rung, reason=d.reason,
@@ -227,11 +235,29 @@ def main():
                               "reason": "not in customer_lifecycle today", "diff_vs_prev": "changed",
                               "planned_at": now})
 
+    def render_pending(r, t):
+        rec = pd_record.render(person_id=t.person_id, org_id=t.org_id, master_key=r["master_key"],
+                               email=r["email"], email_type=r["email_type"], template_id=r.get("template_id"),
+                               send_date=r.get("send_date"), offer_rung=r.get("offer_rung"),
+                               reason=r.get("reason"), campaign_ref="(shadow)", participants=t.participants)
+        return pd_record.canonical(rec).decode()
+    pending_rows = [dict(r) for r in bq.query(f"SELECT * FROM `{T_PEND}`").result()]
+    for r in pending_rows:
+        for c in ("first_held_at", "last_tried_at", "resolved_at"):
+            if r.get(c) is not None and not isinstance(r[c], str):
+                r[c] = r[c].isoformat()
+        if r.get("send_date") is not None and not isinstance(r["send_date"], str):
+            r["send_date"] = r["send_date"].isoformat()
+    pending_rows, pstats = pd_pending.step(pending_rows, held_today, resolve_now, render_pending,
+                                           dt.datetime.now(dt.timezone.utc))
+
     # idempotent per day: today's shadow rows are replaced, state is replaced whole (single writer)
     for t in (T_PLAN, T_PDW):
         bq.query(f"DELETE FROM `{t}` WHERE plan_date = CURRENT_DATE()").result()
     J = bigquery.LoadJobConfig
     bq.load_table_from_json(states, T_STATE, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
+    if pending_rows:
+        bq.load_table_from_json(pending_rows, T_PEND, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
     for rows, t in ((log_rows, T_SLOG), (plan_rows, T_PLAN), (pd_rows, T_PDW)):
         if rows:
             bq.load_table_from_json(rows, t, job_config=J(write_disposition="WRITE_APPEND")).result()
@@ -250,12 +276,15 @@ def main():
         "rung_price_built_at": rung_built_at and rung_built_at.isoformat(), "rung_price_age_h": built_age_h,
         "rung_price_stale": built_age_h is None or built_age_h > 26,
         "pd_persons_ingested_at": persons_ingested_at and persons_ingested_at.isoformat(),
-        "pd_persons_age_h": persons_age_h}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
+        "pd_persons_age_h": persons_age_h,
+        "pending_open": pstats["pending_open"], "pending_new": pstats["pending_new"],
+        "pending_resolved": pstats["pending_resolved"], "pending_oldest_h": pstats["pending_oldest_h"],
+        "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
-             "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s state_changes=%s "
+             "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s state_changes=%s "
              "interface_v1_vs_map_disagreements=%s", RUN_ID, len(states), len(plan_rows),
              sum(r["would_send"] for r in plan_rows), len(pd_rows), kinds, rung_built_at, built_age_h,
-             persons_age_h, len(log_rows), disagree)
+             persons_age_h, pstats, len(log_rows), disagree)
 
 
 def _no_pd_writer(record):

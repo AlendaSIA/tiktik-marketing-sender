@@ -108,7 +108,8 @@ class JobWiring(unittest.TestCase):
         self.assertNotIn("lc.person_id", self.SRC)
 
     def test_target_resolved_by_send_address(self):
-        self.assertIn('pd_target.resolve(f["send_email"]', self.SRC)
+        self.assertIn('tg = resolve_now(f["send_email"], mk)', self.SRC)
+        self.assertIn("return pd_target.resolve(email, by_address=by_address", self.SRC)
         self.assertIn('"pd_hold_reason": tg.hold_reason', self.SRC)
 
     def test_built_at_is_logged_and_reported(self):
