@@ -124,6 +124,33 @@ class JobWiring(unittest.TestCase):
         self.assertNotIn("pd_writer=pd", self.SRC)          # the shadow job never hands a real writer
 
 
+class PendingRetryUsesFullResolution(unittest.TestCase):
+    def _job(self):
+        import importlib, types
+        try:
+            import google.cloud.bigquery  # noqa: F401
+        except ImportError:
+            sys.modules.setdefault("google", types.ModuleType("google"))
+            cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+            cloud.bigquery = types.ModuleType("google.cloud.bigquery")
+            sys.modules["google.cloud.bigquery"] = cloud.bigquery
+        return importlib.import_module("sequence_job")
+
+    def test_c5_resolves_by_creation_and_org_guard_stays_held(self):
+        J = self._job()
+        c5 = T.Target("held", "C5", hold_reason="pd_no_person")
+        self.assertEqual(J.writeback_target(c5, P(c5)).kind, "create_person")
+        amb_t = T.Target("person", "C1", 10, None, (10,))
+        amb = J.writeback_target(amb_t, P(amb_t, org_name="Salons Rīga"))
+        self.assertEqual((amb.kind, amb.hold_reason), ("held", "pd_org_ambiguous"))
+        ok = T.Target("person", "C1", 10, 7, (10,))
+        self.assertIs(J.writeback_target(ok, P(ok)), ok)
+
+    def test_queue_retries_through_resolve_full(self):
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertIn("pd_pending.step(pending_rows, held_today, resolve_full,", src)
+
+
 class PlannerStepAdvancesOnlyOnSend(unittest.TestCase):
     """Item 1 (28.09): reorder_2/3 and winback_3 only follow a SENT previous letter - shadow never sends."""
 

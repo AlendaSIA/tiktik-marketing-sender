@@ -136,6 +136,18 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY plan_date DE
 """
 
 
+def writeback_target(t, w):
+    """Target as the write-back will act on it: held by the write-back guard, or 'create_person'
+    for a contact v2.9.4 creates (C5 / org-only), else unchanged."""
+    if w["hold_reason"]:
+        return pd_target.Target("held", t.cls, hold_reason=w["hold_reason"])
+    if w["person_ref"] == "new:person":
+        return pd_target.Target("create_person", t.cls, None, t.org_id if isinstance(t.org_id, int) else None, ())
+    if t.kind == "held":
+        return pd_target.Target("create_person", t.cls)
+    return t
+
+
 def persons_index(rows) -> dict:
     idx = {}
     for r in rows:
@@ -197,6 +209,19 @@ def main():
     def resolve_now(email, mk):
         return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
                                  org_by_address=org_by_address, overrides=overrides, persons_age_h=persons_age_h)
+    facts_by_mk = {f["master_key"]: f for f in facts}
+
+    def resolve_full(email, mk):
+        """Retry target for the pending queue = pd_target + the v2.9.3/v2.9.4 write-back plan: a C5 contact is
+        CREATED (resolves), an ambiguous org guard stays held (pd_org_ambiguous)."""
+        t = resolve_now(email, mk)
+        f = facts_by_mk.get(mk)
+        if f is None:
+            return t
+        w = W.plan(t, email=email, person_name=f["full_name"], org_name=f["client_name"],
+                   reg_nr=f["reg_number"], org_idx=org_idx)
+        return writeback_target(t, w)
+
     seen = set()
     for f in facts:
         mk = f["master_key"]; seen.add(mk)
@@ -275,7 +300,8 @@ def main():
                                    offer_valid_until=d.offer_valid_until, offer_tail=None if not lines else tail,
                                    product_lines=lines)
             base = {"plan_date": today.isoformat(), "run_id": RUN_ID, "master_key": mk,
-                    "email_type": d.next_email_type, "planned_at": now, "target_kind": tg.kind,
+                    "email_type": d.next_email_type, "planned_at": now,
+                    "target_kind": writeback_target(tg, wb).kind,
                     "pd_class": tg.cls, "pd_hold_reason": hold_pd,
                     "person_ref": None if wb["person_ref"] is None else str(wb["person_ref"]),
                     "org_ref": None if wb["org_ref"] is None else str(wb["org_ref"])}
@@ -328,7 +354,7 @@ def main():
                 r[c] = r[c].isoformat()
         if r.get("send_date") is not None and not isinstance(r["send_date"], str):
             r["send_date"] = r["send_date"].isoformat()
-    pending_rows, pstats = pd_pending.step(pending_rows, held_today, resolve_now, render_pending,
+    pending_rows, pstats = pd_pending.step(pending_rows, held_today, resolve_full, render_pending,
                                            dt.datetime.now(dt.timezone.utc))
 
     # idempotent per day: today's shadow rows are replaced, state is replaced whole (single writer)
