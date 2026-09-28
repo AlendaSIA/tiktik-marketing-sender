@@ -21,7 +21,7 @@ import os
 
 PD_ACTIVITY_TYPE_KEY = os.environ.get("PD_ACTIVITY_TYPE_KEY") or None
 PD_ACTIVITY_TYPE_ID = int(os.environ["PD_ACTIVITY_TYPE_ID"]) if os.environ.get("PD_ACTIVITY_TYPE_ID") else None
-RECORD_VERSION = "pd-record-v1"
+RECORD_VERSION = "pd-record-v2"   # v2 (28.09): participants; target resolved by address (pd_target)
 
 # customer-facing wording never says winback/lost; the PD subject is internal, but it is shown to
 # Raivis in Pipedrive, so it carries the letter name AND the neutral theme.
@@ -33,7 +33,7 @@ LETTER_LABEL = {
 
 
 def render(*, person_id, org_id, master_key, email, email_type, template_id, send_date,
-           offer_rung, reason, campaign_ref) -> dict:
+           offer_rung, reason, campaign_ref, participants=()) -> dict:
     """The one record. Deterministic: same inputs -> same bytes. No clock, no randomness."""
     if isinstance(send_date, dt.date):
         send_date = send_date.isoformat()
@@ -51,6 +51,7 @@ def render(*, person_id, org_id, master_key, email, email_type, template_id, sen
         "object": "activity",
         "target_person_id": person_id,
         "target_org_id": org_id,
+        "participant_person_ids": [int(x) for x in (participants or ())],
         "subject": subject,
         "type_key": PD_ACTIVITY_TYPE_KEY,
         "type_id": PD_ACTIVITY_TYPE_ID,
@@ -71,11 +72,11 @@ def write(record: dict, *, shadow: bool, pd_writer, shadow_sink) -> dict:
     body = canonical(record)
     if shadow:
         shadow_sink({"record_json": body.decode(), **{k: record[k] for k in (
-            "object", "target_person_id", "target_org_id", "subject", "type_key", "type_id",
+            "object", "target_person_id", "target_org_id", "participant_person_ids", "subject", "type_key", "type_id",
             "due_date", "done", "note", "record_version")}})
         return {"mode": "shadow", "bytes": len(body)}
-    if record["target_person_id"] is None:
-        raise ValueError("live PD write without a person_id is refused")
+    if record["target_person_id"] is None and record["target_org_id"] is None:
+        raise ValueError("live PD write without a person or an organisation is refused")
     if not record["type_key"]:
         raise ValueError("live PD write without an activity type is refused (PD_ACTIVITY_TYPE_KEY unresolved)")
     return {"mode": "live", "result": pd_writer(record), "bytes": len(body)}

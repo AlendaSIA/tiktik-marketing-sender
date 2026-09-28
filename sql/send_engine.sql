@@ -45,3 +45,22 @@ CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.shadow_pd_writes
   planned_at TIMESTAMP)
 PARTITION BY plan_date
 OPTIONS(description="Raivis 2026-09-25 16:12: the exact Pipedrive write each shadow send WOULD make, one row per would-be write. Rendered by pd_record.render - the same code the live path uses (byte-for-byte test in tests/test_send_engine.py). Nothing here was written to Pipedrive.");
+
+-- COMMAND 4 (MAIN 2026-09-28): PD target by send address + run report (additive only).
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_pd_writes`
+  ADD COLUMN IF NOT EXISTS target_kind STRING,
+  ADD COLUMN IF NOT EXISTS pd_class STRING,
+  ADD COLUMN IF NOT EXISTS pd_hold_reason STRING,
+  ADD COLUMN IF NOT EXISTS participant_person_ids ARRAY<INT64>;
+
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.pd_target_override` (
+  email STRING, person_id INT64, org_id INT64, decided_by STRING, decided_at TIMESTAMP, note STRING)
+OPTIONS(description="One-time human pick of the Pipedrive target for an address held pd_ambiguous_org (shared mailbox across several orgs). Read by pd_target.resolve. Written by a human (via MAIN), never by the engine. BigQuery only.");
+
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.shadow_run_report` (
+  run_id STRING, plan_date DATE, finished_at TIMESTAMP, people INT64, would_send INT64,
+  pd_would_writes INT64, pd_targets ARRAY<STRUCT<kind STRING, n INT64>>,
+  rung_price_source STRING, rung_price_built_at TIMESTAMP, rung_price_age_h FLOAT64, rung_price_stale BOOL,
+  pd_persons_ingested_at TIMESTAMP, pd_persons_age_h FLOAT64)
+PARTITION BY plan_date
+OPTIONS(description="One row per shadow run: counts, PD target split, MAX(built_at) of the rung-price table (A7 stale measured, not inferred) and PD persons snapshot age. Writer = Sūtīšanas dzinējs.");
