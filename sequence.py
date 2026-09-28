@@ -15,7 +15,10 @@ it); INTERFACE_V1 below is only used to report a disagreement, never to choose a
 LADDER (contract v2.8 P5 + Raivis 24.09 18:04/18:58, 25.09 09:37):
   reorder_* -> OFFER_RUNG 0 always.
   winback_1..3 and lost_quarterly -> rung 1/2/3 (the price itself comes from the PAP engine).
-  The price drops at most ONCE per calendar month.
+  The price drops at most ONCE per calendar month. Contract v2.8.1 A2: this rule is OWNED HERE, via
+  State.rung_month (= contact_sequence_state.rung_month): advance() keeps the rung when rung_month is
+  the due month; record_sent() refuses a second rung change in one month and any change that is not
+  one step up. reorder_* (P5) never start, advance or clear a rung.
   DEFAULTS, UNCONFIRMED (Raivis' answer comes via MAIN): the first price letter = rung 1; each
   following calendar month without a purchase = rung + 1, cap 3; any purchase clears the ladder.
 """
@@ -53,6 +56,16 @@ REORDER_STEP_GAP_DAYS = 14        # UNCONFIRMED - nothing in the tree sets reord
 ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
 LOST_REPEATS = True               # lost_quarterly repeats monthly (A-Z 1.1 "monthly waves")
 
+# GATE 232/233 (MAIN 2026-09-28 COMMAND 1 item 3, Vēstuļu šabloni pre-send row 13): winback_2 and
+# winback_3 are planned only for a contact whose letter will carry a non-empty OFFER_VALID_UNTIL.
+# Until Nakts sinhronizācija writes OFFER_VALID_UNTIL, the engine expresses it as "this contact HAS a
+# rung price": at least one PAP transport row (contract v2.8.1 A4) whose price at the planned rung is
+# strictly more than 5 % below the shop (P2 / A4 "0.05 STRICT") and still valid on the send date.
+# Facts.rung_price_valid_until carries {rung: latest valid_until among such rows}; the job fills it
+# (sequence_job.RUNG_PRICE_SQL). Missing / empty -> hold 'no_offer_valid_until' (fail closed).
+PRICE_GATED_TYPES = {"winback_2", "winback_3"}
+HOLD_NO_OFFER = "no_offer_valid_until"
+
 
 @dc.dataclass
 class State:
@@ -74,6 +87,7 @@ class Facts:
     last_order_on: dt.date | None
     first_order_on: dt.date | None
     suppressed: bool = False
+    rung_price_valid_until: dict | None = None   # {rung: date}; see PRICE_GATED_TYPES
 
 
 @dc.dataclass
@@ -165,7 +179,15 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
     valid = due + dt.timedelta(days=OFFER_VALID_DAYS[nxt] - 1) if rung and nxt in OFFER_VALID_DAYS else None
+    if nxt in PRICE_GATED_TYPES and not has_rung_price(f, rung, due):
+        return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None)
     return Decision(s, nxt, due, rung, reason, None, changes, valid)
+
+
+def has_rung_price(f: Facts, rung: int, due: dt.date) -> bool:
+    """Engine-side stand-in for "OFFER_VALID_UNTIL is non-empty" (gate 232/233)."""
+    vu = (f.rung_price_valid_until or {}).get(rung)
+    return bool(rung) and vu is not None and vu >= due
 
 
 def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State:
@@ -177,6 +199,9 @@ def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State
         assert email_type in LADDER_TYPES, f"rung {rung} on non-ladder letter {email_type}"
         if s.rung != rung:
             assert s.rung_month != _month(sent_on), "price dropped twice in one calendar month"
+            # A2: the rung only climbs, one step at a time (start at 1, +1, cap RUNG_CAP)
+            assert rung == (1 if s.rung is None else min(RUNG_CAP, s.rung + 1)), \
+                f"rung {s.rung} -> {rung} is not one step up"
             s.rung, s.rung_set_on, s.rung_month = rung, sent_on, _month(sent_on)
     return s
 

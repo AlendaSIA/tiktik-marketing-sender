@@ -29,8 +29,9 @@ class UtmReorder3(unittest.TestCase):
             utm.slug("2026-09-21", et, "lv")   # raises UnknownVariantTheme on a miss
 
 
-def facts(stage, last_order=None, first=None, sup=False):
-    return S.Facts(lifecycle_stage=stage, last_order_on=last_order, first_order_on=first, suppressed=sup)
+def facts(stage, last_order=None, first=None, sup=False, rungs=None):
+    return S.Facts(lifecycle_stage=stage, last_order_on=last_order, first_order_on=first, suppressed=sup,
+                   rung_price_valid_until=rungs)
 
 
 class Ladder(unittest.TestCase):
@@ -140,9 +141,6 @@ class ShadowPipedrive(unittest.TestCase):
                             pd_writer=lambda r: None, shadow_sink=lambda r: None)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class OfferDeadline(unittest.TestCase):
     def test_winback_7_days_lost_14_reorder_none(self):
@@ -187,3 +185,117 @@ class History(unittest.TestCase):
         st, _ = S.apply_history(S.State("h2"), [self.H221])
         st2, src = S.apply_history(st, [self.H221])
         self.assertEqual((st2.step, src), (1, None))
+
+
+class A2RungMonthOwnedHere(unittest.TestCase):
+    """Contract v2.8.1 A2: the rung advances at most once per calendar month, via rung_month."""
+
+    def test_rung_month_not_last_sent_decides_the_rung(self):
+        # rung set 01.10, a non-ladder letter went in September: on 15.10 the letter is due at once
+        # (last send in another month) but the rung must NOT climb - rung_month is October.
+        st = S.State("a1", "winback", D(2026, 9, 1), 1, 1, D(2026, 10, 1), "2026-10", None,
+                     "reorder_1", D(2026, 9, 20))
+        d = S.advance(st, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 12, 1), 2: D(2026, 12, 1)}),
+                      D(2026, 10, 15))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 10, 15), 1))
+
+    def test_rung_climbs_one_step_never_skips_never_falls(self):
+        with self.assertRaises(AssertionError):
+            S.record_sent(S.State("a2"), "winback_1", D(2026, 9, 25), 2)          # start must be 1
+        st = S.record_sent(S.State("a3"), "winback_1", D(2026, 9, 25), 1)
+        with self.assertRaises(AssertionError):
+            S.record_sent(st, "winback_2", D(2026, 10, 2), 3)                     # skip
+        st3 = dc_replace(st, rung=3, rung_month="2026-09")
+        with self.assertRaises(AssertionError):
+            S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 2)              # fall
+        self.assertEqual(S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 3).rung_month, "2026-09")  # cap: no change
+
+    def test_second_change_in_one_month_refused_even_one_step_up(self):
+        st = S.record_sent(S.State("a4"), "winback_1", D(2026, 10, 1), 1)
+        with self.assertRaises(AssertionError):
+            S.record_sent(st, "winback_2", D(2026, 10, 30), 2)
+
+
+class P5ReorderNeverTouchesTheRung(unittest.TestCase):
+    def test_reorder_with_a_held_rung_offers_rung_0_and_no_deadline(self):
+        st = S.State("r1", "winback", D(2026, 9, 1), 1, 2, D(2026, 10, 1), "2026-10", None, "winback_2", D(2026, 10, 1))
+        d = S.advance(st, facts("reorder_due", D(2026, 3, 1)), D(2026, 11, 5))
+        self.assertIn(d.next_email_type, S.NO_LADDER_TYPES)
+        self.assertEqual((d.offer_rung, d.offer_valid_until), (0, None))
+
+    def test_reorder_sends_do_not_start_advance_or_clear(self):
+        held = S.State("r2", "reorder", D(2026, 11, 1), 0, 2, D(2026, 10, 1), "2026-10", None, None, None)
+        after = held
+        for i, et in enumerate(["reorder_1", "reorder_2", "reorder_3"]):
+            after = S.record_sent(after, et, D(2026, 11, 1) + dt.timedelta(days=14 * i), 0)
+        self.assertEqual((after.rung, after.rung_set_on, after.rung_month, after.ladder_cleared_on),
+                         (2, D(2026, 10, 1), "2026-10", None))
+        fresh = S.State("r3")
+        for et in ["reorder_1", "reorder_2", "reorder_3"]:
+            fresh = S.record_sent(fresh, et, D(2026, 11, 1), 0)
+        self.assertIsNone(fresh.rung); self.assertIsNone(fresh.rung_month)
+
+    def test_reorder_history_row_with_a_rung_is_refused(self):
+        with self.assertRaises(AssertionError):
+            S.apply_history(S.State("r4"), [{"track": "reorder", "email_type": "reorder_2", "rung": 1,
+                                            "sent_on": D(2026, 10, 1), "source": "brevo_history"}])
+
+
+class Gate232233(unittest.TestCase):
+    """winback_2 / winback_3 only with a rung price (stand-in for non-empty OFFER_VALID_UNTIL)."""
+    ST = S.State("g", "winback", D(2026, 9, 1), 1, 1, D(2026, 9, 22), "2026-09", None, "winback_1", D(2026, 9, 22))
+
+    def test_no_price_rows_hold(self):
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1)), D(2026, 10, 1))
+        self.assertEqual((d.next_email_type, d.offer_rung, d.hold_reason, d.offer_valid_until),
+                         ("winback_2", 2, "no_offer_valid_until", None))
+
+    def test_price_only_at_other_rung_holds(self):
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 10, 7)}), D(2026, 10, 1))
+        self.assertEqual(d.hold_reason, "no_offer_valid_until")
+
+    def test_expired_before_send_date_holds(self):
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 9, 30)}), D(2026, 10, 1))
+        self.assertEqual(d.hold_reason, "no_offer_valid_until")
+
+    def test_price_at_planned_rung_passes(self):
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 5)}), D(2026, 10, 1))
+        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_2", None, D(2026, 10, 7)))
+
+    def test_winback_3_gated_too(self):
+        st = dc_replace(self.ST, step=2, rung=2, rung_month="2026-10", last_sent_on=D(2026, 10, 1),
+                        last_email_type="winback_2")
+        self.assertEqual(S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 11, 2)).hold_reason,
+                         "no_offer_valid_until")
+        ok = S.advance(st, facts("winback", D(2026, 3, 1), rungs={3: D(2026, 11, 9)}), D(2026, 11, 2))
+        self.assertEqual((ok.next_email_type, ok.offer_rung, ok.hold_reason), ("winback_3", 3, None))
+
+    def test_other_letters_are_not_gated(self):
+        for stage in ("winback", "lost", "reorder_due", "new", "active"):
+            d = S.advance(S.State("g2"), facts(stage, D(2026, 3, 1), D(2026, 3, 1)), D(2026, 10, 1))
+            self.assertNotEqual(d.hold_reason, "no_offer_valid_until", stage)
+
+    def test_job_sql_is_strict_5_percent_per_rung(self):
+        import importlib, types
+        try:
+            import google.cloud.bigquery  # noqa: F401  real client present (job image)
+        except ImportError:               # stdlib-only runner: stub just enough to import the module
+            sys.modules.setdefault("google", types.ModuleType("google"))
+            cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+            cloud.bigquery = types.ModuleType("google.cloud.bigquery")
+            sys.modules["google.cloud.bigquery"] = cloud.bigquery
+        J = importlib.import_module("sequence_job")
+        for r in (1, 2, 3):
+            self.assertIn(f"IF(price_r{r} < 0.95 * shop_gross, valid_until, NULL)", J.RUNG_PRICE_SQL)
+        self.assertIn("pap_block_current_v281", J.RUNG_PRICE_SOURCE)
+        self.assertEqual(J.rung_price_map({"vu_r1": "2026-10-05", "vu_r2": None, "vu_r3": None}),
+                         {1: D(2026, 10, 5)})
+
+
+def dc_replace(st, **kw):
+    import dataclasses
+    return dataclasses.replace(st, **kw)
+
+
+if __name__ == "__main__":
+    unittest.main()

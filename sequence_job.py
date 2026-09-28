@@ -59,6 +59,30 @@ FROM lc LEFT JOIN sup USING (master_key)
 WHERE lc.rn = 1
 """
 
+# GATE 232/233 source (see sequence.PRICE_GATED_TYPES). TODAY: the PAP transport, contract v2.8.1 A4
+# (rows per customer x SKU: price_r1..r3, shop_gross, valid_until), read-only. A rung counts only
+# when its price is STRICTLY more than 5 % below the shop (P2, A4 "0.05 STRICT") - the same test the
+# writer applies before it may write a REF price, i.e. before OFFER_VALID_UNTIL can be non-empty.
+# LATER: when Nakts sinhronizācija writes OFFER_VALID_UNTIL, the gate reads that value instead
+# (per contact, "DD.MM.YYYY", non-empty = pass). Its BQ location is not fixed yet - no OFFER_* column
+# exists in business_marts.marketing_brevo_payload (measured 2026-09-28); MAIN names it, then only
+# this constant changes.
+RUNG_PRICE_SOURCE = os.environ.get("RUNG_PRICE_SOURCE", f"{P}.business_marts.pap_block_current_v281")
+RUNG_PRICE_SQL = f"""
+SELECT master_key,
+       MAX(IF(price_r1 < 0.95 * shop_gross, valid_until, NULL)) AS vu_r1,
+       MAX(IF(price_r2 < 0.95 * shop_gross, valid_until, NULL)) AS vu_r2,
+       MAX(IF(price_r3 < 0.95 * shop_gross, valid_until, NULL)) AS vu_r3
+FROM `{RUNG_PRICE_SOURCE}`
+WHERE master_key IS NOT NULL AND shop_gross > 0
+GROUP BY master_key
+"""
+
+
+def rung_price_map(row) -> dict:
+    """{rung: valid_until} for the rungs that carry a showable price (None/absent = no price)."""
+    return {r: _d(row[f"vu_r{r}"]) for r in (1, 2, 3) if row[f"vu_r{r}"] is not None}
+
 
 def _d(v):
     return None if v is None else (v if isinstance(v, dt.date) else dt.date.fromisoformat(str(v)[:10]))
@@ -80,6 +104,7 @@ def main():
     last_plan = {r["master_key"]: r for r in bq.query(f"""
         SELECT master_key, email_type, planned_send_date, would_send, offer_rung FROM `{T_PLAN}`
         WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE())""").result()}
+    prices = {r["master_key"]: rung_price_map(r) for r in bq.query(RUNG_PRICE_SQL).result()}
 
     states, log_rows, plan_rows, pd_rows = [], [], [], []
     seen = set()
@@ -91,7 +116,7 @@ def main():
             p["rung_month"], _d(p["ladder_cleared_on"]), p["last_email_type"], _d(p["last_sent_on"]))
         st, src = S.apply_history(st, history.get(mk, []))
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
-                                  bool(f["suppressed"])), today)
+                                  bool(f["suppressed"]), prices.get(mk)), today)
         tid = tmap.get(d.next_email_type) if d.next_email_type else None
         hold = d.hold_reason or (None if not d.next_email_type or tid else "NO_TEMPLATE_IN_MAP")
         s = d.state
