@@ -75,8 +75,17 @@ SELECT master_key,
        MAX(IF(price_r3 < 0.95 * shop_gross, valid_until, NULL)) AS vu_r3
 FROM `{RUNG_PRICE_SOURCE}`
 WHERE master_key IS NOT NULL AND shop_gross > 0
+  AND built_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 26 HOUR)   -- v2.8.2 A7: stale = no price
 GROUP BY master_key
 """
+
+
+def due_token(planned, plan_date):
+    """diff_vs_prev key for the date: every date on or before its own plan_date is the one value
+    "due" (a due letter that shadow did not send is re-stated as due today - not a change)."""
+    if planned is None:
+        return None
+    return "due" if planned <= plan_date else planned.isoformat()
 
 
 def rung_price_map(row) -> dict:
@@ -102,7 +111,7 @@ def main():
     for r in bq.query(HISTORY_SQL).result():
         history.setdefault(r["master_key"], []).append(r)
     last_plan = {r["master_key"]: r for r in bq.query(f"""
-        SELECT master_key, email_type, planned_send_date, would_send, offer_rung FROM `{T_PLAN}`
+        SELECT master_key, plan_date, email_type, planned_send_date, would_send, offer_rung FROM `{T_PLAN}`
         WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE())""").result()}
     prices = {r["master_key"]: rung_price_map(r) for r in bq.query(RUNG_PRICE_SQL).result()}
 
@@ -140,8 +149,8 @@ def main():
                              "reason": d.reason, "shadow": True})
         would = hold is None and d.next_email_type is not None
         lp = last_plan.get(mk)
-        key = (d.next_email_type, d.next_due_on and d.next_due_on.isoformat(), would, d.offer_rung)
-        prev_key = lp and (lp["email_type"], lp["planned_send_date"] and str(lp["planned_send_date"]),
+        key = (d.next_email_type, due_token(d.next_due_on, today), would, d.offer_rung)
+        prev_key = lp and (lp["email_type"], due_token(_d(lp["planned_send_date"]), _d(lp["plan_date"])),
                            lp["would_send"], lp["offer_rung"])
         plan_rows.append({
             "plan_date": today.isoformat(), "run_id": RUN_ID, "master_key": mk, "email": f["send_email"],
@@ -149,7 +158,8 @@ def main():
             "email_type": d.next_email_type, "template_id": tid,
             "interface_template_id": S.INTERFACE_V1.get(d.next_email_type),
             "offer_rung": d.offer_rung, "planned_send_date": d.next_due_on and d.next_due_on.isoformat(),
-            "offer_valid_until": d.offer_valid_until and d.offer_valid_until.isoformat(),
+            # v2.8.2 A6: filled only for a letter that would go AND carries a rung price
+            "offer_valid_until": (would and d.offer_valid_until and d.offer_valid_until.isoformat()) or None,
             "would_send": would, "hold_reason": hold, "reason": d.reason,
             "diff_vs_prev": "new" if lp is None else ("same" if key == prev_key else "changed"),
             "planned_at": now})

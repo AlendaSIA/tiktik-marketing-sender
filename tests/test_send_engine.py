@@ -144,9 +144,10 @@ class ShadowPipedrive(unittest.TestCase):
 
 class OfferDeadline(unittest.TestCase):
     def test_winback_7_days_lost_14_reorder_none(self):
-        d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1)), D(2026, 10, 6))
+        far = {1: D(2026, 12, 31)}
+        d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 12))
-        d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1)), D(2026, 10, 6))
+        d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))
         d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
         self.assertIsNone(d.offer_valid_until)
@@ -259,8 +260,18 @@ class Gate232233(unittest.TestCase):
         self.assertEqual(d.hold_reason, "no_offer_valid_until")
 
     def test_price_at_planned_rung_passes(self):
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 5)}), D(2026, 10, 1))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 7)}), D(2026, 10, 1))
         self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_2", None, D(2026, 10, 7)))
+
+    def test_a6_pap_valid_until_below_our_date_on_send_day_holds(self):
+        # 28.09 measured case: PAP valid_until 05.10 < OFFER_VALID_UNTIL 07.10 for a send on 01.10
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 6)}), D(2026, 10, 1))
+        self.assertEqual((d.hold_reason, d.offer_valid_until), ("no_offer_valid_until", None))
+
+    def test_a6_condition_is_deferred_to_the_send_date(self):
+        # planned 28.09 for 01.10: today's table (05.10) cannot decide; existence counts, date is ours
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 5)}), D(2026, 9, 28))
+        self.assertEqual((d.next_due_on, d.hold_reason, d.offer_valid_until), (D(2026, 10, 1), None, D(2026, 10, 7)))
 
     def test_winback_3_gated_too(self):
         st = dc_replace(self.ST, step=2, rung=2, rung_month="2026-10", last_sent_on=D(2026, 10, 1),
@@ -274,6 +285,9 @@ class Gate232233(unittest.TestCase):
         for stage in ("winback", "lost", "reorder_due", "new", "active"):
             d = S.advance(S.State("g2"), facts(stage, D(2026, 3, 1), D(2026, 3, 1)), D(2026, 10, 1))
             self.assertNotEqual(d.hold_reason, "no_offer_valid_until", stage)
+
+    def test_job_sql_refuses_stale_table_a7(self):
+        self.assertIn("INTERVAL 26 HOUR", _job().RUNG_PRICE_SQL)
 
     def test_job_sql_is_strict_5_percent_per_rung(self):
         import importlib, types
@@ -290,6 +304,54 @@ class Gate232233(unittest.TestCase):
         self.assertIn("pap_block_current_v281", J.RUNG_PRICE_SOURCE)
         self.assertEqual(J.rung_price_map({"vu_r1": "2026-10-05", "vu_r2": None, "vu_r3": None}),
                          {1: D(2026, 10, 5)})
+
+
+class A6OneOfferValidUntil(unittest.TestCase):
+    def test_send_plus_6_and_plus_13(self):
+        self.assertEqual(S.offer_valid_until("winback_1", D(2026, 10, 1)), D(2026, 10, 7))
+        self.assertEqual(S.offer_valid_until("winback_3", D(2026, 10, 1)), D(2026, 10, 7))
+        self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 14))
+        for et in ("reorder_1", "welcome_1", "active_xsell"):
+            self.assertIsNone(S.offer_valid_until(et, D(2026, 10, 1)))
+
+    def test_null_without_rung_price_reorder_welcome(self):
+        far = {1: D(2026, 12, 31), 2: D(2026, 12, 31), 3: D(2026, 12, 31)}
+        for stage in ("reorder_due", "new", "active"):
+            d = S.advance(S.State("n"), facts(stage, D(2026, 9, 1), D(2026, 9, 1), rungs=far), D(2026, 10, 1))
+            self.assertIsNone(d.offer_valid_until, stage)
+        d = S.advance(S.State("n2"), facts("winback", D(2026, 3, 1)), D(2026, 10, 1))   # winback_1, no price
+        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_1", None, None))
+
+    def test_job_writes_ovu_only_on_would_send(self):
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertIn('"offer_valid_until": (would and d.offer_valid_until', src)
+
+
+class DiffNoise(unittest.TestCase):
+    def test_due_dates_on_or_before_plan_date_are_one_value(self):
+        J = _job()
+        self.assertEqual(J.due_token(D(2026, 9, 27), D(2026, 9, 27)), J.due_token(D(2026, 9, 28), D(2026, 9, 28)))
+        self.assertEqual(J.due_token(D(2026, 9, 20), D(2026, 9, 28)), "due")
+        self.assertEqual(J.due_token(D(2026, 10, 1), D(2026, 9, 28)), "2026-10-01")
+        self.assertNotEqual(J.due_token(D(2026, 10, 1), D(2026, 9, 28)), J.due_token(D(2026, 10, 2), D(2026, 9, 28)))
+        self.assertIsNone(J.due_token(None, D(2026, 9, 28)))
+
+    def test_job_key_uses_due_token(self):
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertIn("due_token(d.next_due_on, today)", src)
+        self.assertIn('due_token(_d(lp["planned_send_date"]), _d(lp["plan_date"]))', src)
+
+
+def _job():
+    import importlib, types
+    try:
+        import google.cloud.bigquery  # noqa: F401
+    except ImportError:
+        sys.modules.setdefault("google", types.ModuleType("google"))
+        cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+        cloud.bigquery = types.ModuleType("google.cloud.bigquery")
+        sys.modules["google.cloud.bigquery"] = cloud.bigquery
+    return importlib.import_module("sequence_job")
 
 
 def dc_replace(st, **kw):

@@ -60,7 +60,8 @@ LOST_REPEATS = True               # lost_quarterly repeats monthly (A-Z 1.1 "mon
 # winback_3 are planned only for a contact whose letter will carry a non-empty OFFER_VALID_UNTIL.
 # Until Nakts sinhronizācija writes OFFER_VALID_UNTIL, the engine expresses it as "this contact HAS a
 # rung price": at least one PAP transport row (contract v2.8.1 A4) whose price at the planned rung is
-# strictly more than 5 % below the shop (P2 / A4 "0.05 STRICT") and still valid on the send date.
+# strictly more than 5 % below the shop (P2 / A4 "0.05 STRICT"), from a table not older than 26 h
+# (v2.8.2 A7), and - on the send date - PAP valid_until >= our OFFER_VALID_UNTIL (v2.8.2 A6).
 # Facts.rung_price_valid_until carries {rung: latest valid_until among such rows}; the job fills it
 # (sequence_job.RUNG_PRICE_SQL). Missing / empty -> hold 'no_offer_valid_until' (fail closed).
 PRICE_GATED_TYPES = {"winback_2", "winback_3"}
@@ -178,16 +179,31 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         rung = min(RUNG_CAP, s.rung + 1)          # next calendar month without purchase
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
-    valid = due + dt.timedelta(days=OFFER_VALID_DAYS[nxt] - 1) if rung and nxt in OFFER_VALID_DAYS else None
-    if nxt in PRICE_GATED_TYPES and not has_rung_price(f, rung, due):
+    # A6 (v2.8.2): the ONE customer-facing date, owned here = send date + 6 d / + 13 d.
+    ovu = offer_valid_until(nxt, due) if rung else None
+    has = has_rung_price(f, rung, due, ovu, today)
+    if nxt in PRICE_GATED_TYPES and not has:
         return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None)
-    return Decision(s, nxt, due, rung, reason, None, changes, valid)
+    # OFFER_VALID_UNTIL only when the letter carries a rung price (OFFER_RUNG > 0 AND a price exists)
+    return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None)
 
 
-def has_rung_price(f: Facts, rung: int, due: dt.date) -> bool:
-    """Engine-side stand-in for "OFFER_VALID_UNTIL is non-empty" (gate 232/233)."""
+def offer_valid_until(email_type: str, send_date: dt.date) -> dt.date | None:
+    """Contract v2.8.2 A6: send date + (days - 1); None for letters without a deadline."""
+    days = OFFER_VALID_DAYS.get(email_type)
+    return send_date + dt.timedelta(days=days - 1) if days else None
+
+
+def has_rung_price(f: Facts, rung: int, due: dt.date, ovu: dt.date | None, today: dt.date) -> bool:
+    """Engine-side "OFFER_VALID_UNTIL will be non-empty" (gate 232/233, contract v2.8.2 A6/A7).
+    A price at this rung must exist in the (fresh, A7) PAP table. PAP valid_until is only a CONDITION,
+    evaluated on the SEND DATE against that night's table: valid_until >= OFFER_VALID_UNTIL. For a
+    letter due later, today's table cannot answer it (PAP refreshes nightly) - the run on the send
+    date re-evaluates, so only existence counts until then."""
     vu = (f.rung_price_valid_until or {}).get(rung)
-    return bool(rung) and vu is not None and vu >= due
+    if not rung or vu is None or ovu is None:
+        return False
+    return vu >= ovu if due <= today else True
 
 
 def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State:
