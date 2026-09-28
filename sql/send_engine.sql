@@ -79,3 +79,9 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
   ADD COLUMN IF NOT EXISTS pending_resolved INT64,
   ADD COLUMN IF NOT EXISTS pending_oldest_h FLOAT64,
   ADD COLUMN IF NOT EXISTS pending_by_reason ARRAY<STRUCT<reason STRING, n INT64>>;
+
+-- COMMAND 6 (MAIN 2026-09-28): LADDER POLICY v1 (L6 cap, L8 reorder worked) - additive.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.contact_sequence_state`
+  ADD COLUMN IF NOT EXISTS rung_cap INT64,
+  ADD COLUMN IF NOT EXISTS rung_cap_until DATE,
+  ADD COLUMN IF NOT EXISTS reorder_worked_at DATE;

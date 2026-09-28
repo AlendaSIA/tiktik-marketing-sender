@@ -19,8 +19,10 @@ LADDER (contract v2.8 P5 + Raivis 24.09 18:04/18:58, 25.09 09:37):
   State.rung_month (= contact_sequence_state.rung_month): advance() keeps the rung when rung_month is
   the due month; record_sent() refuses a second rung change in one month and any change that is not
   one step up. reorder_* (P5) never start, advance or clear a rung.
-  DEFAULTS, UNCONFIRMED (Raivis' answer comes via MAIN): the first price letter = rung 1; each
-  following calendar month without a purchase = rung + 1, cap 3; any purchase clears the ladder.
+  LADDER POLICY v1 (Raivis 2026-09-28, rules L1-L8, contract sha 326480dce080) replaces the old
+  unconfirmed defaults: rung by stage (winback_1/2/3 = 1/2/3), lost keeps the last reached rung, purchase
+  -> rung 0, rung_cap 1 for 12 months after a purchase inside a rung-2/3 window, one walk per cycle,
+  doubled reorder -> winback_1 gap once reorder has worked. See planned_rung() and ladder_marks().
 """
 from __future__ import annotations
 
@@ -51,6 +53,19 @@ RUNG_CAP = 3
 # so OFFER_VALID_UNTIL = send date + (days - 1). reorder has no rung (P5) -> no deadline from here.
 OFFER_VALID_DAYS = {"winback_1": 7, "winback_2": 7, "winback_3": 7, "lost_quarterly": 14}
 
+# LADDER POLICY v1 (Raivis 2026-09-28 15:33/15:35, contract sha 326480dce080, rules L1-L8). Replaces every
+# "UNCONFIRMED ladder default". L2 rung by stage; L3 lost keeps the last reached rung (max 3, never deeper);
+# L5 purchase -> rung 0 (NULL); L6 rung_cap 1 for 12 months after a purchase inside a rung-2/3 window;
+# L7 one walk per cycle, no restart without a purchase; L8 doubled reorder -> winback_1 gap after reorder worked.
+STAGE_RUNG = {"winback_1": 1, "winback_2": 2, "winback_3": 3}
+LOST_ENTRY_RUNG = 1        # L3 when the contact never reached a rung (e.g. history starts 09.2026) - MAIN to confirm
+CAP_RUNG, CAP_MONTHS = 1, 12
+# The configured reorder -> winback_1 gap is customer_lifecycle's: reorder_due at last_order + entry_threshold_days,
+# winback at + entry_threshold_days + 56 (view SQL, read 28.09). L8 doubles it once: factor 2, fixed.
+REORDER_TO_WINBACK1_GAP_DAYS = 56
+L8_FACTOR = 2
+HOLD_NO_RESTART = "LADDER_NO_RESTART"
+
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
 REORDER_STEP_GAP_DAYS = 14        # UNCONFIRMED - nothing in the tree sets reorder_2/3 spacing
 ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
@@ -80,6 +95,9 @@ class State:
     ladder_cleared_on: dt.date | None = None
     last_email_type: str | None = None
     last_sent_on: dt.date | None = None
+    rung_cap: int | None = None            # L6: 1 for 12 months after a purchase inside a rung-2/3 window
+    rung_cap_until: dt.date | None = None
+    reorder_worked_at: dt.date | None = None   # L8: last paid order after a reorder letter, before any price letter
 
 
 @dc.dataclass
@@ -89,6 +107,7 @@ class Facts:
     first_order_on: dt.date | None
     suppressed: bool = False
     rung_price_valid_until: dict | None = None   # {rung: date}; see PRICE_GATED_TYPES
+    entry_threshold_days: int | None = None      # customer_lifecycle: reorder_due starts at last_order + this
 
 
 @dc.dataclass
@@ -126,7 +145,7 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
             changes.append((name, before, value))
             setattr(s, name, value)
 
-    # 1. A purchase after the ladder started clears it (UNCONFIRMED default).
+    # 1. L5: a purchase after the ladder started clears it (rung 0 = NULL).
     if s.rung is not None and f.last_order_on and s.rung_set_on and f.last_order_on >= s.rung_set_on:
         setf("rung", None); setf("rung_set_on", None); setf("rung_month", None)
         setf("ladder_cleared_on", f.last_order_on)
@@ -136,6 +155,10 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         setf("track", None)
         return Decision(s, None, None, 0, f"stage={f.lifecycle_stage}", "BLOCKED_OR_UNKNOWN", changes)
     track, letters = TRACKS[f.lifecycle_stage]
+    # L7: a ladder is walked once per cycle - back from lost to winback only after a purchase.
+    if track == "winback" and s.track == "lost_wave" and not (
+            f.last_order_on and s.track_entered_on and f.last_order_on > s.track_entered_on):
+        return Decision(s, None, None, 0, "lost -> winback without a purchase", HOLD_NO_RESTART, changes)
     if s.track != track:
         setf("track", track); setf("track_entered_on", today); setf("step", 0)
     # A purchase inside a track restarts it (the person's clock restarted).
@@ -164,19 +187,19 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         # one ladder letter per calendar month
         due = today if s.last_sent_on is None or _month(s.last_sent_on) != _month(today) \
             else _first_of_next_month(today)
+        # L8: reorder worked in an earlier cycle -> winback_1 no earlier than 2 x the configured gap
+        # ("later cycle" = the cycle that the worked order itself started, or any after it)
+        if nxt == "winback_1" and s.reorder_worked_at and f.last_order_on and f.entry_threshold_days is not None \
+                and f.last_order_on >= s.reorder_worked_at:
+            earliest = f.last_order_on + dt.timedelta(days=f.entry_threshold_days
+                                                      + L8_FACTOR * REORDER_TO_WINBACK1_GAP_DAYS)
+            due = max(due, earliest)
     else:  # active
         due = today if s.last_sent_on is None else \
             max(today, s.last_sent_on + dt.timedelta(days=ACTIVE_XSELL_GAP_DAYS))
 
     # 4. Rung for that letter (decided for the letter, stored only when it is SENT - see record_sent).
-    if nxt in NO_LADDER_TYPES or nxt not in LADDER_TYPES:
-        rung = 0
-    elif s.rung is None:
-        rung = 1
-    elif s.rung_month == _month(due):
-        rung = s.rung                                   # never twice in one calendar month
-    else:
-        rung = min(RUNG_CAP, s.rung + 1)          # next calendar month without purchase
+    rung = planned_rung(s, nxt, due)
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
     # A6 (v2.8.2): the ONE customer-facing date, owned here = send date + 6 d / + 13 d.
@@ -186,6 +209,54 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None)
     # OFFER_VALID_UNTIL only when the letter carries a rung price (OFFER_RUNG > 0 AND a price exists)
     return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None)
+
+
+def planned_rung(s: State, nxt: str, due: dt.date) -> int:
+    """L1-L3, L6, A2: the rung of the next letter = MIN(stage rung, rung_cap)."""
+    if nxt in NO_LADDER_TYPES or nxt not in LADDER_TYPES:
+        return 0                                                  # L1
+    stage = STAGE_RUNG.get(nxt)                                   # L2
+    if stage is None:                                             # lost_quarterly - L3
+        stage = min(RUNG_CAP, s.rung) if s.rung else LOST_ENTRY_RUNG
+    if s.rung_cap and s.rung_cap_until and s.rung_cap_until >= due:
+        stage = min(stage, s.rung_cap)                            # L6
+    if s.rung is not None and stage != s.rung and s.rung_month == _month(due):
+        return s.rung                                             # A2: never twice in one calendar month
+    return stage
+
+
+def _add_months(d: dt.date, n: int) -> dt.date:
+    y, m = divmod(d.month - 1 + n, 12)
+    y, m = d.year + y, m + 1
+    last = [31, 29 if (y % 4 == 0 and (y % 100 or y % 400 == 0)) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+    return dt.date(y, m, min(d.day, last))
+
+
+def ladder_marks(sends, orders) -> tuple:
+    """L6 + L8 from the full history of one contact. sends: [{email_type, rung, sent_on}] (counted sends,
+    any order); orders: [date] of PAID orders. Returns (rung_cap, rung_cap_until, reorder_worked_at)."""
+    sends = sorted(sends, key=lambda h: h["sent_on"])
+    orders = sorted(set(orders))
+    cap_until = None
+    for h in sends:                                               # L6
+        if (h.get("rung") or 0) >= 2 and h["email_type"] in OFFER_VALID_DAYS:
+            end = h["sent_on"] + dt.timedelta(days=OFFER_VALID_DAYS[h["email_type"]] - 1)
+            for o in orders:
+                if h["sent_on"] <= o <= end:
+                    u = _add_months(o, CAP_MONTHS)
+                    cap_until = u if cap_until is None or u > cap_until else cap_until
+    worked = None
+    prev = None
+    for o in orders:                                              # L8: cycle = sends after the previous order, before o
+        cyc = [h for h in sends if (prev is None or h["sent_on"] > prev) and h["sent_on"] <= o]
+        if any(h["email_type"] in NO_LADDER_TYPES for h in cyc):
+            first_reorder = min(h["sent_on"] for h in cyc if h["email_type"] in NO_LADDER_TYPES)
+            priced = any(h["email_type"] in LADDER_TYPES and (h.get("rung") or 0) > 0
+                         and h["sent_on"] >= first_reorder for h in cyc)
+            if not priced:
+                worked = o
+        prev = o
+    return (CAP_RUNG if cap_until else None), cap_until, worked
 
 
 def offer_valid_until(email_type: str, send_date: dt.date) -> dt.date | None:

@@ -37,7 +37,7 @@ T_OVERRIDE = f"{P}.mkt_control.pd_target_override"
 T_PEND = f"{P}.mkt_control.pd_write_pending"
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
-LADDER_POLICY = "defaults-UNCONFIRMED"
+LADDER_POLICY = "ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080)"
 HISTORY_SQL = f"""
 SELECT l.master_key, l.email_type, l.track, l.rung, DATE(l.sent_at, 'Europe/Riga') AS sent_on,
        l.campaign_id, l.source
@@ -51,14 +51,14 @@ ORDER BY l.master_key, l.sent_at
 
 INPUT_SQL = f"""
 WITH lc AS (
-  SELECT master_key, LOWER(TRIM(email)) AS email, lifecycle_stage, last_order, first_order,
+  SELECT master_key, LOWER(TRIM(email)) AS email, lifecycle_stage, last_order, first_order, entry_threshold_days,
          ROW_NUMBER() OVER (PARTITION BY master_key ORDER BY last_order DESC, email) AS rn
   FROM `{P}.business_marts.customer_lifecycle` WHERE master_key IS NOT NULL),
 sup AS (
   SELECT DISTINCT l.master_key FROM `{P}.business_marts.customer_lifecycle` l
   JOIN `{P}.business_marts.email_suppression_all` s ON LOWER(TRIM(s.email)) = LOWER(TRIM(l.email)))
 SELECT lc.master_key, lc.email AS send_email, lc.lifecycle_stage,
-       lc.last_order, lc.first_order, (sup.master_key IS NOT NULL) AS suppressed
+       lc.last_order, lc.first_order, lc.entry_threshold_days, (sup.master_key IS NOT NULL) AS suppressed
 FROM lc LEFT JOIN sup USING (master_key)
 WHERE lc.rn = 1
 """
@@ -107,6 +107,16 @@ OVERRIDE_SQL = f"SELECT LOWER(TRIM(email)) AS email, person_id, org_id FROM `{T_
 RUNG_BUILT_SQL = f"SELECT MAX(built_at) AS built_at FROM `{RUNG_PRICE_SOURCE}`"
 
 
+# LADDER POLICY v1 L6/L8 need every PAID order date per contact (Paytraq paid sales -> master_key).
+ORDERS_SQL = f"""
+SELECT i.master_key, ARRAY_AGG(DISTINCT DATE(s.document_date) IGNORE NULLS) AS orders
+FROM `{P}.paytraq_core.sales_documents_list` s
+JOIN `{P}.business_marts.customer_identity` i ON CAST(i.client_id AS STRING) = CAST(s.client_id AS STRING)
+WHERE s.document_type = 'sale' AND s.document_status = 'paid' AND i.master_key IS NOT NULL
+GROUP BY 1
+"""
+
+
 def persons_index(rows) -> dict:
     idx = {}
     for r in rows:
@@ -150,6 +160,7 @@ def main():
         SELECT master_key, plan_date, email_type, planned_send_date, would_send, offer_rung FROM `{T_PLAN}`
         WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE())""").result()}
     prices = {r["master_key"]: rung_price_map(r) for r in bq.query(RUNG_PRICE_SQL).result()}
+    orders = {r["master_key"]: [_d(x) for x in r["orders"]] for r in bq.query(ORDERS_SQL).result()}
     rung_built_at = next(iter(bq.query(RUNG_BUILT_SQL).result()))["built_at"]
     by_address = persons_index(bq.query(PERSONS_SQL).result())
     age = next(iter(bq.query(PERSONS_AGE_SQL).result()))
@@ -169,10 +180,19 @@ def main():
         p = prev.get(mk)
         st = S.State(mk) if p is None else S.State(
             mk, p["track"], _d(p["track_entered_on"]), p["step"] or 0, p["rung"], _d(p["rung_set_on"]),
-            p["rung_month"], _d(p["ladder_cleared_on"]), p["last_email_type"], _d(p["last_sent_on"]))
+            p["rung_month"], _d(p["ladder_cleared_on"]), p["last_email_type"], _d(p["last_sent_on"]),
+            p.get("rung_cap"), _d(p.get("rung_cap_until")), _d(p.get("reorder_worked_at")))
         st, src = S.apply_history(st, history.get(mk, []))
+        # L6 + L8 recomputed from the full counted history + paid orders; never loosened by a recompute
+        cap, cap_until, worked = S.ladder_marks(
+            [{"email_type": h["email_type"], "rung": h["rung"], "sent_on": _d(h["sent_on"])} for h in history.get(mk, [])],
+            orders.get(mk, []))
+        if cap_until and (st.rung_cap_until is None or cap_until > st.rung_cap_until):
+            st.rung_cap, st.rung_cap_until = cap, cap_until
+        if worked and (st.reorder_worked_at is None or worked > st.reorder_worked_at):
+            st.reorder_worked_at = worked
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
-                                  bool(f["suppressed"]), prices.get(mk)), today)
+                                  bool(f["suppressed"]), prices.get(mk), f["entry_threshold_days"]), today)
         tid = tmap.get(d.next_email_type) if d.next_email_type else None
         hold = d.hold_reason or (None if not d.next_email_type or tid else "NO_TEMPLATE_IN_MAP")
         s = d.state
@@ -188,6 +208,8 @@ def main():
             "next_reason": d.reason, "hold_reason": hold,
             "last_order_on": _d(f["last_order"]) and _d(f["last_order"]).isoformat(),
             "suppressed": bool(f["suppressed"]), "ladder_policy": LADDER_POLICY, "run_id": RUN_ID,
+            "rung_cap": s.rung_cap, "rung_cap_until": s.rung_cap_until and s.rung_cap_until.isoformat(),
+            "reorder_worked_at": s.reorder_worked_at and s.reorder_worked_at.isoformat(),
             "updated_at": now})
         for field, before, after in d.changes:
             log_rows.append({"run_id": RUN_ID, "changed_at": now, "master_key": mk, "field": field,
