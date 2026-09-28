@@ -65,7 +65,9 @@ CONTRACT_FIELDS = frozenset(
     + [f"D{i}_{s}" for i in range(1, 5) for s in ("NAME", "URL")]
     + ["KABINETS_HAS_PRODUCTS", "VARDS", "UZRUNA", "KABINETS_URL"]
     # Contract v2.8 (d1f506313dc1, 2026-09-25): +11 price fields, 47 -> 58.
-    + [f"P{i}_REF_PRICE" for i in range(1, 9)] + ["P1_FRESH", "OFFER_VALID_UNTIL", "OFFER_RUNG"])
+    + [f"P{i}_REF_PRICE" for i in range(1, 9)] + ["P1_FRESH", "OFFER_VALID_UNTIL", "OFFER_RUNG"]
+    # Contract v2.9 / v2.9.1 G2 (2026-09-28): +1, GREETING - the full greeting line, written by Nakts sinhronizacija.
+    + ["GREETING"])
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
 # Rule 6: an R row with spread reads "no <price>".

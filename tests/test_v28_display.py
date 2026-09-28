@@ -22,8 +22,9 @@ import presend as P  # noqa: E402
 NB, EUR = chr(0xA0), chr(0x20AC)
 FILES = {232: "winback_2.html", 233: "winback_3.html", 234: "lost_quarterly.html"}   # P2, P4, P6
 PLAIN = {229: "welcome_1.html", 230: "reorder_2.html", 231: "reorder_3.html", 235: "active_xsell.html",
-         179: "reorder_1.html", 180: "winback_1.html"}                             # P2 only
-ALL = {**FILES, **PLAIN}
+         179: "reorder_1.html"}                                                   # P2 only
+DATE_ONLY = {180: "winback_1.html"}   # L4 (2026-09-28): P2 + the date line in the body; fixed preheader, no fresh line
+ALL = {**FILES, **PLAIN, **DATE_ONLY}
 BASE = {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": "https://plani.tiktik.lv/kabinets.php?k=x&tab=preces",
         "VARDS": "Raivis", "P1_NAME": "Salvetes", "P1_IMG": "https://x/1.jpg", "P2_NAME": "Cimdi",
         "P2_IMG": "https://x/2.jpg", "P2_PRICE": "4,50" + NB + EUR}
@@ -148,6 +149,17 @@ class ContractV28Display(unittest.TestCase):
             r = V.display_checks(tpl(tid), out, "S", attrs)
             self.assertTrue(r["ok"], (tid, r))
             self.assertEqual(out.count(V._LABEL), 1, tid)
+
+    def test_winback_1_date_line_follows_the_field(self):
+        for tid in DATE_ONLY:
+            on = "\n".join(V.visible_lines(D.render(tpl(tid), WITH_REF)))
+            self.assertIn(V.SPEKA_LIDZ + " 09.10.2026", on, tid)
+            self.assertIn("TAVA CENA", on, tid)
+            off = "\n".join(V.visible_lines(D.render(tpl(tid), NO_REF)))
+            self.assertNotIn(V.SPEKA_LIDZ, off, tid)
+            self.assertNotIn("partij", off.lower(), tid)
+            self.assertTrue(V.preheader(D.render(tpl(tid), NO_REF)), tid)  # fixed preheader stays
+
 
 if __name__ == "__main__":
     unittest.main()

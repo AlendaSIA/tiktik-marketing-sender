@@ -20,7 +20,7 @@
 </td></tr>
 
 <tr><td style="padding:14px 28px 4px;font-size:15px;line-height:1.6;">
-<p style="margin:0 0 10px;">{% if contact.UZRUNA %}Sveiki, {{ contact.UZRUNA }}!{% else %}{% if contact.VARDS %}Sveiki, {{ contact.VARDS }}!{% else %}Sveiki!{% endif %}{% endif %}</p>
+<p style="margin:0 0 10px;">{{ contact.GREETING | default : 'Sveiki!' }}</p>
 {% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">Pēc tava pirmā pasūtījuma salikām tavas preces kabinetā. Nekas nav jāmeklē no jauna — nākamreiz tās ir turpat.</p>{% else %}<p style="margin:0 0 4px;">Nesen saņēmām tavu pirmo pasūtījumu. Ja vajag vēl ko, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
 </td></tr>
 

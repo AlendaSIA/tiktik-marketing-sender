@@ -98,8 +98,14 @@ def display_checks(tpl_html, rendered, subject, attrs):
     # Only 232-234 carry a valid-until line (and a preheader that depends on it). A letter without one must
     # never show one; its preheader is its own and is not judged here.
     has_until = "contact.OFFER_VALID_UNTIL" in (tpl_html or "")
-    if has_until:
+    # 232-234 carry the date (or the offer) in the preheader too; 180 winback_1 (L4, 2026-09-28) keeps its fixed
+    # preheader and carries the date line only in the body.
+    pre_tpl = (_PRE.search(tpl_html or "") or [None, ""])[1]
+    pre_follows = "contact.OFFER_VALID_UNTIL" in pre_tpl
+    if has_until and pre_follows:
         p4_ok = ((SPEKA_LIDZ + " " + until) in body and bool(pre)) if until else (not line_shown and pre == "")
+    elif has_until:
+        p4_ok = ((SPEKA_LIDZ + " " + until) in body) if until else not line_shown
     else:
         p4_ok = not line_shown
     p4 = {"template_has_line": has_until, "offer_valid_until": until, "valid_until_line": line_shown,

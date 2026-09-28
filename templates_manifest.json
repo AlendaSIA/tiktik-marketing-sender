@@ -6,11 +6,11 @@
    "variant": "welcome_1",
    "id": 229,
    "file": "templates/welcome_1.html",
-   "git_blob": "22092783f14e51bf72e6141b138c5d1e4b5437c4",
-   "sha256": "6bfe8240fa2df3d969dc52df32b713a1898905283421289b1de568cdab953d11",
+   "git_blob": "968dce232ff505ebbd044ff89a68236b1bf0429d",
+   "sha256": "e8fae2e0ad8328019710a30ab9708a71e265f17c0e48cc07704077b04ffe3e15",
    "subject": "Tavs kabinets ir gatavs",
    "preheader": "Tur jau ir preces no tava pirmā pasūtījuma.",
-   "name": "money:welcome_1 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:welcome_1 v3 — v2.9.1 GREETING (2026-09-28)",
    "purpose": "First letter after a customer's first tiktik.lv order: their goods already sit in their kabinets, so the second order is one step; one affinity item (R1 only) and the free-shipping line; no discount, no deadline, normal price."
   },
   {
@@ -18,11 +18,11 @@
    "variant": "reorder_2",
    "id": 230,
    "file": "templates/reorder_2.html",
-   "git_blob": "5254b140dd0560b235ff2adedbe5d2736d0f1b63",
-   "sha256": "0b1781566458af7e7654ded3d50133a8211b423b4b04117a6068e69647b45203",
+   "git_blob": "b1166731ef593a3543d9acebf631302d61c2ed7b",
+   "sha256": "96d24af796aacbcb4daad3a2ce99aa46e5d32bccfa92ecea4784b8dbc63cc4e2",
    "subject": "Kā tev ar ierastajām precēm?",
    "preheader": "Tavas preces gaida kabinetā — pasūtīt var vienā solī.",
-   "name": "money:reorder_2 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:reorder_2 v3 — v2.9.1 GREETING (2026-09-28)",
    "purpose": "Second reorder rung: a gentle check-in at the normal price for a customer whose usual re-order moment has come and who did not order after reorder_1 (179)."
   },
   {
@@ -30,11 +30,11 @@
    "variant": "reorder_3",
    "id": 231,
    "file": "templates/reorder_3.html",
-   "git_blob": "598ff378c861814cc393b7ba180abcdf8d428b2c",
-   "sha256": "2df212b6e13bb27989a90c61d041da5851fccab9b3a2e1c600eaea24666f0701",
+   "git_blob": "db6dff9ea0654066b2ac058ef82cfcff3194564f",
+   "sha256": "f429d80da50c6e2bdab0527bc6d527f4956006140c58348a08752a8a17f09e73",
    "subject": "Varbūt ir kādas vajadzības?",
    "preheader": "Pietiek atbildēt ar vienu rindiņu — pārējo sagatavosim mēs.",
-   "name": "money:reorder_3 v2 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:reorder_3 v3 — v2.9.1 GREETING (2026-09-28)",
    "purpose": "Third and last reorder rung after 179 and reorder_2 got no order: the quietest letter, a C11-register check-in at the normal price (no discount, deadline or struck price); R block dropped, P grid, shortened cabinet box and D block kept."
   },
   {
@@ -42,11 +42,11 @@
    "variant": "winback_2",
    "id": 232,
    "file": "templates/winback_2.html",
-   "git_blob": "13f55148ebd84929a86f5c05ea1f54c5daf54216",
-   "sha256": "eee37c743afcf9de2d882b7fd1e62701b4586322d1bcd99ab8232135041106a5",
+   "git_blob": "489f256775fc2d7e3ff4d1e151fb93955b7c656c",
+   "sha256": "27da302575992db2b36248eb4b15b1d577d3670cf461e0e816faf139859e1abd",
    "subject": "Tava cena tavām ierastajām precēm",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tā ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
-   "name": "money:winback_2 v3 — v2.8: REF pārsvītrota tikai ja ir, 'derīga līdz' tikai ja ir, svaigā partija tikai ar P1_FRESH (2026-09-25)",
+   "name": "money:winback_2 v4 — v2.9.1 GREETING + L4 (2026-09-28)",
    "purpose": "Second win-back rung for customers silent for many months: a fresh batch of their usual goods has arrived and they get their own price until OFFER_VALID_UNTIL while it is in stock (price, crossed-out reference and date from contract v2.8)."
   },
   {
@@ -54,11 +54,11 @@
    "variant": "winback_3",
    "id": 233,
    "file": "templates/winback_3.html",
-   "git_blob": "f4ec1c33e4d4dfe18e0ec30346d64396d0a653fb",
-   "sha256": "d2c38bfefb2803a3dd5388e9b1ce94e41d49a2f3a054c6ee735128ebeb9719eb",
-   "subject": "Tavu cenu turam vēl šoreiz",
+   "git_blob": "0123565a12222c369d1ceaa7e8fe57c70c79ec5d",
+   "sha256": "66028b756e85bcc8968e114f55e0ebb879f610f2933d534379dcb729d72cf76f",
+   "subject": "Tava cena tavām ierastajām precēm",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tava cena spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.{% endif %}",
-   "name": "money:winback_3 v3 — v2.8: REF pārsvītrota tikai ja ir, 'derīga līdz' tikai ja ir, svaigā partija tikai ar P1_FRESH (2026-09-25)",
+   "name": "money:winback_3 v4 — v2.9.1 GREETING + L4 (2026-09-28)",
    "purpose": "Third and last winback rung: calm, the batch is still in stock and the customer price still holds until OFFER_VALID_UNTIL (contract v2.8); shorter than 180."
   },
   {
@@ -66,11 +66,11 @@
    "variant": "lost_quarterly",
    "id": 234,
    "file": "templates/lost_quarterly.html",
-   "git_blob": "3fc9e891cee1b0902dd48cc9d9d505f9956a5fdb",
-   "sha256": "3c39c1a1a37e6ec562f3ff909f672f588712dc2f213411d4c9a07229cb3035ac",
+   "git_blob": "08b8a9cd45846ebb98f1a3bbad6267e168519e4a",
+   "sha256": "c01d266e70597b034c696c8f1d5d9f737b26b80974e31c66dea7d5dea49ef205",
    "subject": "Atceramies, ko tu mēdzi ņemt",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tām pašām precēm tev tagad ir sava cena.{% endif %}",
-   "name": "money:lost_quarterly v3 — v2.8: REF pārsvītrota tikai ja ir, 'derīga līdz' tikai ja ir, svaigā partija tikai ar P1_FRESH, bez '14 dienas' (2026-09-25)",
+   "name": "money:lost_quarterly v4 — v2.9.1 GREETING + L4 (2026-09-28)",
    "purpose": "Quarterly wave to customers with no order for 12+ months: warm re-introduction, their restocked goods at a personal price until OFFER_VALID_UNTIL (contract v2.8), ordering via the cabinet."
   },
   {
@@ -78,11 +78,11 @@
    "variant": "active_xsell",
    "id": 235,
    "file": "templates/active_xsell.html",
-   "git_blob": "645778df67cd9be6cda8b7cd6145dfeea2b6c526",
-   "sha256": "4f808ccba3615c1dff71b308bc2262ad80c4c19901eaa6c06ad6efce42a22101",
+   "git_blob": "18e5095bb8e6a7c50cece7526fb528e5ef0e40cf",
+   "sha256": "36100a6947ec34c2684b5c067732d1d105a356a68ac5c020b2f2cecad39c7c79",
    "subject": "Ko citi ņem pie tavām precēm",
    "preheader": "Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.",
-   "name": "money:active_xsell v3 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:active_xsell v4 — v2.9.1 GREETING (2026-09-28)",
    "purpose": "Category widening for recent customers not yet due to re-order: the R1..R4 'bought together' items lead at their normal price, own goods follow as a quiet reminder; no discount, no deadline."
   },
   {
@@ -90,11 +90,11 @@
    "variant": "akcija_weekly",
    "id": 236,
    "file": "templates/akcija_weekly.html",
-   "git_blob": "6a9b3448f8bab2953ee91066d334703f48f9cb08",
-   "sha256": "f6eb7a16287181a49264905fc0a14603ecdfc933c46689127d4557ca59d743cc",
+   "git_blob": "a47c35801467d64d1970bbc3e74425ae45ba4cf8",
+   "sha256": "12f36c7ec1b469484ff7a6649640064ea284fdaf9d1999756fd7c08da5b5f15a",
    "subject": "⟦NEDĒĻAS TĒMA⟧ nedēļa: lētāk nekā parasti",
    "preheader": "Cenas spēkā, kamēr prece ir noliktavā.",
-   "name": "money:akcija_weekly v2 — nedēļas akcijas rāmis; bez kabineta preču → nedēļas akciju lapa (2026-09-25)",
+   "name": "money:akcija_weekly v3 — v2.9.1 GREETING (2026-09-28)",
    "purpose": "Weekly residual letter for everyone with no personal step this week (incl. empty kabinets): a fixed frame around the brand/theme Raivis picks, with the weekly product block inserted per campaign."
   }
  ],
@@ -137,10 +137,10 @@
    "variant": "reorder_1",
    "id": 179,
    "file": "templates/reorder_1.html",
-   "git_blob": "3ad962f87dbe82092e4d65c033edaf73907673fb",
-   "sha256": "2a24481c3b534ce47f73c93d66565d5142cc7bf6a9c3f2ba0cfb22778a9602ab",
+   "git_blob": "d46d7ce1211f9ded4037c2add9e748c8f70d1124",
+   "sha256": "9375dafabd9c4bc6e1acc40ad1e853def63b3516f867aaac2e3adf4b4016a0a1",
    "subject": "Laiks papildināt krājumus?",
-   "name": "money:reorder_1 v6 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:reorder_1 v7 — v2.9.1 GREETING (2026-09-28)",
    "live_name": "money:reorder_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "25742af5d1483af3a9679f8be57e51c0fe304882850921b84919054f29cd4e70"
   },
@@ -148,10 +148,10 @@
    "variant": "winback_1",
    "id": 180,
    "file": "templates/winback_1.html",
-   "git_blob": "4d70bcd471dcdb28d4ef68afd528d959155e2f11",
-   "sha256": "c64b68bc26515eedd0d4c06a0d296603f4454f97badca7cb20ad45e71d7760fa",
+   "git_blob": "076ff2cbe01a51f3b42da9d1f341b1d29391e9c9",
+   "sha256": "fa462af2207d83529e3de47b45a27ede2a4e393e68f78af413fa706a489f74d2",
    "subject": "Sen neesam redzējušies",
-   "name": "money:winback_1 v6 — v2.8: REF pārsvītrota tikai ja ir (2026-09-25)",
+   "name": "money:winback_1 v7 — v2.9.1 GREETING + L4 (2026-09-28)",
    "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
   }
