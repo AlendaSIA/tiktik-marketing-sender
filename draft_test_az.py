@@ -147,6 +147,17 @@ def main(argv=None):
     attrs = dict(live)
     attrs.update(overlay)
     rep["overlay_keys"] = sorted(overlay)
+    # The shadow row places prices by SKU in the v2.7 slot order; NAME and IMG come from live Brevo. Proof that the two
+    # agree: a slot without REF must carry the live price, a slot with REF must carry the live price as its reference.
+    align = []
+    for i in range(1, 9):
+        if not live.get(f"P{i}_NAME") or f"P{i}_PRICE" not in overlay:
+            continue
+        ref = str(overlay.get(f"P{i}_REF_PRICE") or "")
+        want = ref if ref else str(overlay.get(f"P{i}_PRICE") or "")
+        align.append({"slot": i, "live_price": live.get(f"P{i}_PRICE"), "overlay_shop": want,
+                      "ok": str(live.get(f"P{i}_PRICE") or "") == want})
+    rep["slot_alignment"] = align
     rep["live_has_greeting"] = "GREETING" in live
 
     st = D.static_checks(tpl, subject)
@@ -168,7 +179,8 @@ def main(argv=None):
                     "claims_ok": v28["claims_ok"], "h1": v28["h1"]},
                greeting=g, words=w,
                excerpt=[V.preheader(rendered) or ""] + V.visible_lines(rendered)[:30])
-    rep["all_ok"] = bool(static_ok and cc and cc["ok"] and v28_ok and g["ok"] and w["ok"])
+    rep["all_ok"] = bool(static_ok and cc and cc["ok"] and v28_ok and g["ok"] and w["ok"]
+                         and all(x["ok"] for x in align))
 
     own = C.contact_attributes(OWN_CONTACT)
     own_url = str(own.get("KABINETS_URL") or "")
