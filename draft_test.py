@@ -90,13 +90,15 @@ _PRICE_OK = re.compile(r"^(no )?\d{1,3}( \d{3})*,\d{2} €$")
 # stays UNKNOWN_BODY. The 2026-09-24 access-choice page ("Laipni lūdzam kabinetā") still passes as is.
 KABINETS_LOADER = "Uzgaidi, ielādējam tavu kabinetu"
 KABINETS_BOOTED = "<title>Mans kabinets</title>"
+KABINETS_PASSWORD = "<title>Kabinets — parole</title>"  # customer-set password; known-good (MAIN 2026-09-28)
 _KABINETS = re.compile(r"^https://plani\.tiktik\.lv/kabinets\.php\?")
 
 # Body markers, keyed by URL shape. (must_have_any, must_not_have_any, min_item_links)
 MARKERS = [
     (_KABINETS,
      ("Laipni lūdzam kabinetā",              # access-choice page, 2026-09-24
-      KABINETS_LOADER),                      # loader, 2026-09-25 - passes only via its boot link
+      KABINETS_LOADER,                       # loader, 2026-09-25 - passes only via its boot link
+      KABINETS_PASSWORD),                    # password page, 2026-09-28 - known-good (decision (a))
      ("Atsūtīt man saiti", "Ieej savā kabinetā"), 0),
     (re.compile(r"^https://www\.tiktik\.lv/veikals/item/"),
      ('itemprop="price"',), ("<title>Tiktik - Veikals</title>",), 0),
@@ -138,6 +140,10 @@ def link_verdict(url):
                 return {"url": url, "ok": False, "why": f"dead-page marker {bad[0]!r} (status was 200)"}
             if not any(m in text for m in must):
                 return {"url": url, "ok": False, "why": f"UNKNOWN_BODY: none of {list(must)}"}
+            if rx is _KABINETS and KABINETS_PASSWORD in text and KABINETS_LOADER not in text:
+                # MAIN COMMAND 2 (2026-09-28), decision (a): the customer set a password on the cabinet - a real,
+                # live cabinet page, KNOWN-GOOD. Measured 2026-09-28: 200, <title>Kabinets — parole</title>.
+                return {"url": url, "ok": True, "via": "password", "bytes": len(body)}
             if rx is _KABINETS and KABINETS_LOADER in text:
                 # Checked before the access-choice marker on purpose: a body carrying both takes the
                 # stricter road.

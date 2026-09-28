@@ -158,7 +158,7 @@ class ContractV28Display(unittest.TestCase):
             off = "\n".join(V.visible_lines(D.render(tpl(tid), NO_REF)))
             self.assertNotIn(V.SPEKA_LIDZ, off, tid)
             self.assertNotIn("partij", off.lower(), tid)
-            self.assertTrue(V.preheader(D.render(tpl(tid), NO_REF)), tid)  # fixed preheader stays
+            self.assertEqual(V.preheader(D.render(tpl(tid), NO_REF)), "", tid)  # COMMAND 2: preheader follows the offer
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ import draft_test_v28 as V  # noqa: E402
 
 FILES = {229: "welcome_1", 179: "reorder_1", 230: "reorder_2", 231: "reorder_3", 180: "winback_1",
          232: "winback_2", 233: "winback_3", 234: "lost_quarterly", 235: "active_xsell", 236: "akcija_weekly"}
-LINE = "<p style=\"margin:0 0 10px;\">{{ contact.GREETING | default : 'Sveiki!' }}</p>"
+TAG = "{{ contact.GREETING | default : 'Sveiki!' }}"
+LINE = "<div style=\"font-size:22px;font-weight:800;color:#23303a;\">" + TAG + "</div>"   # 126 frame
 NB, EUR = chr(0xA0), chr(0x20AC)
 BASE = {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": "https://plani.tiktik.lv/kabinets.php?k=x&tab=preces",
         "P1_NAME": "Salvetes", "P1_IMG": "https://x/1.jpg", "P1_PRICE": "0,89" + NB + EUR,
@@ -32,7 +33,9 @@ class GreetingAndL4(unittest.TestCase):
     def test_every_letter_prints_greeting_once_and_builds_none(self):
         for tid in FILES:
             t = tpl(tid)
-            self.assertEqual(t.count(LINE), 1, tid)
+            self.assertEqual(t.count(TAG), 1, tid)
+            if tid != 236:
+                self.assertEqual(t.count(LINE), 1, tid)
             self.assertNotIn("Sveiki, {{", t, tid)
             self.assertEqual(D.static_checks(t, "S")["outside_contract"], [], tid)
 
@@ -42,7 +45,7 @@ class GreetingAndL4(unittest.TestCase):
                                 (dict(BASE, GREETING=""), "Sveiki!"), (dict(BASE), "Sveiki!")):
                 out = D.render(tpl(tid), attrs)
                 self.assertTrue(A.greeting_check(out, attrs)["ok"], (tid, want))
-                self.assertIn(">" + want + "</p>", out, tid)
+                self.assertRegex(out, ">" + want + "(</div>| )", tid)
 
     def test_price_letters_have_no_progression_words(self):
         for tid in A.PRICE_LETTERS:

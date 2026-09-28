@@ -32,6 +32,9 @@ import template_put as T
 
 TEST_RECIPIENT = D.TEST_RECIPIENT            # raivis@alenda.lv - the only recipient
 OWN_CONTACT = "alenda.jurmala@gmail.com"     # Raivis' own contact (contract v2.7 rule 11)
+ROUND_TAG = "az-2026-09-28b"                  # MAIN COMMAND 2 round
+REF_126 = "126 „tavs personīgais piedāvājums” (15.07., 4,67 % klikšķu) + preču kartītes no 222 „Mercator nedēļa”"
+STYLE_REF = {236: "222 „Mercator nedēļa” (22.09.) — mūsu nedēļas akcijas formāts"}
 PRICE_LETTERS = {180, 232, 233, 234}         # LADDER POLICY L1
 REORDER_LETTERS = {179, 230, 231}            # L1 / P5: no ladder, no discount words
 L4_FORBIDDEN = ["vēl lētāk", "atkal", "šoreiz", "pakāp", "solis lētāk", "nākamreiz lētāk", "vēl zemāk"]
@@ -45,9 +48,12 @@ def mask(email):
 
 
 def greeting_check(rendered, attrs):
+    """G2: the greeting is the letter's first line - its own block (126 frame) or the start of the first paragraph
+    (222 weekly frame, 236)."""
     want = str(attrs.get("GREETING") or "") or "Sveiki!"
-    return {"expected": want, "ok": ('>' + _html.escape(want, quote=False) + '</p>') in rendered
-            or ('>' + want + '</p>') in rendered}
+    ok = any(re.search(">" + re.escape(w) + r"(</p>|</div>| )", rendered)
+             for w in (want, _html.escape(want, quote=False)))
+    return {"expected": want, "ok": ok}
 
 
 def words_check(template_id, rendered, subject, attrs):
@@ -87,7 +93,7 @@ def banner(text):
 
 def send(subject, html_body, tag):
     payload = {"sender": {"id": C.SENDER_ID}, "to": [{"email": TEST_RECIPIENT}], "subject": subject,
-               "htmlContent": html_body, "tags": ["draft-test", "az-2026-09-28", tag]}
+               "htmlContent": html_body, "tags": ["draft-test", ROUND_TAG, tag]}
     assert payload["to"] == [{"email": TEST_RECIPIENT}], "recipient guard"
     return C._call("POST", "/smtp/email", payload)
 
@@ -113,6 +119,7 @@ def main(argv=None):
     ap.add_argument("--seq")
     ap.add_argument("--overlay-b64", default="")
     ap.add_argument("--note-b64", default="")
+    ap.add_argument("--fill-b64", default="", help="236 only: {token: value} for the ⟦…⟧ frame, as the week's builder fills it")
     ap.add_argument("--summary-b64", default="")
     ap.add_argument("--manifest", default="templates_manifest.json")
     ap.add_argument("--send", action="store_true")
@@ -143,6 +150,12 @@ def main(argv=None):
         print(json.dumps(rep, ensure_ascii=False, indent=1))
         return 2
     tpl, subject = raw.decode("utf-8"), row["subject"]
+    fill = json.loads(base64.b64decode(a.fill_b64).decode("utf-8")) if a.fill_b64 else {}
+    if fill and a.template != 236:
+        sys.exit("--fill-b64 is only for the 236 frame")
+    for k, v in fill.items():
+        tpl, subject = tpl.replace(k, v), subject.replace(k, v)
+    rep["filled_tokens"] = sorted(fill)
     live = C.contact_attributes(a.contact)
     attrs = dict(live)
     attrs.update(overlay)
@@ -195,6 +208,7 @@ def main(argv=None):
             f"{a.variant}, pakāpiens {rung}. <b>Klientam NAV sūtīts.</b><br>"
             + ("Kabineta saites šajā testā ved uz TAVU kabinetu, ne klienta." if own_ok
                else "Kabineta saites šajā testā ir atslēgtas (#).")
+            + "<br>Stils kā mūsu kampaņā " + _html.escape(STYLE_REF.get(a.template, REF_126)) + "."
             + (("<br>" + _html.escape(note)) if note else ""))
     final = re.sub(r"(<body[^>]*>)", lambda mm: mm.group(1) + banner(btxt), body, count=1)
     rep["sent"] = None

@@ -286,13 +286,14 @@ def test_akcija_weekly_contact_without_cabinet_products_gets_the_featured_page()
     after, _ = D.C.apply_utm_week(AKCIJA, "2026-w39")
     body = D.render(after, {"KABINETS_HAS_PRODUCTS": False, "VARDS": "", "UZRUNA": ""})
     assert _real_links(body) == [FEATURED_W39]
-    assert "Skatīt nedēļas akcijas &rarr;" in body and "Atvērt savu kabinetu" not in body
+    assert "Skatīt visas nedēļas akcijas" in body and "Atvērt savu kabinetu" not in body
 
 
 def test_akcija_weekly_contact_with_cabinet_products_keeps_the_cabinet_box():
     body = D.render(D.C.apply_utm_week(AKCIJA, "2026-w39")[0], {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": LETTER})
-    assert _real_links(body) == [LETTER]
-    assert "Atvērt savu kabinetu &rarr;" in body and FEATURED not in body
+    # COMMAND 2 (222 weekly format): the featured-page button is for everyone; a cabinet contact also gets the line
+    assert _real_links(body) == [LETTER, FEATURED_W39]
+    assert "Atvērt savu kabinetu &rarr;" in body and "Skatīt visas nedēļas akcijas" in body
 
 
 def test_static_utm_accepts_the_seam_form_and_still_flags_a_written_week():
@@ -303,7 +304,7 @@ def test_static_utm_accepts_the_seam_form_and_still_flags_a_written_week():
     assert D.static_checks(page.format(seam), "")["template_side_utm"] == []
     assert D.static_checks(page.format(seam + hard), "")["template_side_utm"] == ["2026-w39-akcija"]
     assert D.static_checks(page.format(bare), "")["template_side_utm"] == ["__UTM_WEEK__"]
-    s = D.static_checks(AKCIJA, "⟦NEDĒĻAS TĒMA⟧ nedēļa: lētāk nekā parasti")
+    s = D.static_checks(AKCIJA, "⟦RAŽOTĀJS⟧ nedēļa: ⟦PRECE⟧ no ⟦CENA⟧")
     assert s["complete_html"] and not (s["outside_contract"] or s["nested_double_quote_hrefs"]
                                        or s["template_side_utm"] or s["percent_in_text"])
 
@@ -359,10 +360,13 @@ def test_akcija_no_cabinet_contact_passes_the_draft_check_end_to_end(monkeypatch
 def test_akcija_cabinet_contact_passes_through_the_loader_end_to_end(monkeypatch):
     monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
         "KABINETS_HAS_PRODUCTS": True, "VARDS": "Līga", "UZRUNA": "", "KABINETS_URL": LETTER})
-    _site(monkeypatch, {LETTER: (200, "text/html", _loader()), BOOT: (200, "text/html", BOOTED)})
+    page = ("<title>medēļās akcijas</title>"
+            + "".join(f'<a href="/veikals/item/c/p{i}/">p</a>' for i in range(61))).encode("utf-8")
+    _site(monkeypatch, {LETTER: (200, "text/html", _loader()), BOOT: (200, "text/html", BOOTED),
+                        FEATURED_W39: (200, "text/html; charset=UTF-8", page)})
     r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
     assert r["ok"], r["problems"]
-    assert [(l["url"], l.get("via")) for l in r["links"]] == [(LETTER, "loader>boot")]
+    assert [(l["url"], l.get("via")) for l in r["links"]] == [(LETTER, "loader>boot"), (FEATURED_W39, None)]
 
 
 # --- command 4, item 4 (MAIN 2026-09-25): KABINETS_URL only where the letter links to it ------------
@@ -404,3 +408,19 @@ def test_a_link_in_a_branch_the_contact_does_not_see_does_not_count():
             '{% else %}<a href="https://www.tiktik.lv/">f</a>{% endif %}</body></html>')
     assert D.links_to(html, {"KABINETS_HAS_PRODUCTS": False}, "KABINETS_URL") is False
     assert D.links_to(html, {"KABINETS_HAS_PRODUCTS": True}, "KABINETS_URL") is True
+
+
+# --- COMMAND 2 (MAIN 2026-09-28), decision (a): a customer's password-protected cabinet is a KNOWN-GOOD page -----
+PAROLE = b"<!DOCTYPE html><html><head><title>Kabinets \xe2\x80\x94 parole</title></head><body><form>parole</form></body></html>"
+
+
+def test_password_protected_cabinet_is_known_good(monkeypatch):
+    calls = _site(monkeypatch, {LETTER: (200, "text/html", PAROLE)})
+    v = D.link_verdict(LETTER)
+    assert v["ok"] and v.get("via") == "password" and calls == [LETTER]
+
+
+def test_password_title_on_a_shop_page_is_not_a_pass(monkeypatch):
+    shop = "https://www.tiktik.lv/veikals/item/a/b/"
+    _site(monkeypatch, {shop: (200, "text/html", PAROLE)})
+    assert not D.link_verdict(shop)["ok"]
