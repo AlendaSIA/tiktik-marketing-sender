@@ -85,3 +85,14 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.contact_sequence_state`
   ADD COLUMN IF NOT EXISTS rung_cap INT64,
   ADD COLUMN IF NOT EXISTS rung_cap_until DATE,
   ADD COLUMN IF NOT EXISTS reorder_worked_at DATE;
+
+-- v2.9.3 / v2.9.4 (MAIN 2026-09-28 18:00): PD write-back planned in shadow (additive).
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_pd_writes`
+  ADD COLUMN IF NOT EXISTS person_ref STRING,
+  ADD COLUMN IF NOT EXISTS org_ref STRING,
+  ADD COLUMN IF NOT EXISTS field_key STRING,
+  ADD COLUMN IF NOT EXISTS field_value STRING,
+  ADD COLUMN IF NOT EXISTS match_how STRING,
+  ADD COLUMN IF NOT EXISTS create_name STRING;
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
+  ADD COLUMN IF NOT EXISTS writeback_population ARRAY<STRUCT<kind STRING, n INT64>>;

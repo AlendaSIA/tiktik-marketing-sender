@@ -19,9 +19,11 @@ import json
 
 import os
 
-PD_ACTIVITY_TYPE_KEY = os.environ.get("PD_ACTIVITY_TYPE_KEY") or None
-PD_ACTIVITY_TYPE_ID = int(os.environ["PD_ACTIVITY_TYPE_ID"]) if os.environ.get("PD_ACTIVITY_TYPE_ID") else None
-RECORD_VERSION = "pd-record-v2"   # v2 (28.09): participants; target resolved by address (pd_target)
+# Contract v2.9.3 (28.09): the type EXISTS - id 32, key_string _e_pasts_automatisks ("✉️ E-pasts (automātisks)").
+# This fills lock L6's config. The other five send locks are untouched. Env may still override.
+PD_ACTIVITY_TYPE_KEY = os.environ.get("PD_ACTIVITY_TYPE_KEY") or "_e_pasts_automatisks"
+PD_ACTIVITY_TYPE_ID = int(os.environ["PD_ACTIVITY_TYPE_ID"]) if os.environ.get("PD_ACTIVITY_TYPE_ID") else 32
+RECORD_VERSION = "pd-record-v3"   # v3 (28.09): type 32, offer summary in subject, products/prices/OVU in note
 
 # customer-facing wording never says winback/lost; the PD subject is internal, but it is shown to
 # Raivis in Pipedrive, so it carries the letter name AND the neutral theme.
@@ -33,16 +35,21 @@ LETTER_LABEL = {
 
 
 def render(*, person_id, org_id, master_key, email, email_type, template_id, send_date,
-           offer_rung, reason, campaign_ref, participants=()) -> dict:
+           offer_rung, reason, campaign_ref, participants=(), offer_valid_until=None,
+           offer_tail=None, product_lines=()) -> dict:
     """The one record. Deterministic: same inputs -> same bytes. No clock, no randomness."""
     if isinstance(send_date, dt.date):
         send_date = send_date.isoformat()
     label = LETTER_LABEL.get(email_type, email_type)
-    subject = f"[AI] tiktik.lv e-pasts: {label} ({email_type}, veidne {template_id})"
+    if isinstance(offer_valid_until, dt.date):
+        offer_valid_until = offer_valid_until.isoformat()
+    tail = offer_tail or (f"pakāpe {offer_rung}, līdz {offer_valid_until}" if offer_rung else "bez atlaides")
+    subject = f"[AI] tiktik.lv e-pasts: {label} ({email_type}, veidne {template_id}) · {tail}"
     note = "\n".join([
         f"Nosūtīts: {email} · {send_date}",
         f"Vēstule: {email_type} · veidne {template_id} · kampaņa {campaign_ref}",
-        f"Cenu pakāpe (OFFER_RUNG): {offer_rung}",
+        f"Cenu pakāpe (OFFER_RUNG): {offer_rung} · spēkā līdz: {offer_valid_until or '-'}",
+        *([f"Produkti: {'; '.join(product_lines)}"] if product_lines else []),
         f"Kāpēc: {reason}",
         f"master_key: {master_key}",
     ])

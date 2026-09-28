@@ -123,17 +123,18 @@ class ShadowPipedrive(unittest.TestCase):
             pd_record.write(rec, shadow=True, pd_writer=calls.append, shadow_sink=lambda row: None)
         self.assertEqual(calls, [])
 
-    def test_type_is_unresolved_config_and_never_whatsapp(self):
+    def test_type_is_the_v293_email_type_and_never_whatsapp(self):
         r = pd_record.render(**REC)
-        self.assertIsNone(r["type_key"]); self.assertIsNone(r["type_id"]); self.assertTrue(r["done"])
+        self.assertEqual((r["type_key"], r["type_id"], r["done"]), ("_e_pasts_automatisks", 32, True))
         self.assertNotIn("whatsapp_chat", open(os.path.join(ROOT, "pd_record.py")).read().split('"""', 2)[2])
 
     def test_live_without_type_is_refused_shadow_is_not(self):
         rows = []
         pd_record.write(pd_record.render(**REC), shadow=True, pd_writer=lambda r: 1 / 0, shadow_sink=rows.append)
         self.assertEqual(len(rows), 1)
-        with self.assertRaises(ValueError):
-            pd_record.write(pd_record.render(**REC), shadow=False, pd_writer=lambda r: None, shadow_sink=lambda r: None)
+        with self.assertRaises(ValueError):   # the refusal still holds if the type is ever unset again
+            pd_record.write({**pd_record.render(**REC), "type_key": None, "type_id": None}, shadow=False,
+                            pd_writer=lambda r: None, shadow_sink=lambda r: None)
 
     def test_live_without_person_is_refused(self):
         with self.assertRaises(ValueError):

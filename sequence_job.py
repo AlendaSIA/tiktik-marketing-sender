@@ -22,6 +22,8 @@ from google.cloud import bigquery
 import pd_pending
 import pd_record
 import pd_target
+import pd_writeback as W
+import json
 import sequence as S
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -52,14 +54,17 @@ ORDER BY l.master_key, l.sent_at
 INPUT_SQL = f"""
 WITH lc AS (
   SELECT master_key, LOWER(TRIM(email)) AS email, lifecycle_stage, last_order, first_order, entry_threshold_days,
+         full_name, client_name, client_id,
          ROW_NUMBER() OVER (PARTITION BY master_key ORDER BY last_order DESC, email) AS rn
   FROM `{P}.business_marts.customer_lifecycle` WHERE master_key IS NOT NULL),
 sup AS (
   SELECT DISTINCT l.master_key FROM `{P}.business_marts.customer_lifecycle` l
   JOIN `{P}.business_marts.email_suppression_all` s ON LOWER(TRIM(s.email)) = LOWER(TRIM(l.email)))
 SELECT lc.master_key, lc.email AS send_email, lc.lifecycle_stage,
-       lc.last_order, lc.first_order, lc.entry_threshold_days, (sup.master_key IS NOT NULL) AS suppressed
+       lc.last_order, lc.first_order, lc.entry_threshold_days, (sup.master_key IS NOT NULL) AS suppressed,
+       lc.full_name, lc.client_name, pc.reg_number
 FROM lc LEFT JOIN sup USING (master_key)
+LEFT JOIN `{P}.paytraq_core.clients` pc ON CAST(pc.client_id AS STRING) = CAST(lc.client_id AS STRING)
 WHERE lc.rn = 1
 """
 
@@ -117,6 +122,20 @@ GROUP BY 1
 """
 
 
+# v2.9.3 / v2.9.4 write-back inputs (read-only)
+ORGS_SQL = f"SELECT id, name, reg_number FROM `{P}.channel_raw.pipedrive_orgs`"
+ATTRS_SQL = f"""
+SELECT LOWER(TRIM(email)) AS email, plan_date,
+  [STRUCT(audit_p1_sku AS sku, P1_PRICE AS price, P1_REF_PRICE AS ref), STRUCT(audit_p2_sku, P2_PRICE, P2_REF_PRICE),
+   STRUCT(audit_p3_sku, P3_PRICE, P3_REF_PRICE), STRUCT(audit_p4_sku, P4_PRICE, P4_REF_PRICE),
+   STRUCT(audit_p5_sku, P5_PRICE, P5_REF_PRICE), STRUCT(audit_p6_sku, P6_PRICE, P6_REF_PRICE),
+   STRUCT(audit_p7_sku, P7_PRICE, P7_REF_PRICE), STRUCT(audit_p8_sku, P8_PRICE, P8_REF_PRICE)] AS slots
+FROM `{P}.mkt_control.shadow_brevo_price_attrs`
+WHERE plan_date <= CURRENT_DATE('Europe/Riga')
+QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY plan_date DESC) = 1
+"""
+
+
 def persons_index(rows) -> dict:
     idx = {}
     for r in rows:
@@ -162,7 +181,11 @@ def main():
     prices = {r["master_key"]: rung_price_map(r) for r in bq.query(RUNG_PRICE_SQL).result()}
     orders = {r["master_key"]: [_d(x) for x in r["orders"]] for r in bq.query(ORDERS_SQL).result()}
     rung_built_at = next(iter(bq.query(RUNG_BUILT_SQL).result()))["built_at"]
-    by_address = persons_index(bq.query(PERSONS_SQL).result())
+    person_rows = list(bq.query(PERSONS_SQL).result())
+    by_address = persons_index(person_rows)
+    org_idx = W.build_org_index([dict(r) for r in bq.query(ORGS_SQL).result()],
+                                [{"org_id": r["org_id"], "emails": r["emails"]} for r in person_rows])
+    attrs = {r["email"]: [dict(x) for x in r["slots"]] for r in bq.query(ATTRS_SQL).result()}
     age = next(iter(bq.query(PERSONS_AGE_SQL).result()))
     persons_age_h, persons_ingested_at = age["age_h"], age["ingested_at"]
     org_by_address = {r["email"]: set(r["org_ids"]) for r in bq.query(ORG_ADDR_SQL).result()}
@@ -234,20 +257,40 @@ def main():
             "planned_at": now})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
             tg = resolve_now(f["send_email"], mk)
-            if tg.kind == "held":   # COMMAND 5 (2): the e-mail is NOT held; the PD write waits in the queue
+            wb = W.plan(tg, email=f["send_email"], person_name=f["full_name"], org_name=f["client_name"],
+                        reg_nr=f["reg_number"], org_idx=org_idx)
+            hold_pd = wb["hold_reason"]
+            if hold_pd:   # COMMAND 5 (2): the e-mail is NOT held; the PD write waits in the queue
                 held_today.append({"master_key": mk, "email": f["send_email"], "email_type": d.next_email_type,
-                                   "hold_reason": tg.hold_reason, "pd_class": tg.cls, "template_id": tid,
+                                   "hold_reason": hold_pd, "pd_class": tg.cls, "template_id": tid,
                                    "send_date": d.next_due_on.isoformat(), "offer_rung": d.offer_rung,
                                    "reason": d.reason})
-            rec = pd_record.render(person_id=tg.person_id, org_id=tg.org_id, master_key=mk,
+            tail, lines = W.offer_summary(attrs.get(f["send_email"], []))
+            pid = wb["person_ref"] if isinstance(wb["person_ref"], int) else tg.person_id
+            oid = wb["org_ref"] if isinstance(wb["org_ref"], int) else tg.org_id
+            rec = pd_record.render(person_id=pid, org_id=oid, master_key=mk,
                                    email=f["send_email"], email_type=d.next_email_type, template_id=tid,
                                    send_date=d.next_due_on, offer_rung=d.offer_rung, reason=d.reason,
-                                   campaign_ref="(shadow)", participants=tg.participants)
-            pd_record.write(rec, shadow=True, pd_writer=_no_pd_writer, shadow_sink=lambda row, mk=mk, et=d.next_email_type, tg=tg:
-                            pd_rows.append({"plan_date": today.isoformat(), "run_id": RUN_ID,
-                                            "master_key": mk, "email_type": et, "planned_at": now,
-                                            "target_kind": tg.kind, "pd_class": tg.cls,
-                                            "pd_hold_reason": tg.hold_reason, **row}))
+                                   campaign_ref="(shadow)", participants=tg.participants,
+                                   offer_valid_until=d.offer_valid_until, offer_tail=None if not lines else tail,
+                                   product_lines=lines)
+            base = {"plan_date": today.isoformat(), "run_id": RUN_ID, "master_key": mk,
+                    "email_type": d.next_email_type, "planned_at": now, "target_kind": tg.kind,
+                    "pd_class": tg.cls, "pd_hold_reason": hold_pd,
+                    "person_ref": None if wb["person_ref"] is None else str(wb["person_ref"]),
+                    "org_ref": None if wb["org_ref"] is None else str(wb["org_ref"])}
+            pd_record.write(rec, shadow=True, pd_writer=_no_pd_writer,
+                            shadow_sink=lambda row, base=base: pd_rows.append({**base, **row}))
+            if not hold_pd:
+                for c in wb["creates"]:
+                    pd_rows.append({**base, "object": c["object"], "record_version": pd_record.RECORD_VERSION,
+                                    "match_how": c.get("match_how"), "create_name": c.get("name"),
+                                    "record_json": json.dumps(c, ensure_ascii=False, sort_keys=True, default=str)})
+                for fw in W.field_writes(wb["person_ref"], email_type=d.next_email_type, send_date=d.next_due_on,
+                                         offer_rung=d.offer_rung, offer_valid_until=d.offer_valid_until):
+                    pd_rows.append({**base, "object": fw["object"], "record_version": pd_record.RECORD_VERSION,
+                                    "field_key": fw["field_key"], "field_value": fw["field_value"],
+                                    "record_json": json.dumps(fw, ensure_ascii=False, sort_keys=True)})
     for mk, lp in last_plan.items():
         if mk not in seen:
             plan_rows.append({"plan_date": today.isoformat(), "run_id": RUN_ID, "master_key": mk,
@@ -256,6 +299,21 @@ def main():
                               "planned_send_date": None, "would_send": False, "hold_reason": "DROPPED",
                               "reason": "not in customer_lifecycle today", "diff_vs_prev": "changed",
                               "planned_at": now})
+
+    # v2.9.4 reconciliation: what the write-back would create across ALL sendable contacts (counts only)
+    pop = {}
+    for f in facts:
+        if f["suppressed"] or f["lifecycle_stage"] in (None, "blocked") or not f["send_email"]:
+            continue
+        pop["sendable"] = pop.get("sendable", 0) + 1
+        t = resolve_now(f["send_email"], f["master_key"])
+        w = W.plan(t, email=f["send_email"], person_name=f["full_name"], org_name=f["client_name"],
+                   reg_nr=f["reg_number"], org_idx=org_idx)
+        if w["hold_reason"]:
+            k = "held_" + w["hold_reason"]
+            pop[k] = pop.get(k, 0) + 1
+        for c in w["creates"]:
+            pop[c["object"]] = pop.get(c["object"], 0) + 1
 
     def render_pending(r, t):
         rec = pd_record.render(person_id=t.person_id, org_id=t.org_id, master_key=r["master_key"],
@@ -285,14 +343,15 @@ def main():
             bq.load_table_from_json(rows, t, job_config=J(write_disposition="WRITE_APPEND")).result()
     disagree = S.template_disagreements(tmap)
     kinds = {}
-    for r in pd_rows:
+    acts = [r for r in pd_rows if r["object"] == "activity"]
+    for r in acts:
         k = r["pd_hold_reason"] or r["target_kind"]
         kinds[k] = kinds.get(k, 0) + 1
     built_age_h = None if rung_built_at is None else round(
         (dt.datetime.now(dt.timezone.utc) - rung_built_at).total_seconds() / 3600, 1)
     bq.load_table_from_json([{
         "run_id": RUN_ID, "plan_date": today.isoformat(), "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "people": len(states), "would_send": sum(r["would_send"] for r in plan_rows), "pd_would_writes": len(pd_rows),
+        "people": len(states), "would_send": sum(r["would_send"] for r in plan_rows), "pd_would_writes": len(acts),
         "pd_targets": [{"kind": k, "n": v} for k, v in sorted(kinds.items())],
         "rung_price_source": RUNG_PRICE_SOURCE,
         "rung_price_built_at": rung_built_at and rung_built_at.isoformat(), "rung_price_age_h": built_age_h,
@@ -301,12 +360,13 @@ def main():
         "pd_persons_age_h": persons_age_h,
         "pending_open": pstats["pending_open"], "pending_new": pstats["pending_new"],
         "pending_resolved": pstats["pending_resolved"], "pending_oldest_h": pstats["pending_oldest_h"],
-        "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
+        "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()],
+        "writeback_population": [{"kind": k, "n": v} for k, v in sorted(pop.items())]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
-             "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s state_changes=%s "
+             "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s writeback_population=%s state_changes=%s "
              "interface_v1_vs_map_disagreements=%s", RUN_ID, len(states), len(plan_rows),
-             sum(r["would_send"] for r in plan_rows), len(pd_rows), kinds, rung_built_at, built_age_h,
-             persons_age_h, pstats, len(log_rows), disagree)
+             sum(r["would_send"] for r in plan_rows), len(acts), kinds, rung_built_at, built_age_h,
+             persons_age_h, pstats, pop, len(log_rows), disagree)
 
 
 def _no_pd_writer(record):

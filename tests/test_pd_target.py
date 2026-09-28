@@ -88,7 +88,7 @@ class Record(unittest.TestCase):
     def test_participants_in_the_record_and_version_2(self):
         tg = T.Target("org_participants", "C2b", 21, 7, (21, 20))
         r = self.rec(tg)
-        self.assertEqual((r["record_version"], r["participant_person_ids"], r["target_org_id"]), ("pd-record-v2", [21, 20], 7))
+        self.assertEqual((r["record_version"], r["participant_person_ids"], r["target_org_id"]), ("pd-record-v3", [21, 20], 7))
 
     def test_live_org_only_allowed_held_refused(self):
         seen = []
@@ -110,7 +110,7 @@ class JobWiring(unittest.TestCase):
     def test_target_resolved_by_send_address(self):
         self.assertIn('tg = resolve_now(f["send_email"], mk)', self.SRC)
         self.assertIn("return pd_target.resolve(email, by_address=by_address", self.SRC)
-        self.assertIn('"pd_hold_reason": tg.hold_reason', self.SRC)
+        self.assertIn('"pd_hold_reason": hold_pd', self.SRC)
 
     def test_built_at_is_logged_and_reported(self):
         self.assertIn("rung_price_built_at=%s", self.SRC)
