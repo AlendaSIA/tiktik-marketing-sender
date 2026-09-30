@@ -148,10 +148,10 @@
    "variant": "winback_1",
    "id": 180,
    "file": "templates/winback_1.html",
-   "git_blob": "85ce79f718ffe83cf78cdf4cb1da0bdbad7f7bf8",
-   "sha256": "7315f86e3f2837593dc715f510370f72522f3764260f57b8bd8c24c6f00b43f6",
+   "git_blob": "311765f1a4d2d8ee428ad48db3a382d12d7c8ca3",
+   "sha256": "638bdf9b7038086a1ed5603881ca515c89697ea02d0c7fa4f299bb5bc905bc0c",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: labāka cena tavām ierastajām precēm",
-   "name": "money:winback_1 v9 — CADENCE v1 rung 1 E1, Raivja tēma + cena priekšskatījumā (2026-09-30)",
+   "name": "money:winback_1 v10 — Raivja teksts 30.09 20:13 (daļai klientu, ierobežots laiks)",
    "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
   }
