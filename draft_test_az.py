@@ -123,6 +123,7 @@ def main(argv=None):
     ap.add_argument("--summary-b64", default="")
     ap.add_argument("--manifest", default="templates_manifest.json")
     ap.add_argument("--send", action="store_true")
+    ap.add_argument("--clean", action="store_true", help="Raivis 30.09: the copy to raivis@alenda.lv as the customer sees it - no banner, subject without [TESTS] (still only to raivis@alenda.lv, tag draft-test)")
     a = ap.parse_args(argv)
     if a.summary_b64:
         return summary(a)
@@ -210,13 +211,13 @@ def main(argv=None):
                else "Kabineta saites šajā testā ir atslēgtas (#).")
             + "<br>Stils kā mūsu kampaņā " + _html.escape(STYLE_REF.get(a.template, REF_126)) + "."
             + (("<br>" + _html.escape(note)) if note else ""))
-    final = re.sub(r"(<body[^>]*>)", lambda mm: mm.group(1) + banner(btxt), body, count=1)
+    final = body if a.clean else re.sub(r"(<body[^>]*>)", lambda mm: mm.group(1) + banner(btxt), body, count=1)
     rep["sent"] = None
     if a.send:
         if not rep["all_ok"]:
             rep["send_refused"] = "not all checks green - nothing sent"
         else:
-            subj = f"[TESTS {a.seq} · {a.variant} · {a.template}] {cc['subject']}"
+            subj = cc["subject"] if a.clean else f"[TESTS {a.seq} · {a.variant} · {a.template}] {cc['subject']}"
             rep["sent"] = send(subj, final, f"tpl-{a.template}")
     print(json.dumps(rep, ensure_ascii=False, indent=1, default=str))
     return 0 if rep["all_ok"] else 2
