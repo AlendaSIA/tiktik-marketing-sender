@@ -36,37 +36,42 @@ def facts(stage, last_order=None, first=None, sup=False, rungs=None):
 
 class Ladder(unittest.TestCase):
     def test_reorder_never_gets_a_rung(self):
+        # CADENCE v1 K1: one reorder letter, rung 0; afterwards nothing more in the reorder track
         st = S.State("m1")
-        for i in range(3):
+        d = S.advance(st, facts("reorder_due", D(2026, 5, 1)), D(2026, 9, 25))
+        self.assertEqual((d.next_email_type, d.offer_rung), ("reorder_1", 0))
+        st = S.record_sent(d.state, d.next_email_type, d.next_due_on, d.offer_rung)
+        for i in range(1, 4):
             d = S.advance(st, facts("reorder_due", D(2026, 5, 1)), D(2026, 9, 25) + dt.timedelta(days=20 * i))
-            self.assertEqual(d.offer_rung, 0)
-            self.assertIn(d.next_email_type, S.NO_LADDER_TYPES)
-            st = S.record_sent(d.state, d.next_email_type, d.next_due_on, d.offer_rung)
+            self.assertEqual((d.next_email_type, d.offer_rung, d.hold_reason), (None, 0, "SEQUENCE_DONE"))
         self.assertIsNone(st.rung)
 
-    def test_first_price_letter_is_rung_1_then_monthly_plus_one_cap_3(self):
-        st, got = S.State("m2"), []
-        days = [D(2026, 9, 25), D(2026, 10, 2), D(2026, 11, 3), D(2026, 12, 1)]
-        stages = ["winback", "winback", "winback", "lost"]
-        for today, stage in zip(days, stages):
-            d = S.advance(st, facts(stage, D(2026, 3, 1)), today)
-            got.append((d.next_email_type, d.offer_rung, d.next_due_on))
-            if d.next_due_on == today:
-                st = S.record_sent(d.state, d.next_email_type, today, d.offer_rung)
+    def test_first_price_letter_is_rung_1_then_episodes_plus_one_cap_3(self):
+        # CADENCE v1: E1/E2 per rung, E1 -> E1 = 42 d, then lost (stage) at the reached rung 3
+        far = {1: D(2027, 6, 1), 2: D(2027, 6, 1), 3: D(2027, 6, 1)}
+        st, got, day = S.State("m2"), [], D(2026, 9, 25)
+        while day < D(2027, 3, 1):
+            stage = "winback" if day < D(2027, 1, 1) else "lost"
+            d = S.advance(st, facts(stage, D(2026, 3, 1), rungs=far), day)
+            if d.next_due_on == day and d.hold_reason is None:
+                got.append((d.next_email_type, d.offer_rung, day))
+                st = S.record_sent(d.state, d.next_email_type, day, d.offer_rung)
             else:
                 st = d.state
-        self.assertEqual(got[0][:2], ("winback_1", 1))
-        # 02.10 is a new calendar month -> winback_2 due today at rung 2
-        self.assertEqual(got[1][:2], ("winback_2", 2))
-        self.assertEqual(got[2][:2], ("winback_3", 3))
-        self.assertEqual(got[3][:2], ("lost_quarterly", 3))        # cap 3, ladder carries into lost
+            day += dt.timedelta(days=1)
+        self.assertEqual([g[:2] for g in got[:7]], [
+            ("winback_1", 1), ("winback_1_e2", 1), ("winback_2", 2), ("winback_2_e2", 2),
+            ("winback_3", 3), ("winback_3_e2", 3), ("lost_quarterly", 3)])     # cap 3, ladder carries into lost
+        self.assertEqual([g[2] for g in got[:7]], [D(2026, 9, 25), D(2026, 10, 2), D(2026, 11, 6), D(2026, 11, 13),
+                                                  D(2026, 12, 18), D(2026, 12, 25), D(2027, 1, 29)])
 
     def test_never_two_letters_or_two_drops_in_one_month(self):
         st = S.State("m3")
         d = S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 9, 3))
         st = S.record_sent(d.state, d.next_email_type, D(2026, 9, 3), d.offer_rung)
         d2 = S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 9, 20))
-        self.assertEqual(d2.next_due_on, D(2026, 10, 1))
+        # E2 (10.09) was not sent -> skipped; the next episode is 6 weeks after E1
+        self.assertEqual((d2.next_email_type, d2.next_due_on), ("winback_2", D(2026, 10, 15)))
         with self.assertRaises(AssertionError):
             S.record_sent(st, "winback_2", D(2026, 9, 21), 2)
 
@@ -86,7 +91,8 @@ class Ladder(unittest.TestCase):
 
     def test_only_interface_v1_names_are_emitted(self):
         names = {n for _, letters in S.TRACKS.values() for n in letters}
-        self.assertTrue(names <= set(S.INTERFACE_V1))
+        self.assertTrue(names <= set(S.INTERFACE_V1) | S.E2_TYPES)
+        self.assertFalse({"reorder_2", "reorder_3"} & names)          # CADENCE v1 K1
         self.assertNotIn("rhythm_next", names)
 
     def test_rung_on_non_ladder_letter_is_refused(self):
@@ -144,10 +150,10 @@ class ShadowPipedrive(unittest.TestCase):
 
 
 class OfferDeadline(unittest.TestCase):
-    def test_winback_7_days_lost_14_reorder_none(self):
+    def test_winback_e1_14_days_lost_14_reorder_none(self):
         far = {1: D(2026, 12, 31)}
         d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1), rungs=far), D(2026, 10, 6))
-        self.assertEqual(d.offer_valid_until, D(2026, 10, 12))
+        self.assertEqual(d.offer_valid_until, D(2026, 10, 19))                 # CADENCE v1 K3: E1 + 13
         d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))
         d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
@@ -180,8 +186,12 @@ class History(unittest.TestCase):
     def test_221_puts_person_at_rung_1_no_second_drop_in_september(self):
         st, src = S.apply_history(S.State("h1"), [self.H221])
         self.assertEqual((st.step, st.rung, st.rung_month, src), (1, 1, "2026-09", "brevo_history"))
-        d = S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 9, 26))
-        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 10, 1), 2))
+        far = {1: D(2026, 12, 1), 2: D(2026, 12, 1)}
+        d = S.advance(st, facts("winback", D(2026, 3, 1), rungs=far), D(2026, 9, 26))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung, d.offer_valid_until),
+                         ("winback_1_e2", D(2026, 9, 29), 1, D(2026, 10, 5)))    # K3: E2 = E1+7, same rung + OVU
+        d = S.advance(st, facts("winback", D(2026, 3, 1), rungs=far), D(2026, 9, 30))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 11, 3), 2))
 
     def test_history_is_applied_once(self):
         st, _ = S.apply_history(S.State("h2"), [self.H221])
@@ -193,13 +203,12 @@ class A2RungMonthOwnedHere(unittest.TestCase):
     """Contract v2.8.1 A2: the rung advances at most once per calendar month, via rung_month."""
 
     def test_rung_month_not_last_sent_decides_the_rung(self):
-        # rung set 01.10, a non-ladder letter went in September: on 15.10 the letter is due at once
-        # (last send in another month) but the rung must NOT climb - rung_month is October.
+        # rung set 01.10 (rung_month October), last letter in September: a winback_2 due in October must
+        # NOT climb - rung_month is October. (CADENCE v1 keeps E1s 42 d apart, so this is a guard, not a flow.)
         st = S.State("a1", "winback", D(2026, 9, 1), 1, 1, D(2026, 10, 1), "2026-10", None,
                      "reorder_1", D(2026, 9, 20))
-        d = S.advance(st, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 12, 1), 2: D(2026, 12, 1)}),
-                      D(2026, 10, 15))
-        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 10, 15), 1))
+        self.assertEqual(S.planned_rung(st, "winback_2", D(2026, 10, 15)), 1)
+        self.assertEqual(S.planned_rung(st, "winback_2", D(2026, 11, 2)), 2)
 
     def test_rung_climbs_one_step_never_skips_never_falls(self):
         with self.assertRaises(AssertionError):
@@ -244,43 +253,44 @@ class P5ReorderNeverTouchesTheRung(unittest.TestCase):
 
 
 class Gate232233(unittest.TestCase):
-    """winback_2 / winback_3 only with a rung price (stand-in for non-empty OFFER_VALID_UNTIL)."""
+    """winback_2 / winback_3 (and every E2) only with a rung price (stand-in for non-empty OFFER_VALID_UNTIL).
+    CADENCE v1: E1 of 22.09 (221) -> E2 29.09 not sent -> winback_2 due 03.11 (22.09 + 42), OVU 16.11."""
     ST = S.State("g", "winback", D(2026, 9, 1), 1, 1, D(2026, 9, 22), "2026-09", None, "winback_1", D(2026, 9, 22))
 
     def test_no_price_rows_hold(self):
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1)), D(2026, 10, 1))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1)), D(2026, 11, 3))
         self.assertEqual((d.next_email_type, d.offer_rung, d.hold_reason, d.offer_valid_until),
                          ("winback_2", 2, "no_offer_valid_until", None))
 
     def test_price_only_at_other_rung_holds(self):
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 10, 7)}), D(2026, 10, 1))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 11, 30)}), D(2026, 11, 3))
         self.assertEqual(d.hold_reason, "no_offer_valid_until")
 
     def test_expired_before_send_date_holds(self):
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 9, 30)}), D(2026, 10, 1))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 11, 2)}), D(2026, 11, 3))
         self.assertEqual(d.hold_reason, "no_offer_valid_until")
 
     def test_price_at_planned_rung_passes(self):
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 7)}), D(2026, 10, 1))
-        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_2", None, D(2026, 10, 7)))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 11, 16)}), D(2026, 11, 3))
+        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_2", None, D(2026, 11, 16)))
 
     def test_a6_pap_valid_until_below_our_date_on_send_day_holds(self):
-        # 28.09 measured case: PAP valid_until 05.10 < OFFER_VALID_UNTIL 07.10 for a send on 01.10
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 6)}), D(2026, 10, 1))
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 11, 15)}), D(2026, 11, 3))
         self.assertEqual((d.hold_reason, d.offer_valid_until), ("no_offer_valid_until", None))
 
     def test_a6_condition_is_deferred_to_the_send_date(self):
-        # planned 28.09 for 01.10: today's table (05.10) cannot decide; existence counts, date is ours
-        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 10, 5)}), D(2026, 9, 28))
-        self.assertEqual((d.next_due_on, d.hold_reason, d.offer_valid_until), (D(2026, 10, 1), None, D(2026, 10, 7)))
+        # planned 28.10 for 03.11: today's table cannot decide; existence counts, date is ours
+        d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 11, 5)}), D(2026, 10, 28))
+        self.assertEqual((d.next_due_on, d.hold_reason, d.offer_valid_until), (D(2026, 11, 3), None, D(2026, 11, 16)))
 
     def test_winback_3_gated_too(self):
-        st = dc_replace(self.ST, step=2, rung=2, rung_month="2026-10", last_sent_on=D(2026, 10, 1),
+        st = dc_replace(self.ST, step=2, rung=2, rung_month="2026-11", last_sent_on=D(2026, 11, 3),
                         last_email_type="winback_2")
-        self.assertEqual(S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 11, 2)).hold_reason,
+        self.assertEqual(S.advance(st, facts("winback", D(2026, 3, 1)), D(2026, 12, 15)).hold_reason,
                          "no_offer_valid_until")
-        ok = S.advance(st, facts("winback", D(2026, 3, 1), rungs={3: D(2026, 11, 9)}), D(2026, 11, 2))
-        self.assertEqual((ok.next_email_type, ok.offer_rung, ok.hold_reason), ("winback_3", 3, None))
+        ok = S.advance(st, facts("winback", D(2026, 3, 1), rungs={3: D(2026, 12, 28)}), D(2026, 12, 15))
+        self.assertEqual((ok.next_email_type, ok.next_due_on, ok.offer_rung, ok.hold_reason),
+                         ("winback_3", D(2026, 12, 15), 3, None))
 
     def test_other_letters_are_not_gated(self):
         for stage in ("winback", "lost", "reorder_due", "new", "active"):
@@ -308,9 +318,11 @@ class Gate232233(unittest.TestCase):
 
 
 class A6OneOfferValidUntil(unittest.TestCase):
-    def test_send_plus_6_and_plus_13(self):
-        self.assertEqual(S.offer_valid_until("winback_1", D(2026, 10, 1)), D(2026, 10, 7))
-        self.assertEqual(S.offer_valid_until("winback_3", D(2026, 10, 1)), D(2026, 10, 7))
+    def test_e1_plus_13_e2_plus_6_lost_plus_13(self):
+        # CADENCE v1 K3: one window per episode = E1 + 13 = E2 + 6
+        self.assertEqual(S.offer_valid_until("winback_1", D(2026, 10, 1)), D(2026, 10, 14))
+        self.assertEqual(S.offer_valid_until("winback_3", D(2026, 10, 1)), D(2026, 10, 14))
+        self.assertEqual(S.offer_valid_until("winback_3_e2", D(2026, 10, 8)), D(2026, 10, 14))
         self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 14))
         for et in ("reorder_1", "welcome_1", "active_xsell"):
             self.assertIsNone(S.offer_valid_until(et, D(2026, 10, 1)))

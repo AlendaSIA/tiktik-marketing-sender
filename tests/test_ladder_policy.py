@@ -34,7 +34,7 @@ class L1NoPriceOutsideLadder(unittest.TestCase):
 class L2RungByStage(unittest.TestCase):
     def test_winback_1_2_3_are_rung_1_2_3(self):
         st, got = S.State("a"), []
-        for day in (D(2026, 10, 1), D(2026, 11, 2), D(2026, 12, 1)):
+        for day in (D(2026, 10, 1), D(2026, 11, 12), D(2026, 12, 24)):     # CADENCE v1: E1 -> E1 = 42 d
             st, d = walk(st, "winback", day)
             got.append((d.next_email_type, d.offer_rung))
         self.assertEqual(got, [("winback_1", 1), ("winback_2", 2), ("winback_3", 3)])
@@ -47,8 +47,8 @@ class L2RungByStage(unittest.TestCase):
 
     def test_not_by_time_alone_rung_waits_for_the_next_letter(self):
         st, _ = walk(S.State("b"), "winback", D(2026, 10, 1))
-        d = S.advance(st, F("winback"), D(2026, 10, 20))          # same month: next letter 01.11, rung stays until then
-        self.assertEqual((d.next_email_type, d.next_due_on, d.state.rung), ("winback_2", D(2026, 11, 1), 1))
+        d = S.advance(st, F("winback"), D(2026, 10, 20))          # E2 skipped; next episode 12.11, rung stays until then
+        self.assertEqual((d.next_email_type, d.next_due_on, d.state.rung), ("winback_2", D(2026, 11, 12), 1))
 
 
 class L3Lost(unittest.TestCase):
@@ -66,7 +66,7 @@ class L3Lost(unittest.TestCase):
 
 class L4Window(unittest.TestCase):
     def test_window_plus_6_and_plus_13(self):
-        self.assertEqual(S.advance(S.State("w"), F("winback"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 7))
+        self.assertEqual(S.advance(S.State("w"), F("winback"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 14))  # K3
         self.assertEqual(S.advance(S.State("w2"), F("lost"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 14))
 
 
@@ -83,8 +83,13 @@ class L6AntiWaitingCap(unittest.TestCase):
         self.assertEqual(S.ladder_marks(sends, [D(2026, 11, 5)]), (1, D(2027, 11, 5), None))
 
     def test_purchase_outside_window_or_at_rung_1_no_cap(self):
+        # CADENCE v1 K3: an E1 window is 14 days (E1 + 13) -> 16.11 is outside, 09.11 now inside
         self.assertEqual(S.ladder_marks([{"email_type": "winback_2", "rung": 2, "sent_on": D(2026, 11, 2)}],
-                                        [D(2026, 11, 9)])[:2], (None, None))
+                                        [D(2026, 11, 16)])[:2], (None, None))
+        self.assertEqual(S.ladder_marks([{"email_type": "winback_2", "rung": 2, "sent_on": D(2026, 11, 2)}],
+                                        [D(2026, 11, 9)])[:2], (1, D(2027, 11, 9)))
+        self.assertEqual(S.ladder_marks([{"email_type": "winback_2_e2", "rung": 2, "sent_on": D(2026, 11, 9)}],
+                                        [D(2026, 11, 15)])[:2], (1, D(2027, 11, 15)))       # E2 window = same end
         self.assertEqual(S.ladder_marks([{"email_type": "winback_1", "rung": 1, "sent_on": D(2026, 11, 2)}],
                                         [D(2026, 11, 3)])[:2], (None, None))
 

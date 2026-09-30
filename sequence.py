@@ -23,6 +23,17 @@ LADDER (contract v2.8 P5 + Raivis 24.09 18:04/18:58, 25.09 09:37):
   unconfirmed defaults: rung by stage (winback_1/2/3 = 1/2/3), lost keeps the last reached rung, purchase
   -> rung 0, rung_cap 1 for 12 months after a purchase inside a rung-2/3 window, one walk per cycle,
   doubled reorder -> winback_1 gap once reorder has worked. See planned_rung() and ladder_marks().
+
+CADENCE v1 (Raivis 2026-09-30 19:11, contract K1-K7) replaces the reorder_1..3 -> winback_1 weekly chain:
+  K1 reorder_due = ONE letter (reorder_1); reorder_2/3 are never planned (names kept for history only).
+  K2/K4 after reorder_1 and after every price episode: 4 weeks with no lifecycle letter (akcija only) ->
+     the next lifecycle letter is due no earlier than last + 35 d (QUIET_GAP_DAYS).
+  K3 a price episode = E1 (winback_r) then E2 (winback_r_e2) exactly 7 d later, same rung, same
+     OFFER_VALID_UNTIL = E1 send + 13. An E2 that was not sent on E1+7 is skipped, never sent late.
+  K5 next episode = rung + 1 (E1 -> E1 = 42 d); after the rung-3 episode the contact waits for stage lost
+     -> lost_quarterly as before (L3 rung). K6 a purchase ends the cycle; L6/L8 unchanged.
+  Any two lifecycle letters other than an E1 -> E2 pair are >= MIN_GAP_ANY_DAYS apart (never consecutive weeks).
+  E2 templates are not written yet: E2 types have NO template id and are held E2_TEMPLATE_PENDING, never a fallback.
 """
 from __future__ import annotations
 
@@ -34,24 +45,39 @@ INTERFACE_V1 = {
     "winback_1": 180, "winback_2": 232, "winback_3": 233, "lost_quarterly": 234,
     "active_xsell": 235, "akcija_weekly": 236,
 }
+# CADENCE v1 K3/K7: E1 of rung r = winback_r (180/232/233 are the E1 candidates); E2 = winback_r_e2, whose texts
+# Vēstuļu šabloni is still writing -> no template id exists; the planner must hold them, never fall back.
+E1_BY_RUNG = {1: "winback_1", 2: "winback_2", 3: "winback_3"}
+E2_BY_RUNG = {r: f"winback_{r}_e2" for r in (1, 2, 3)}
+E1_TYPES, E2_TYPES = set(E1_BY_RUNG.values()), set(E2_BY_RUNG.values())
+RUNG_OF = {**{v: k for k, v in E1_BY_RUNG.items()}, **{v: k for k, v in E2_BY_RUNG.items()}}
+HOLD_E2_TEMPLATE = "E2_TEMPLATE_PENDING"
+CADENCE = "cadence-v1 (Raivis 2026-09-30 19:11, K1-K7)"
+QUIET_WEEKS = 4
+QUIET_GAP_DAYS = 7 * (QUIET_WEEKS + 1)   # K2/K4: letter in week n -> weeks n+1..n+4 akcija only -> next in n+5
+E2_AFTER_DAYS = 7                        # K3: E2 exactly one week after E1
+MIN_GAP_ANY_DAYS = 14                    # never two lifecycle letters in consecutive weeks (except E1 -> E2)
+QUIET_AFTER = {"reorder_1"} | E2_TYPES | {"lost_quarterly"}
 RETIRED = {"rhythm_next": "active_xsell"}
 
 # lifecycle_stage -> (track, ordered letters). Only letters in INTERFACE_V1 may be emitted.
 TRACKS = {
     "new": ("welcome_buyer", ["welcome_1"]),
-    "reorder_due": ("reorder", ["reorder_1", "reorder_2", "reorder_3"]),
-    "winback": ("winback", ["winback_1", "winback_2", "winback_3"]),
+    "reorder_due": ("reorder", ["reorder_1"]),                                  # K1
+    "winback": ("winback", ["winback_1", "winback_1_e2", "winback_2", "winback_2_e2",
+                            "winback_3", "winback_3_e2"]),                     # K3/K5 (order by last letter)
     "lost": ("lost_wave", ["lost_quarterly"]),
     "active": ("active", ["active_xsell"]),
 }
-LADDER_TYPES = {"winback_1", "winback_2", "winback_3", "lost_quarterly"}
+LADDER_TYPES = E1_TYPES | E2_TYPES | {"lost_quarterly"}
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}
 RUNG_CAP = 3
 
 # Offer deadline (MAIN 2026-09-25 17:45 from A-Z amendment 2026-09-02, Raivis): a personal price is
 # valid 7 days for reorder/winback rungs, 14 days for the lost wave. Counted INCLUDING the send day,
 # so OFFER_VALID_UNTIL = send date + (days - 1). reorder has no rung (P5) -> no deadline from here.
-OFFER_VALID_DAYS = {"winback_1": 7, "winback_2": 7, "winback_3": 7, "lost_quarterly": 14}
+# CADENCE v1 K3: an episode's price holds 14 days from E1 (E1 + 13 = E2 + 6), so E1 = 14 d, E2 = 7 d, lost 14 d.
+OFFER_VALID_DAYS = {**{t: 14 for t in E1_TYPES}, **{t: 7 for t in E2_TYPES}, "lost_quarterly": 14}
 
 # LADDER POLICY v1 (Raivis 2026-09-28 15:33/15:35, contract sha 326480dce080, rules L1-L8). Replaces every
 # "UNCONFIRMED ladder default". L2 rung by stage; L3 lost keeps the last reached rung (max 3, never deeper);
@@ -67,7 +93,6 @@ L8_FACTOR = 2
 HOLD_NO_RESTART = "LADDER_NO_RESTART"
 
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
-REORDER_STEP_GAP_DAYS = 14        # UNCONFIRMED - nothing in the tree sets reorder_2/3 spacing
 ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
 LOST_REPEATS = True               # lost_quarterly repeats monthly (A-Z 1.1 "monthly waves")
 
@@ -79,7 +104,7 @@ LOST_REPEATS = True               # lost_quarterly repeats monthly (A-Z 1.1 "mon
 # (v2.8.2 A7), and - on the send date - PAP valid_until >= our OFFER_VALID_UNTIL (v2.8.2 A6).
 # Facts.rung_price_valid_until carries {rung: latest valid_until among such rows}; the job fills it
 # (sequence_job.RUNG_PRICE_SQL). Missing / empty -> hold 'no_offer_valid_until' (fail closed).
-PRICE_GATED_TYPES = {"winback_2", "winback_3"}
+PRICE_GATED_TYPES = {"winback_2", "winback_3"} | E2_TYPES   # an E2 without the E1 price is meaningless
 HOLD_NO_OFFER = "no_offer_valid_until"
 
 
@@ -168,25 +193,16 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     if f.suppressed:
         return Decision(s, None, None, 0, f"track={track}", "SUPPRESSED", changes)
 
-    # 3. Which letter is next, and when.
-    if s.step < len(letters):
-        nxt = letters[s.step]
-    elif track in ("lost_wave", "active") and (LOST_REPEATS or track == "active"):
-        nxt = letters[-1]
-    else:
-        return Decision(s, None, None, 0, f"track={track} step={s.step}/{len(letters)} done",
-                        "SEQUENCE_DONE", changes)
-
-    if track == "welcome_buyer":
-        base = f.first_order_on or today
-        due = max(today, base + dt.timedelta(days=3))
-    elif track == "reorder":
-        due = today if s.last_sent_on is None or s.step == 0 else \
-            max(today, s.last_sent_on + dt.timedelta(days=REORDER_STEP_GAP_DAYS))
-    elif track in ("winback", "lost_wave"):
-        # one ladder letter per calendar month
-        due = today if s.last_sent_on is None or _month(s.last_sent_on) != _month(today) \
-            else _first_of_next_month(today)
+    # 3. Which letter is next, and when (CADENCE v1).
+    floor = cadence_floor(s, f)
+    e2 = pending_e2(s, f, today) if track in ("winback", "lost_wave") else None
+    if e2:                                                    # K3: E2 exactly E1 + 7, even if stage moved to lost
+        nxt, due = e2
+    elif track == "winback":
+        nxt = next_episode_letter(s)
+        if nxt is None:                                       # K5: rung-3 episode done -> wait for stage lost
+            return Decision(s, None, None, 0, f"track={track} rung-3 episode done", "SEQUENCE_DONE", changes)
+        due = max(today, floor) if floor else today
         # L8: reorder worked in an earlier cycle -> winback_1 no earlier than 2 x the configured gap
         # ("later cycle" = the cycle that the worked order itself started, or any after it)
         if nxt == "winback_1" and s.reorder_worked_at and f.last_order_on and f.entry_threshold_days is not None \
@@ -194,16 +210,35 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
             earliest = f.last_order_on + dt.timedelta(days=f.entry_threshold_days
                                                       + L8_FACTOR * REORDER_TO_WINBACK1_GAP_DAYS)
             due = max(due, earliest)
-    else:  # active
-        due = today if s.last_sent_on is None else \
-            max(today, s.last_sent_on + dt.timedelta(days=ACTIVE_XSELL_GAP_DAYS))
+    else:
+        if s.step < len(letters):
+            nxt = letters[s.step]
+        elif track in ("lost_wave", "active") and (LOST_REPEATS or track == "active"):
+            nxt = letters[-1]
+        else:
+            return Decision(s, None, None, 0, f"track={track} step={s.step}/{len(letters)} done",
+                            "SEQUENCE_DONE", changes)
+        if track == "welcome_buyer":
+            base = f.first_order_on or today
+            due = max(today, base + dt.timedelta(days=3))
+        elif track == "reorder":
+            due = today                                        # K1: one letter; step >= 1 -> SEQUENCE_DONE above
+        elif track == "lost_wave":
+            # one lost letter per calendar month, and (K4) never inside the quiet weeks after an episode
+            due = today if s.last_sent_on is None or _month(s.last_sent_on) != _month(today) \
+                else _first_of_next_month(today)
+        else:  # active
+            due = today if s.last_sent_on is None else \
+                max(today, s.last_sent_on + dt.timedelta(days=ACTIVE_XSELL_GAP_DAYS))
+        if floor:
+            due = max(due, floor)
 
     # 4. Rung for that letter (decided for the letter, stored only when it is SENT - see record_sent).
     rung = planned_rung(s, nxt, due)
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
-    # A6 (v2.8.2): the ONE customer-facing date, owned here = send date + 6 d / + 13 d.
-    ovu = offer_valid_until(nxt, due) if rung else None
+    # A6 (v2.8.2) + K3: the ONE customer-facing date, owned here. E1 / lost = send + 13; E2 = its E1 + 13.
+    ovu = (s.last_sent_on + dt.timedelta(days=13) if nxt in E2_TYPES else offer_valid_until(nxt, due)) if rung else None
     has = has_rung_price(f, rung, due, ovu, today)
     if nxt in PRICE_GATED_TYPES and not has:
         return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None)
@@ -211,10 +246,49 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None)
 
 
+def cadence_floor(s: State, f: Facts):
+    """K2/K4 + no consecutive weeks: the earliest date of the next lifecycle letter (None = no letter yet).
+    A purchase after the last letter ends the cycle (K6): only the 14-day minimum is left."""
+    if s.last_sent_on is None:
+        return None
+    purchased = f.last_order_on is not None and f.last_order_on >= s.last_sent_on
+    t = s.last_email_type
+    if not purchased and t in E1_TYPES:          # E2 not sent (or not yet): the episode ends on E1 + 7
+        return s.last_sent_on + dt.timedelta(days=E2_AFTER_DAYS + QUIET_GAP_DAYS)
+    if not purchased and t in QUIET_AFTER:
+        return s.last_sent_on + dt.timedelta(days=QUIET_GAP_DAYS)
+    return s.last_sent_on + dt.timedelta(days=MIN_GAP_ANY_DAYS)
+
+
+def pending_e2(s: State, f: Facts, today: dt.date):
+    """K3: (E2 type, E1 + 7) when the last letter is an E1, no purchase since, and E1 + 7 is not past.
+    A missed E2 is skipped - its text says "7 more days" and the OFFER_VALID_UNTIL is fixed by E1."""
+    if s.last_email_type not in E1_TYPES or s.last_sent_on is None:
+        return None
+    if f.last_order_on is not None and f.last_order_on >= s.last_sent_on:
+        return None                                                # K6
+    due = s.last_sent_on + dt.timedelta(days=E2_AFTER_DAYS)
+    if today > due:
+        return None
+    return E2_BY_RUNG[RUNG_OF[s.last_email_type]], due
+
+
+def next_episode_letter(s: State):
+    """K5: the E1 of the next episode from the last winback letter of THIS cycle (None = rung 3 done)."""
+    last = s.last_email_type if (s.last_sent_on and s.track_entered_on
+                                 and s.last_sent_on >= s.track_entered_on) else None
+    if last not in RUNG_OF:
+        return E1_BY_RUNG[1]
+    r = RUNG_OF[last]
+    return E1_BY_RUNG.get(r + 1)
+
+
 def planned_rung(s: State, nxt: str, due: dt.date) -> int:
-    """L1-L3, L6, A2: the rung of the next letter = MIN(stage rung, rung_cap)."""
+    """L1-L3, L6, A2: the rung of the next letter = MIN(stage rung, rung_cap). E2 = its E1's rung (K3)."""
     if nxt in NO_LADDER_TYPES or nxt not in LADDER_TYPES:
         return 0                                                  # L1
+    if nxt in E2_TYPES:
+        return s.rung or 0                                        # K3: same price as the E1
     stage = STAGE_RUNG.get(nxt)                                   # L2
     if stage is None:                                             # lost_quarterly - L3
         stage = min(RUNG_CAP, s.rung) if s.rung else LOST_ENTRY_RUNG

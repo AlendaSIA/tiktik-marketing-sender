@@ -154,27 +154,24 @@ class PendingRetryUsesFullResolution(unittest.TestCase):
 class PlannerStepAdvancesOnlyOnSend(unittest.TestCase):
     """Item 1 (28.09): reorder_2/3 and winback_3 only follow a SENT previous letter - shadow never sends."""
 
-    def test_reorder_1_2_3_after_sends_14_days_apart(self):
+    def test_reorder_1_only_then_nothing_cadence_v1_k1(self):
         f = S.Facts("reorder_due", D(2026, 8, 1), D(2025, 1, 1), False, None, 30)
-        st, got = S.State("r"), []
-        day = D(2026, 9, 28)
-        for _ in range(3):
-            d = S.advance(st, f, day)
-            got.append((d.next_email_type, d.next_due_on))
-            st = S.record_sent(d.state, d.next_email_type, d.next_due_on, d.offer_rung)
-            day = d.next_due_on + dt.timedelta(days=14)
-        self.assertEqual(got, [("reorder_1", D(2026, 9, 28)), ("reorder_2", D(2026, 10, 12)), ("reorder_3", D(2026, 10, 26))])
+        d = S.advance(S.State("r"), f, D(2026, 9, 28))
+        self.assertEqual((d.next_email_type, d.next_due_on), ("reorder_1", D(2026, 9, 28)))
+        st = S.record_sent(d.state, d.next_email_type, d.next_due_on, d.offer_rung)
+        for day in (D(2026, 10, 12), D(2026, 10, 26)):
+            self.assertEqual(S.advance(st, f, day).hold_reason, "SEQUENCE_DONE")
 
     def test_without_a_send_the_step_stays(self):
         f = S.Facts("reorder_due", D(2026, 8, 1), D(2025, 1, 1), False, None, 30)
         st = S.advance(S.State("r2"), f, D(2026, 9, 28)).state
         self.assertEqual(S.advance(st, f, D(2026, 10, 20)).next_email_type, "reorder_1")
 
-    def test_winback_3_follows_a_sent_winback_2_next_month(self):
+    def test_winback_3_follows_a_sent_winback_2_six_weeks_later(self):
         far = {3: D(2027, 1, 1)}
         st = S.State("w", "winback", D(2026, 9, 1), 2, 2, D(2026, 10, 1), "2026-10", None, "winback_2", D(2026, 10, 1))
         d = S.advance(st, S.Facts("winback", D(2026, 3, 1), D(2025, 1, 1), False, far, 30), D(2026, 10, 20))
-        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_3", D(2026, 11, 1), 3))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_3", D(2026, 11, 12), 3))
 
 
 if __name__ == "__main__":

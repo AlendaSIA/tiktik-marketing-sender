@@ -31,6 +31,9 @@ LETTER_LABEL = {
     "welcome_1": "Sveiciena vēstule", "reorder_1": "Atgādinājums 1", "reorder_2": "Atgādinājums 2",
     "reorder_3": "Atgādinājums 3", "winback_1": "Tava cena 1", "winback_2": "Tava cena 2",
     "winback_3": "Tava cena 3", "lost_quarterly": "Izdevīgi", "active_xsell": "Komplekts",
+    # CADENCE v1 K3: the second letter of a price episode (same price, same deadline)
+    "winback_1_e2": "Tava cena 1 · 2. vēstule", "winback_2_e2": "Tava cena 2 · 2. vēstule",
+    "winback_3_e2": "Tava cena 3 · 2. vēstule",
 }
 
 

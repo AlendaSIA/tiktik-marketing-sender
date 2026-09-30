@@ -39,7 +39,7 @@ T_OVERRIDE = f"{P}.mkt_control.pd_target_override"
 T_PEND = f"{P}.mkt_control.pd_write_pending"
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
-LADDER_POLICY = "ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080)"
+LADDER_POLICY = "ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080) + " + S.CADENCE
 HISTORY_SQL = f"""
 SELECT l.master_key, l.email_type, l.track, l.rung, DATE(l.sent_at, 'Europe/Riga') AS sent_on,
        l.campaign_id, l.source
@@ -148,6 +148,19 @@ def writeback_target(t, w):
     return t
 
 
+def plan_template(d, tmap):
+    """(template id, hold). The map row for the EXACT email_type or nothing - never a fallback. CADENCE v1 K7:
+    E2 texts are not written yet, so an E2 without its own row is held E2_TEMPLATE_PENDING (template NULL)."""
+    if not d.next_email_type:
+        return None, d.hold_reason
+    tid = tmap.get(d.next_email_type)
+    if d.hold_reason:
+        return tid, d.hold_reason
+    if tid is None:
+        return None, S.HOLD_E2_TEMPLATE if d.next_email_type in S.E2_TYPES else "NO_TEMPLATE_IN_MAP"
+    return tid, None
+
+
 def persons_index(rows) -> dict:
     idx = {}
     for r in rows:
@@ -241,8 +254,7 @@ def main():
             st.reorder_worked_at = worked
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
                                   bool(f["suppressed"]), prices.get(mk), f["entry_threshold_days"]), today)
-        tid = tmap.get(d.next_email_type) if d.next_email_type else None
-        hold = d.hold_reason or (None if not d.next_email_type or tid else "NO_TEMPLATE_IN_MAP")
+        tid, hold = plan_template(d, tmap)
         s = d.state
         states.append({
             "master_key": mk, "send_email": f["send_email"], "lifecycle_stage": f["lifecycle_stage"],
