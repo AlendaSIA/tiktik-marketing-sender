@@ -15,7 +15,8 @@ import draft_test_az as A  # noqa: E402
 import draft_test_v28 as V  # noqa: E402
 
 FILES = {229: "welcome_1", 179: "reorder_1", 230: "reorder_2", 231: "reorder_3", 180: "winback_1",
-         232: "winback_2", 233: "winback_3", 234: "lost_quarterly", 235: "active_xsell", 236: "akcija_weekly"}
+         232: "winback_2", 233: "winback_3", 234: "lost_quarterly", 235: "active_xsell", 236: "akcija_weekly",
+         9180: "winback_1_e2", 9232: "winback_2_e2", 9233: "winback_3_e2"}
 TAG = "{{ contact.GREETING | default : 'Sveiki!' }}"
 LINE = "<div style=\"font-size:22px;font-weight:800;color:#23303a;\">" + TAG + "</div>"   # 126 frame
 NB, EUR = chr(0xA0), chr(0x20AC)

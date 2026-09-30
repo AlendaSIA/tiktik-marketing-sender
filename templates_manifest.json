@@ -42,11 +42,11 @@
    "variant": "winback_2",
    "id": 232,
    "file": "templates/winback_2.html",
-   "git_blob": "3f3597f125723cf8b1737552e6c13fb191134717",
-   "sha256": "99484ce11e216df1e799fc9e8ad60cb2cb740eccba66a8f700eef83e76bd26bd",
-   "subject": "Tikai tev: 7 dienas — tava cena tavām ierastajām precēm",
+   "git_blob": "5c50abbe0d2ba6323640c7064fe8b2dff4e5f062",
+   "sha256": "a8d47398ef1779df202699f3851dee45d8fa493f8529fdd9ba5109c13956aa78",
+   "subject": "Tikai tev: tava cena tavām ierastajām precēm",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tā ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
-   "name": "money:winback_2 v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
+   "name": "money:winback_2 v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28) · CADENCE v1 E1 rung 2 (bez '7 dienas', 2026-09-30)",
    "purpose": "Second win-back rung for customers silent for many months: a fresh batch of their usual goods has arrived and they get their own price until OFFER_VALID_UNTIL while it is in stock (price, crossed-out reference and date from contract v2.8)."
   },
   {
@@ -154,6 +154,48 @@
    "name": "money:winback_1 v8 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
    "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
+  }
+ ],
+ "episode_e2_about": "CADENCE v1 K3/K7 (Raivis 2026-09-30 19:11): the second letter of each 2-week price episode - same price, same OFFER_VALID_UNTIL as its E1, sent one week later. ids 9180/9232/9233 are PROVISIONAL test ids only (no Brevo template exists); real Brevo ids are assigned when MAIN orders their creation. variant names are proposals for MAIN to fix. Not read by template_put.py.",
+ "episode_e2": [
+  {
+   "variant": "winback_1_e2",
+   "id": 9180,
+   "provisional_id": true,
+   "rung": 1,
+   "episode": "E2",
+   "e1_template_id": 180,
+   "file": "templates/winback_1_e2.html",
+   "git_blob": "947c36648e4c32f061ef7fe8701308517def52ec",
+   "sha256": "9742605b41769d26dd055235d2419e59974653d5c33992c90473669a66df2768",
+   "subject": "Tava cena paliek spēkā līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "name": "money:winback_1_e2 v1 — CADENCE v1 E2 rung 1 (2026-09-30)"
+  },
+  {
+   "variant": "winback_2_e2",
+   "id": 9232,
+   "provisional_id": true,
+   "rung": 2,
+   "episode": "E2",
+   "e1_template_id": 232,
+   "file": "templates/winback_2_e2.html",
+   "git_blob": "75d92813732b47ca7f37e225b10bab8cd4d1edbe",
+   "sha256": "7c42b1048c80247498d0b70cf27c122b311d4700de891d17f30e03d96f5a483f",
+   "subject": "Līdz {{ contact.OFFER_VALID_UNTIL }} — tavas cenas vēl ir spēkā",
+   "name": "money:winback_2_e2 v1 — CADENCE v1 E2 rung 2 (2026-09-30)"
+  },
+  {
+   "variant": "winback_3_e2",
+   "id": 9233,
+   "provisional_id": true,
+   "rung": 3,
+   "episode": "E2",
+   "e1_template_id": 233,
+   "file": "templates/winback_3_e2.html",
+   "git_blob": "2971b72445f1508907e9e0921a8a45400ea0786f",
+   "sha256": "27dadec48aafcbf190df1ffea01ae245f5b37aaea04bfa10b6be675ee41b257f",
+   "subject": "Tava cena — pēdējās 7 dienas, līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "name": "money:winback_3_e2 v1 — CADENCE v1 E2 rung 3 (2026-09-30)"
   }
  ]
 }

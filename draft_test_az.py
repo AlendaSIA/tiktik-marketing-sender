@@ -32,10 +32,10 @@ import template_put as T
 
 TEST_RECIPIENT = D.TEST_RECIPIENT            # raivis@alenda.lv - the only recipient
 OWN_CONTACT = "alenda.jurmala@gmail.com"     # Raivis' own contact (contract v2.7 rule 11)
-ROUND_TAG = "az-2026-09-28b"                  # MAIN COMMAND 2 round
+ROUND_TAG = "az-2026-09-30c"                  # MAIN COMMAND 2 round
 REF_126 = "126 „tavs personīgais piedāvājums” (15.07., 4,67 % klikšķu) + preču kartītes no 222 „Mercator nedēļa”"
 STYLE_REF = {236: "222 „Mercator nedēļa” (22.09.) — mūsu nedēļas akcijas formāts"}
-PRICE_LETTERS = {180, 232, 233, 234}         # LADDER POLICY L1
+PRICE_LETTERS = {180, 232, 233, 234, 9180, 9232, 9233}   # LADDER POLICY L1 + CADENCE v1 E2 (provisional ids)
 REORDER_LETTERS = {179, 230, 231}            # L1 / P5: no ladder, no discount words
 L4_FORBIDDEN = ["vēl lētāk", "atkal", "šoreiz", "pakāp", "solis lētāk", "nākamreiz lētāk", "vēl zemāk"]
 DISCOUNT_WORDS = ["atlaid", "lētāk", "zemāk par"]
@@ -137,7 +137,7 @@ def main(argv=None):
     overlay = json.loads(base64.b64decode(a.overlay_b64).decode("utf-8")) if a.overlay_b64 else {}
     note = base64.b64decode(a.note_b64).decode("utf-8") if a.note_b64 else ""
     m = json.load(open(a.manifest, encoding="utf-8"))
-    rows = [r for r in m["templates"] + m.get("live_mapped", []) if r["id"] == a.template]
+    rows = [r for r in m["templates"] + m.get("live_mapped", []) + m.get("episode_e2", []) if r["id"] == a.template]
     if len(rows) != 1:
         sys.exit("template %d is not in the manifest" % a.template)
     row = rows[0]
