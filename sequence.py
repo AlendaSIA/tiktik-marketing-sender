@@ -199,7 +199,7 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     if e2:                                                    # K3: E2 exactly E1 + 7, even if stage moved to lost
         nxt, due = e2
     elif track == "winback":
-        nxt = next_episode_letter(s)
+        nxt = next_episode_letter(s, f)
         if nxt is None:                                       # K5: rung-3 episode done -> wait for stage lost
             return Decision(s, None, None, 0, f"track={track} rung-3 episode done", "SEQUENCE_DONE", changes)
         due = max(today, floor) if floor else today
@@ -273,10 +273,12 @@ def pending_e2(s: State, f: Facts, today: dt.date):
     return E2_BY_RUNG[RUNG_OF[s.last_email_type]], due
 
 
-def next_episode_letter(s: State):
-    """K5: the E1 of the next episode from the last winback letter of THIS cycle (None = rung 3 done)."""
-    last = s.last_email_type if (s.last_sent_on and s.track_entered_on
-                                 and s.last_sent_on >= s.track_entered_on) else None
+def next_episode_letter(s: State, f: Facts):
+    """K5: the E1 of the next episode from the last winback letter of THIS cycle (None = rung 3 done).
+    The cycle is bounded by the last PURCHASE (K6/L7), not by track_entered_on: the first engine run set
+    track_entered_on 25.09 AFTER campaign 221 (22.09) was applied from history (measured 30.09, 72 contacts)."""
+    purchased = f.last_order_on is not None and s.last_sent_on is not None and f.last_order_on >= s.last_sent_on
+    last = s.last_email_type if (s.last_sent_on and not purchased) else None
     if last not in RUNG_OF:
         return E1_BY_RUNG[1]
     r = RUNG_OF[last]

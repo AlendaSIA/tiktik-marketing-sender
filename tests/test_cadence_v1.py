@@ -114,6 +114,14 @@ class K4K5Episodes(unittest.TestCase):
         self.assertEqual({o[2] for o in lost}, {3})                                     # L3 rung kept
         self.assertTrue(all((b[0] - a[0]).days >= S.QUIET_GAP_DAYS for a, b in zip(lost, lost[1:])))
 
+    def test_history_e1_before_track_entered_on_still_counts(self):
+        # real state 30.09: track_entered_on 25.09 (first engine run), E1 = campaign 221 on 22.09
+        st = S.State("k5h", "winback", D(2026, 9, 25), 1, 1, D(2026, 9, 22), "2026-09", None, "winback_1", D(2026, 9, 22))
+        d = S.advance(st, F("winback"), D(2026, 9, 30))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_2", D(2026, 11, 3), 2))
+        d = S.advance(st, F("winback", last_order=D(2026, 9, 23)), D(2026, 12, 1))       # bought after it: new walk
+        self.assertEqual(d.next_email_type, "winback_1")
+
     def test_after_rung_3_episode_quiet_until_lost(self):
         st = S.State("k5b", "winback", D(2026, 1, 1), 6, 3, D(2026, 12, 18), "2026-12", None,
                      "winback_3_e2", D(2026, 12, 25))
