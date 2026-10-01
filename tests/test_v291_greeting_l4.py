@@ -58,13 +58,13 @@ class GreetingAndL4(unittest.TestCase):
     def test_price_letters_make_the_one_off_offer_only_with_a_date(self):
         for tid in A.PRICE_LETTERS:
             on = "\n".join(V.visible_lines(D.render(tpl(tid), BASE)))
-            self.assertTrue("Saviem esošajiem klientiem šobrīd" in on or (tid == 180 and "Daļai esošo klientu" in on) or (tid == 9180 and "Akcijas ar labākām cenām daļai klientu" in on) or (tid == 232 and "Šonedēļ tu esi to klientu daļā" in on), tid)
+            self.assertTrue("Saviem esošajiem klientiem šobrīd" in on or (tid == 180 and "Daļai esošo klientu" in on) or (tid == 9180 and "Akcijas ar labākām cenām daļai klientu" in on) or (tid == 232 and "noliktavas pielīdzināšanu" in on), tid)
             self.assertIn(V.SPEKA_LIDZ + " 04.10.2026", on, tid)
             off = "\n".join(V.visible_lines(D.render(tpl(tid), dict(BASE, OFFER_VALID_UNTIL=""))))
             self.assertNotIn("Saviem esošajiem klientiem", off, tid)
             self.assertNotIn("Daļai esošo klientu", off, tid)
             self.assertNotIn("Akcijas ar labākām cenām daļai klientu", off, tid)
-            self.assertNotIn("Šonedēļ tu esi to klientu daļā", off, tid)
+            self.assertNotIn("noliktavas pielīdzināšanu", off, tid)
 
     def test_reorder_letters_carry_no_discount_words(self):
         for tid in A.REORDER_LETTERS:

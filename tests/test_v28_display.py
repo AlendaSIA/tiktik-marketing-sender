@@ -84,6 +84,9 @@ class ContractV28Display(unittest.TestCase):
     def test_p6_fresh_line_is_gated_on_p1_fresh(self):
         for tid in FILES:
             self.assertEqual(P.fresh_line_blockers(tpl(tid), "P1_FRESH"), [], tid)
+            if tid == 232:   # Raivis 2026-10-01: no batch claim in rung 2 E1 at all
+                self.assertEqual(len(P.fresh_line_blockers(tpl(tid), None)), 0, tid)
+                continue
             self.assertEqual(len(P.fresh_line_blockers(tpl(tid), None)), 1, tid)  # the line exists
             both = dict(WITH_REF, P1_FRESH=False)
             self.assertNotIn("partij", "\n".join(V.visible_lines(D.render(tpl(tid), both))).lower(), tid)
@@ -104,7 +107,7 @@ class ContractV28Display(unittest.TestCase):
     def test_heads_that_promise_a_price_are_reported(self):
         rows = json.load(open(os.path.join(ROOT, "templates_manifest.json"), encoding="utf-8"))["templates"]
         subj = {r["id"]: r["subject"] for r in rows}
-        for tid, want in ((232, True), (233, True), (234, False)):
+        for tid, want in ((232, False), (233, True), (234, False)):   # 232 head = 'sezonas izpārdošana savējiem' (Raivis 2026-10-01)
             r = V.display_checks(tpl(tid), D.render(tpl(tid), NO_REF), subj[tid], NO_REF)
             self.assertEqual(r["head_claims_a_personal_price"], want, tid)
 
