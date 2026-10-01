@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Tikai tev: tava cena tavām ierastajām precēm</title>
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, tavas īpašās cenas ir klāt — līdz {{ contact.OFFER_VALID_UNTIL }}</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f6fb;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{% if contact.OFFER_VALID_UNTIL %}Tā ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}</div>
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{% if contact.OFFER_VALID_UNTIL %}{% if contact.P1_REF_PRICE %}{{ contact.P1_NAME }}: {{ contact.P1_PRICE }} (veikalā {{ contact.P1_REF_PRICE }}) — līdz {{ contact.OFFER_VALID_UNTIL }}.{% else %}Tavas cenas spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}{% endif %}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;">
 <tr><td align="center" style="padding:24px 12px;">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Manrope','Segoe UI',Arial,sans-serif;color:#23303a;">
@@ -19,10 +19,10 @@
 <div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
 </td></tr>
 <tr><td style="padding:14px 34px 0;">
-<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">Tikai tev: tava cena tavām ierastajām precēm</h1>
+<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">{% if contact.OFFER_VALID_UNTIL %}Tavas īpašās cenas ir klāt{% else %}Tavas ierastās preces{% endif %}</h1>
 </td></tr>
 <tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
-{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.P1_NAME %}{% if contact.P1_FRESH %}Tikko iepirkām jaunu partiju ({{ contact.P1_NAME }}).{% else %}Šonedēļ pārskatījām tavu ierasto preču cenas.{% endif %}{% else %}Šonedēļ pārskatījām tavu ierasto preču cenas.{% endif %}{% if contact.OFFER_VALID_UNTIL %} Saviem esošajiem klientiem šobrīd preces ar atzīmi „TAVA CENA“ varam piedāvāt lētāk nekā veikalā.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Šonedēļ pārskatījām preču cenas. Ja kaut ko vajag, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
+{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.P1_NAME %}{% if contact.P1_FRESH %}Tikko iepirkām jaunu partiju ({{ contact.P1_NAME }}). {% endif %}{% endif %}{% if contact.OFFER_VALID_UNTIL %}Šonedēļ tu esi to klientu daļā, kam varam piedāvāt īpašas cenas — balstoties uz taviem iepriekšējiem pirkumiem. Tavas preces un cenas ir zemāk, spēkā līdz {{ contact.OFFER_VALID_UNTIL }}. Pēc tam piedāvājums pāriet nākamajai klientu daļai.{% else %}Tavas ierastās preces ir šeit — lai nav jāmeklē no jauna.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Ja vajag ko no tavām ierastajām precēm, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
 </td></tr>
 
 {% if contact.KABINETS_HAS_PRODUCTS %}
@@ -37,7 +37,7 @@
 
 {% if contact.OFFER_VALID_UNTIL %}<tr><td style="padding:16px 34px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef4fb;border:1px solid #d3dcee;border-radius:12px;">
-<tr><td style="padding:14px 18px;text-align:center;font-size:16px;font-weight:800;color:#17578c;line-height:1.4;">Šī cena tev ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.</td></tr>
+<tr><td style="padding:14px 18px;text-align:center;font-size:16px;font-weight:800;color:#17578c;line-height:1.4;">Tava cena ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.</td></tr>
 </table>
 </td></tr>{% endif %}
 
@@ -45,7 +45,7 @@
 <tr><td style="padding:16px 28px 0;"><hr style="border:0;border-top:1px solid #eee;margin:0;"></td></tr>
 <tr><td style="padding:14px 28px 0;font-size:15px;line-height:1.6;">
 <p style="margin:0 0 4px;"><strong>Ko parasti ņem kopā ar tavām precēm</strong></p>
-<p style="margin:0 0 4px;font-size:14px;color:#555;">Šīs ir par veikala cenu. Ja tāpat vajag, var likt tajā pašā kastē — lai nav jāpasūta atsevišķi.</p>
+<p style="margin:0 0 4px;font-size:14px;color:#555;">Ja tāpat vajag, var likt tajā pašā kastē — lai nav jāpasūta atsevišķi.</p>
 </td></tr>
 <tr><td style="padding:12px 28px 0;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
@@ -59,7 +59,7 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef4fb;border:1px solid #d3dcee;border-radius:12px;">
 <tr><td style="padding:18px 20px;font-size:15px;line-height:1.6;color:#1c2b23;">
 <p style="margin:0 0 8px;"><strong>Ātrākais veids pasūtīt — tavs kabinets.</strong></p>
-<p style="margin:0 0 4px;">Tur ir tieši tavas preces, nav jāpārmeklē viss veikals. Ieraksti daudzumu un nosūti — adrese un rekvizīti nav jāievada no jauna. Ja ērtāk, atbildi uz šo vēstuli — sagatavosim.</p>
+<p style="margin:0 0 4px;">Tur ir tieši tavas preces, nav jāpārmeklē viss veikals. Ieraksti daudzumu un nosūti — adrese un rekvizīti nav jāievada no jauna. Turpat glabājas arī dokumenti par precēm, ja kādreiz vajag.</p>
 </td></tr>
 <tr><td align="center" style="padding:0 20px 20px;">
 <a href="{{ contact.KABINETS_URL }}" style="display:inline-block;background:#1f6fb2;color:#ffffff;text-decoration:none;font-weight:800;padding:16px 40px;border-radius:11px;font-size:16px;">Apskatīt manas cenas un pasūtīt &rarr;</a>
@@ -76,7 +76,7 @@
 {% endif %}
 
 <tr><td style="padding:20px 34px 0;">
-<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">Ja rodas jautājumi — vienkārši atbildi uz šo e-pastu.</p>
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">{% if contact.OFFER_VALID_UNTIL %}Ja tev viss pietiek — super! {% endif %}Paldies, ka iepērcies tiktik.lv{% if contact.OFFER_VALID_UNTIL %}, un ļoti iespējams, ka pēc kāda laika varēsim tev piedāvāt labākas cenas nekā ikdienā{% endif %}. Ja rodas jautājumi — vienkārši atbildi uz šo e-pastu.</p>
 <p style="font-size:15px;line-height:1.6;color:#23303a;margin:12px 0 0;">tiktik.lv komanda</p>
 </td></tr>
 

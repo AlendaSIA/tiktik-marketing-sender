@@ -59,7 +59,7 @@ _PRE = re.compile(r'(?s)<div[^>]*display:none[^>]*>(.*?)</div>')
 _H1 = re.compile(r'(?s)<h1[^>]*>(.*?)</h1>')
 _STRUCK = re.compile(r'text-decoration:line-through[^"]*">([^<]*)</span> <span[^>]*>([^<]*)</span>')
 _LABEL = '>TAVA CENA</div>'
-_CLAIM = re.compile(r"(?i)\b(sava|tava|tavu) cen")
+_CLAIM = re.compile(r"(?i)\b(sava|tava|tavu|tavas)( īpašās)? cen")
 
 
 def _text(fragment):

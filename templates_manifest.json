@@ -42,11 +42,11 @@
    "variant": "winback_2",
    "id": 232,
    "file": "templates/winback_2.html",
-   "git_blob": "5c50abbe0d2ba6323640c7064fe8b2dff4e5f062",
-   "sha256": "a8d47398ef1779df202699f3851dee45d8fa493f8529fdd9ba5109c13956aa78",
-   "subject": "Tikai tev: tava cena tavām ierastajām precēm",
+   "git_blob": "fa9571c533c294ce6515f9a6d899476d5f678988",
+   "sha256": "74074647fc40158a748954cb40ddac7b3e06fb7f45cf832414d6f5ebf79fe993",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tavas īpašās cenas ir klāt — līdz {{ contact.OFFER_VALID_UNTIL }}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tā ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
-   "name": "money:winback_2 v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28) · CADENCE v1 E1 rung 2 (bez '7 dienas', 2026-09-30)",
+   "name": "money:winback_2 v5 — CADENCE v1 rung 2 E1, 180 rāmī (2026-10-01)",
    "purpose": "Second win-back rung for customers silent for many months: a fresh batch of their usual goods has arrived and they get their own price until OFFER_VALID_UNTIL while it is in stock (price, crossed-out reference and date from contract v2.8)."
   },
   {
