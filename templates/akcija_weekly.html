@@ -5,55 +5,65 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>⟦RAŽOTĀJS⟧ nedēļa: ⟦PRECE⟧ no ⟦CENA⟧</title>
 </head>
-<body style="margin:0;padding:0;background:#f4f6fb;">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;">⟦RAŽOTĀJS⟧ visai līnijai nolaistas cenas — kamēr ir noliktavā.</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f6fb;">
-<tr><td align="center" style="padding:24px 12px;">
-<table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background:#ffffff;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;color:#1f2a28;">
+<body style="margin:0;padding:0;background:#f4f6f5;font-family:Arial,Helvetica,sans-serif;color:#20302b;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Šonedēļ par supercenām — ⟦PRECE⟧ no ⟦CENA⟧. Līdz ⟦LĪDZ⟧.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f5;">
+<tr><td align="center" style="padding:20px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:10px;overflow:hidden;">
 
-<tr><td align="center" style="padding:22px 28px 6px 28px;">
-<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+<tr><td align="center" style="padding:24px 24px 8px;">
+<img src="https://img.mailinblue.com/11260625/images/rnb/original/6a2acdac57b27e3b4821bf6b.png" alt="tiktik.lv" width="150" style="display:block;border:0;">
 </td></tr>
 
-<tr><td style="padding:12px 28px 0 28px;">
-<h1 style="margin:0 0 10px 0;font-size:23px;line-height:1.3;font-weight:800;">⟦RAŽOTĀJS⟧ nedēļa</h1>
-<p style="margin:0 0 16px 0;font-size:15px;line-height:1.6;color:#3d474f;">{{ contact.GREETING | default : 'Sveiki!' }} Šonedēļ nolaidām cenas visai ⟦RAŽOTĀJS⟧ līnijai — ⟦KĀPĒC ŠIS RAŽOTĀJS⟧. ⟦PRECE⟧ sākas no ⟦CENA⟧.</p>
+<tr><td align="center" style="padding:8px 28px 4px;">
+<div style="display:inline-block;background:#d7263d;color:#ffffff;font-size:13px;font-weight:bold;letter-spacing:1px;padding:6px 14px;border-radius:20px;">⟦DATUMI⟧ &middot; ⟦RAŽOTĀJS⟧ NEDĒĻA</div>
+</td></tr>
+<tr><td align="center" style="padding:14px 28px 6px;">
+<h1 style="margin:0;font-size:29px;line-height:1.2;color:#20302b;">⟦PRECE⟧ no <span style="color:#d7263d;">⟦CENA⟧</span></h1>
+</td></tr>
+<tr><td align="center" style="padding:8px 34px 16px;">
+<p style="margin:0;font-size:16px;line-height:1.5;color:#5a6b64;">{{ contact.GREETING | default : 'Sveiki!' }} Šonedēļ par supercenām vari iegādāties ⟦RAŽOTĀJS⟧ preces — ⟦KĀPĒC ŠIS RAŽOTĀJS⟧. Akcija spēkā <b>līdz ⟦LĪDZ⟧</b>.</p>
 </td></tr>
 
-<tr><td style="padding:0 22px 0 22px;">⟦NEDĒĻAS PREČU BLOKI⟧</td></tr>
+<tr><td align="center" style="padding:0 24px 14px;">
+<a href="https://www.tiktik.lv/veikals/params/category/featured/?utm_source=brevo&amp;utm_medium=email&amp;utm_campaign=__UTM_WEEK__-akcija" style="display:inline-block;background:#d7263d;color:#ffffff;font-size:17px;font-weight:bold;text-decoration:none;padding:14px 36px;border-radius:8px;">Skatīt visas nedēļas akcijas &rarr;</a>
+</td></tr>
+
+<tr><td style="padding:8px 16px 0;">⟦NEDĒĻAS PREČU BLOKI⟧</td></tr>
 
 {% if contact.KABINETS_HAS_PRODUCTS %}
-<tr><td style="padding:14px 28px 0 28px;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px dashed #c9d4e6;border-radius:10px;background:#f8fafd;">
-<tr><td style="padding:14px 16px;">
-<div style="font-size:14px;font-weight:700;line-height:1.4;">Preces, ko tu mēdz ņemt — tavā kabinetā.</div>
-<div style="margin-top:6px;font-size:13px;line-height:1.5;color:#67727d;">Ja vajag arī tās, var likt tajā pašā kastē. Ieraksti daudzumu un nosūti — adrese un rekvizīti nav jāievada no jauna. <a href="{{ contact.KABINETS_URL }}" style="color:#26346e;font-weight:700;">Atvērt savu kabinetu &rarr;</a></div>
+<tr><td style="padding:16px 24px 8px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef6f2;border-radius:8px;">
+<tr><td style="padding:16px 20px;">
+<p style="margin:0 0 8px;font-size:15px;font-weight:bold;color:#068a65;">Tavas ierastās preces — tavā kabinetā</p>
+<p style="margin:0;font-size:14px;line-height:1.6;color:#3d4b45;">Ja vajag arī tās, iemet turpat — nav jāmaksā par otru piegādi. Ieraksti daudzumu un nosūti — adrese un rekvizīti nav jāievada no jauna. <a href="{{ contact.KABINETS_URL }}" style="color:#068a65;font-weight:bold;">Atvērt savu kabinetu &rarr;</a></p>
 </td></tr>
 </table>
 </td></tr>
 {% endif %}
 
-<tr><td align="center" style="padding:20px 28px 6px 28px;">
-<a href="https://www.tiktik.lv/veikals/params/category/featured/?utm_source=brevo&amp;utm_medium=email&amp;utm_campaign=__UTM_WEEK__-akcija" style="display:inline-block;background:#12603f;color:#ffffff;font-size:17px;font-weight:800;text-decoration:none;padding:16px 36px;border-radius:10px;">Skatīt visas nedēļas akcijas</a>
+<tr><td style="padding:6px 24px 4px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fdf2f4;border-radius:8px;border:1px solid #f3d4da;">
+<tr><td style="padding:14px 20px;">
+<p style="margin:0;font-size:14px;line-height:1.6;color:#3d4b45;">Ja tāpat pērc katru mēnesi — <b>šī ir tā nedēļa, kad ņemt vairāk nekā parasti</b>. Akcijas cenas spēkā līdz ⟦LĪDZ⟧ vai kamēr ir noliktavā.</p>
+</td></tr>
+</table>
 </td></tr>
 
-<tr><td style="padding:14px 28px 0 28px;">
-<p style="margin:0 0 6px 0;font-size:13px;line-height:1.6;color:#67727d;">No 59 € piegāde uz Venipak pakomātu — bez maksas.</p>
-<p style="margin:0 0 18px 0;font-size:13px;line-height:1.6;color:#67727d;">Cenas spēkā, kamēr prece ir noliktavā. Ja vajag izmēru, kura sarakstā nav — atraksti uz šo vēstuli.</p>
+<tr><td align="center" style="padding:18px 34px 20px;">
+<p style="margin:0;font-size:13px;line-height:1.5;color:#8a958f;">Nezini izmēru vai vajag lielāku daudzumu? Atbildi uz šo e-pastu — sarēķināsim un rezervēsim.<br>Bezmaksas piegāde ar Venipak no 59 €.</p>
 </td></tr>
 
 {% if contact.D1_NAME %}
-<tr><td style="padding:22px 28px 0;">
-<p style="margin:0 0 6px;font-size:13px;line-height:1.5;color:#8a8a8a;"><strong style="color:#6f6f6f;">Šobrīd nav noliktavā — apskati, kas šai grupā ir pieejams</strong></p>
-<p style="margin:0;font-size:13px;line-height:1.7;color:#8a8a8a;"><a href="{{ contact.D1_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D1_NAME }}</a>{% if contact.D2_NAME %}<br><a href="{{ contact.D2_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D2_NAME }}</a>{% endif %}{% if contact.D3_NAME %}<br><a href="{{ contact.D3_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D3_NAME }}</a>{% endif %}{% if contact.D4_NAME %}<br><a href="{{ contact.D4_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D4_NAME }}</a>{% endif %}</p>
+<tr><td style="padding:0 34px 20px;">
+<p style="margin:0 0 6px;font-size:13px;line-height:1.5;color:#8a958f;"><strong style="color:#6f6f6f;">Šobrīd nav noliktavā — apskati, kas šai grupā ir pieejams</strong></p>
+<p style="margin:0;font-size:13px;line-height:1.7;color:#8a958f;"><a href="{{ contact.D1_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D1_NAME }}</a>{% if contact.D2_NAME %}<br><a href="{{ contact.D2_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D2_NAME }}</a>{% endif %}{% if contact.D3_NAME %}<br><a href="{{ contact.D3_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D3_NAME }}</a>{% endif %}{% if contact.D4_NAME %}<br><a href="{{ contact.D4_URL }}" style="color:#6f6f6f;text-decoration:underline;">{{ contact.D4_NAME }}</a>{% endif %}</p>
 </td></tr>
 {% endif %}
 
-<tr><td style="padding:0 28px 26px 28px;border-top:1px solid #edf1f7;">
-<p style="margin:16px 0 0 0;font-size:11px;line-height:1.6;color:#98a2ad;">
-Alenda SIA &middot; tiktik.lv &middot; info@tiktik.lv<br>
-Šo vēstuli saņem, jo esi iepircies tiktik.lv. <a href="{{ unsubscribe }}" style="color:#98a2ad;text-decoration:underline;">Atteikties no vēstulēm</a>
-</p>
+<tr><td style="background:#20302b;padding:20px 28px;">
+<p style="margin:0 0 6px;font-size:13px;color:#c7d2cc;">tiktik.lv — higiēnas un aizsardzības preces uzņēmumiem</p>
+<p style="margin:0;font-size:12px;color:#8a958f;">Cenas norādītas ar PVN. Akcija spēkā līdz ⟦LĪDZ⟧ vai kamēr ir noliktavā. Šo vēstuli saņem, jo esi tiktik.lv klients vai abonents. <a href="{{ unsubscribe }}" style="color:#8a958f;text-decoration:underline;">Atteikties no vēstulēm</a></p>
 </td></tr>
 
 </table>

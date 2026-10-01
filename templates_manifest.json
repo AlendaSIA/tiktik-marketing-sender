@@ -90,12 +90,12 @@
    "variant": "akcija_weekly",
    "id": 236,
    "file": "templates/akcija_weekly.html",
-   "git_blob": "df6a1691e7180827ae077686125ec48300c40b92",
-   "sha256": "92abac2425ae88b8c5d7f35f99dcb477d9cb34c084884e92ff0e75b0cf2024ce",
+   "git_blob": "2bbd1905a06b7be31efe3199b947597a577f211d",
+   "sha256": "6dd1ecb8ed59a8698db10dc8db9c807f1c7747471b411f61fc3144f02f0341fa",
    "subject": "⟦RAŽOTĀJS⟧ nedēļa: ⟦PRECE⟧ no ⟦CENA⟧",
-   "preheader": "⟦RAŽOTĀJS⟧ visai līnijai nolaistas cenas — kamēr ir noliktavā.",
-   "name": "money:akcija_weekly v4 — stils no kampaņām 222 Mercator nedēļa (2026-09-28)",
-   "purpose": "Weekly residual letter for everyone with no personal step this week (incl. empty kabinets): a fixed frame around the brand/theme Raivis picks, with the weekly product block inserted per campaign."
+   "preheader": "Šonedēļ par supercenām — ⟦PRECE⟧ no ⟦CENA⟧. Līdz ⟦LĪDZ⟧.",
+   "name": "money:akcija_weekly v3 — house design of campaigns 147/167 (Raivis 01.10 18:26-18:27)",
+   "purpose": "Weekly promo for everyone with no personal step this week. House design of the 2026-07..09 promo campaigns (c147 reference). Campaign layer fills ⟦DATUMI⟧ ⟦RAŽOTĀJS⟧ ⟦PRECE⟧ ⟦CENA⟧ ⟦LĪDZ⟧ ⟦KĀPĒC ŠIS RAŽOTĀJS⟧ and ⟦NEDĒĻAS PREČU BLOKI⟧ = a 4-column grid: brand week = all the maker's sale goods, max 16 (4x4) by sales; MIX = real top 16 sale goods. Never 'nolaidām cenas'."
   }
  ],
  "neutral_twins_about": "SUPERSEDED 2026-09-25 by contract v2.8 rule P6: the fresh line now switches on P1_FRESH inside the Brevo template itself, so these twins are no longer needed; kept unchanged for history, not maintained. MAIN 2026-09-25: 232/233/234 carry ONE neutral subject + preheader for everyone; only the body line that names the P1 (hero) product as a fresh batch switches, on the fresh flag that contract v2.8 brings. The fresh versions are the Brevo templates; these NEUTRAL twins differ from them only in that one sentence. NOT in Brevo and NOT read by template_put.py (it reads 'templates' only).",

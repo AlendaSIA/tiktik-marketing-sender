@@ -164,7 +164,7 @@ def _site(monkeypatch, pages):
     calls = []
 
     def fake(u, timeout=25):
-        if "/logobox/" in u:
+        if "/logobox/" in u or "img.mailinblue.com/" in u:   # 236 v3 uses the house logo of the promo campaigns
             return 200, "image/png", b"png"
         calls.append(u)
         return pages.get(u, (404, "text/html", b""))
@@ -292,7 +292,7 @@ def test_akcija_weekly_contact_without_cabinet_products_gets_the_featured_page()
 def test_akcija_weekly_contact_with_cabinet_products_keeps_the_cabinet_box():
     body = D.render(D.C.apply_utm_week(AKCIJA, "2026-w39")[0], {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": LETTER})
     # COMMAND 2 (222 weekly format): the featured-page button is for everyone; a cabinet contact also gets the line
-    assert _real_links(body) == [LETTER, FEATURED_W39]
+    assert _real_links(body) == [FEATURED_W39, LETTER]   # 236 v3 house design: red CTA above the products, cabinet box after
     assert "Atvērt savu kabinetu &rarr;" in body and "Skatīt visas nedēļas akcijas" in body
 
 
