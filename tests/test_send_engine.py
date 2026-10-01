@@ -22,6 +22,18 @@ class UtmReorder3(unittest.TestCase):
     def test_reorder_3_slug(self):
         self.assertEqual(utm.slug("2026-09-21", "reorder_3", "lv"), "2026-w39-papildinam-3")
 
+    def test_every_email_type_the_engine_can_emit_has_a_theme(self):
+        # CADENCE v1: track letters + E2 of rungs 1..3 + every interface name (akcija_weekly is named per campaign)
+        emitted = {n for _, letters in S.TRACKS.values() for n in letters} | S.E2_TYPES | set(S.INTERFACE_V1)
+        emitted.discard("akcija_weekly")
+        for et in sorted(emitted):
+            self.assertTrue(utm.theme(et), et)
+            utm.slug("2026-10-06", et, "lv")          # raises UnknownVariantTheme on a miss
+
+    def test_e2_theme_is_e1_theme_plus_e2(self):
+        for r in (1, 2, 3):
+            self.assertEqual(utm.theme(S.E2_BY_RUNG[r]), utm.theme(S.E1_BY_RUNG[r]) + "-e2")
+
     def test_every_interface_v1_letter_slugs(self):
         for et in S.INTERFACE_V1:
             if et == "akcija_weekly":

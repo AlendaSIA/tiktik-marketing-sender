@@ -45,6 +45,10 @@ THEMES = {
     "winback_1": "tava-cena",
     "winback_2": "tava-cena-2",
     "winback_3": "tava-cena-3",
+    # CADENCE v1 K3 E2 letters (MAIN 2026-10-01 17:05): theme of the same rung's E1 + "-e2"
+    "winback_1_e2": "tava-cena-e2",
+    "winback_2_e2": "tava-cena-2-e2",
+    "winback_3_e2": "tava-cena-3-e2",
     "lost_quarterly": "izdevigi",
     # NOT DERIVABLE, and that is the correct answer rather than a gap. The weekly akcija is
     # brand rotation (`zarys`, ...), so its theme is chosen per campaign by Marketing and
