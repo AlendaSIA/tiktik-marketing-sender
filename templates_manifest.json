@@ -54,8 +54,8 @@
    "variant": "winback_3",
    "id": 233,
    "file": "templates/winback_3.html",
-   "git_blob": "2adf530ef78901c572a32222fb4a70dce4076c2e",
-   "sha256": "c7f3e0664fd2f4b220605048757764fb82cfe02dc9a4f386b227dbfdb3385ccc",
+   "git_blob": "83cc8528092b5484c5dfb0900541a7ecddd617b4",
+   "sha256": "79c5214eb5ff71fa02e5089425702b508c11e0f3856681e7ed459308e17e5f45",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tavai biežāk pirktajai precei — {{ contact.P1_PRICE }}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tava cena spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.{% endif %}",
    "name": "money:winback_3 v5 — RUNG GOODS v1 G6/G7: 1 cenota (TOP) + 0..7 bez personīgās cenas (2026-10-01)",
@@ -192,8 +192,8 @@
    "episode": "E2",
    "e1_template_id": 233,
    "file": "templates/winback_3_e2.html",
-   "git_blob": "374be3008640ef45e7561e7e92029dad3a1d6b40",
-   "sha256": "221e3757601618c30634fa9e29cb9162e75aacf6faa4c741edb4a724072f8bc7",
+   "git_blob": "02a8935557476ff051394a43c5396c76cd3f593e",
+   "sha256": "ca81830149da5fa091c762e74f433120fdd71e57176e5406b5b37e0aacd1ac97",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tava cena vēl 7 dienas — {{ contact.P1_PRICE }}",
    "name": "money:winback_3_e2 v2 — no 233 v5 (2026-10-01)"
   }
