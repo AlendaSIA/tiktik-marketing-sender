@@ -90,12 +90,12 @@
    "variant": "akcija_weekly",
    "id": 236,
    "file": "templates/akcija_weekly.html",
-   "git_blob": "872815c86c290d195c30595586ba4e7385158162",
-   "sha256": "c7168623dab18c45b63b789a410020e5b196a6dd66ccd62d0d1cf525a70e8e33",
-   "subject": "⟦RAŽOTĀJS⟧ nedēļa: ⟦PRECE⟧ no ⟦CENA⟧",
+   "git_blob": "0caa6d0e5909ba92399a037e7049e971d2e7fb1d",
+   "sha256": "cecbbc96b4dedc2e40e96d661cf160e28f5d07b771cc536ff20b3c76abc6d3fc",
+   "subject": "⟦PRECE⟧ no ⟦CENA⟧ — tikai šonedēļ",
    "preheader": "Šonedēļ par supercenām — ⟦PRECE⟧ no ⟦CENA⟧. Līdz ⟦LĪDZ⟧.",
    "name": "money:akcija_weekly v3 — house design of campaigns 147/167 (Raivis 01.10 18:26-18:27)",
-   "purpose": "Weekly promo for everyone with no personal step this week. House design of the 2026-07..09 promo campaigns (c147 reference). Campaign layer fills ⟦DATUMI⟧ ⟦RAŽOTĀJS⟧ ⟦PRECE⟧ ⟦CENA⟧ ⟦LĪDZ⟧ ⟦KĀPĒC ŠIS RAŽOTĀJS⟧ and ⟦NEDĒĻAS PREČU BLOKI⟧ = a 4-column grid: brand week = all the maker's sale goods, max 16 (4x4) by sales; MIX = real top 16 sale goods. Never 'nolaidām cenas'."
+   "purpose": "Weekly promo for everyone with no personal step this week. House design of the 2026-07..09 promo campaigns (c147 reference). Campaign layer fills ⟦DATUMI⟧ ⟦BIRKA⟧ (e.g. 'ZARYS NEDĒĻA' / 'NEDĒĻAS MIX') ⟦RAŽOTĀJS⟧ (brand, or 'mūsu TOP' for MIX) ⟦PRECE⟧ ⟦CENA⟧ ⟦LĪDZ⟧ ⟦KĀPĒC ŠIS RAŽOTĀJS⟧ and ⟦NEDĒĻAS PREČU BLOKI⟧ = a 4-column grid: brand week = all the maker's sale goods, max 16 (4x4) by sales; MIX = real top 16 sale goods. Never 'nolaidām cenas'."
   }
  ],
  "neutral_twins_about": "SUPERSEDED 2026-09-25 by contract v2.8 rule P6: the fresh line now switches on P1_FRESH inside the Brevo template itself, so these twins are no longer needed; kept unchanged for history, not maintained. MAIN 2026-09-25: 232/233/234 carry ONE neutral subject + preheader for everyone; only the body line that names the P1 (hero) product as a fresh batch switches, on the fresh flag that contract v2.8 brings. The fresh versions are the Brevo templates; these NEUTRAL twins differ from them only in that one sentence. NOT in Brevo and NOT read by template_put.py (it reads 'templates' only).",

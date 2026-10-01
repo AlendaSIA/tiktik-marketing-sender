@@ -304,7 +304,7 @@ def test_static_utm_accepts_the_seam_form_and_still_flags_a_written_week():
     assert D.static_checks(page.format(seam), "")["template_side_utm"] == []
     assert D.static_checks(page.format(seam + hard), "")["template_side_utm"] == ["2026-w39-akcija"]
     assert D.static_checks(page.format(bare), "")["template_side_utm"] == ["__UTM_WEEK__"]
-    s = D.static_checks(AKCIJA, "⟦RAŽOTĀJS⟧ nedēļa: ⟦PRECE⟧ no ⟦CENA⟧")
+    s = D.static_checks(AKCIJA, "⟦PRECE⟧ no ⟦CENA⟧ — tikai šonedēļ")
     assert s["complete_html"] and not (s["outside_contract"] or s["nested_double_quote_hrefs"]
                                        or s["template_side_utm"] or s["percent_in_text"])
 
