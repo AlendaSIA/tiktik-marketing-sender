@@ -148,10 +148,10 @@
    "variant": "winback_1",
    "id": 180,
    "file": "templates/winback_1.html",
-   "git_blob": "311765f1a4d2d8ee428ad48db3a382d12d7c8ca3",
-   "sha256": "638bdf9b7038086a1ed5603881ca515c89697ea02d0c7fa4f299bb5bc905bc0c",
+   "git_blob": "a0dc0a4d52ff8822e6d4562247a875dcc263cf12",
+   "sha256": "010b3a30bf3136c5312ce6cabfcbcc98f760085c3b407945150a84923470149b",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: labāka cena tavām ierastajām precēm",
-   "name": "money:winback_1 v10 — Raivja teksts 30.09 20:13 (daļai klientu, ierobežots laiks)",
+   "name": "money:winback_1 v11 — Raivja teksts 01.10 (klienti pa daļām, 'ja tev viss pietiek — super')",
    "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
   }
