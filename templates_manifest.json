@@ -42,11 +42,11 @@
    "variant": "winback_2",
    "id": 232,
    "file": "templates/winback_2.html",
-   "git_blob": "a8452088c4d6ab2e6fd5250c539369666ca26e11",
-   "sha256": "796bac0e4ddc95284ad6f131eb01e9370d22d157c04144dcceab7e9fc75091db",
+   "git_blob": "2c496d1e45f4c6ee3407cf6498ece66edbb21cd5",
+   "sha256": "9d42f274d77ae812ef2bae7f8a291ee69d5f2e3da97a2519b3700854f8ba6daf",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev nebijušas cenas tavām precēm",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tā ir spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
-   "name": "money:winback_2 v7 — Raivja teksts 01.10 10:52 (nebijušas cenas, noliktavas pielīdzināšana)",
+   "name": "money:winback_2 v8 — Raivja teksts 01.10 10:59 (daļa klientu, ierobežots preču skaits)",
    "purpose": "Second win-back rung for customers silent for many months: a fresh batch of their usual goods has arrived and they get their own price until OFFER_VALID_UNTIL while it is in stock (price, crossed-out reference and date from contract v2.8)."
   },
   {
