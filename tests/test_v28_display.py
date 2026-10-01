@@ -84,7 +84,7 @@ class ContractV28Display(unittest.TestCase):
     def test_p6_fresh_line_is_gated_on_p1_fresh(self):
         for tid in FILES:
             self.assertEqual(P.fresh_line_blockers(tpl(tid), "P1_FRESH"), [], tid)
-            if tid == 232:   # Raivis 2026-10-01: no batch claim in rung 2 E1 at all
+            if tid in (232, 233):   # Raivis 2026-10-01: no batch claim in rung 2/3 E1 at all
                 self.assertEqual(len(P.fresh_line_blockers(tpl(tid), None)), 0, tid)
                 continue
             self.assertEqual(len(P.fresh_line_blockers(tpl(tid), None)), 1, tid)  # the line exists
@@ -107,7 +107,7 @@ class ContractV28Display(unittest.TestCase):
     def test_heads_that_promise_a_price_are_reported(self):
         rows = json.load(open(os.path.join(ROOT, "templates_manifest.json"), encoding="utf-8"))["templates"]
         subj = {r["id"]: r["subject"] for r in rows}
-        for tid, want in ((232, False), (233, True), (234, False)):   # 232 head = 'sezonas izpārdošana savējiem' (Raivis 2026-10-01)
+        for tid, want in ((232, False), (233, False), (234, False)):   # 232 head = 'sezonas izpārdošana savējiem' (Raivis 2026-10-01)
             r = V.display_checks(tpl(tid), D.render(tpl(tid), NO_REF), subj[tid], NO_REF)
             self.assertEqual(r["head_claims_a_personal_price"], want, tid)
 
@@ -140,7 +140,7 @@ class ContractV28Display(unittest.TestCase):
                 '</span></div><div style="color:#12603f;font-size:11px;font-weight:bold;letter-spacing:.5px;">TAVA CENA</div>{%% else %%}'
                 '<div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P%d_PRICE }}</div>{%% endif %%}')
         for tid in ALL:
-            if tid == 232:   # Raivis 2026-10-01: 3 sections - special-price cards and standard-price cards are separate
+            if tid in (232, 233):   # Raivis 2026-10-01: 3 sections - special-price cards and standard-price cards are separate
                 for n in range(1, 9):
                     t = tpl(tid)
                     self.assertEqual(t.count('<span style="color:#98a2ad;text-decoration:line-through;font-size:13px;">{{ contact.P%d_REF_PRICE }}</span>' % n), 1, (tid, n))

@@ -54,11 +54,11 @@
    "variant": "winback_3",
    "id": 233,
    "file": "templates/winback_3.html",
-   "git_blob": "f66288cdee328e72f811b2422852c380a610b9ed",
-   "sha256": "bf80fa9db161e144017a898cbf28c0a1fd0be6449e11df3ce0c5126294f647a3",
-   "subject": "Tikai tev: tava cena ierastajām precēm līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "git_blob": "30bddabab1fa4b38679d55cb29622d12f0ff45ed",
+   "sha256": "2f8d3d97364a58c210bd4cbc5d074824e4f7f28aa1dd9972df48b57f1d0febce",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tavai biežāk pirktajai precei — {{ contact.P1_PRICE }}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tava cena spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.{% endif %}",
-   "name": "money:winback_3 v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
+   "name": "money:winback_3 v5 — RUNG GOODS v1 G6/G7: 1 cenota (TOP) + 0..7 bez personīgās cenas (2026-10-01)",
    "purpose": "Third and last winback rung: calm, the batch is still in stock and the customer price still holds until OFFER_VALID_UNTIL (contract v2.8); shorter than 180."
   },
   {
@@ -192,10 +192,10 @@
    "episode": "E2",
    "e1_template_id": 233,
    "file": "templates/winback_3_e2.html",
-   "git_blob": "2971b72445f1508907e9e0921a8a45400ea0786f",
-   "sha256": "27dadec48aafcbf190df1ffea01ae245f5b37aaea04bfa10b6be675ee41b257f",
-   "subject": "Tava cena — pēdējās 7 dienas, līdz {{ contact.OFFER_VALID_UNTIL }}",
-   "name": "money:winback_3_e2 v1 — CADENCE v1 E2 rung 3 (2026-09-30)"
+   "git_blob": "6378aa5ccd211b677ba6cc68db01fcee3c31551b",
+   "sha256": "52eec6b24a37f78d557c490776b5e8828bf34f38cd92e876bbabf4baf96047ba",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tava cena vēl 7 dienas — {{ contact.P1_PRICE }}",
+   "name": "money:winback_3_e2 v2 — no 233 v5 (2026-10-01)"
   }
  ]
 }
