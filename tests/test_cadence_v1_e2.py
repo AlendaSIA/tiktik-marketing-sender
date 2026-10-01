@@ -32,9 +32,13 @@ class CadenceE2(unittest.TestCase):
             out = D.render(read(row), BASE)
             body = "\n".join(V.visible_lines(out))
             self.assertIn("13.10.2026", body, tid)
-            self.assertIn("pēc tam parastā veikala cena", body, tid)
+            if tid != 9180:   # Raivis 2026-10-01: rung 1 E2 says how to keep the price (invoice) instead
+                self.assertIn("pēc tam parastā veikala cena", body, tid)
             self.assertTrue(A.words_check(tid, out, D.render(row["subject"], BASE), BASE)["ok"], tid)
-            self.assertIn("13.10.2026", D.render(row["subject"], BASE), tid)
+            if tid != 9180:   # Raivis 2026-10-01: subject "nepalaid garām — vēl 7 dienas", the date is in the preheader
+                self.assertIn("13.10.2026", D.render(row["subject"], BASE), tid)
+            else:
+                self.assertIn("13.10.2026", V.preheader(out), tid)
             self.assertEqual(D.static_checks(read(row), row["subject"])["outside_contract"], [], tid)
 
     def test_texts_differ(self):
