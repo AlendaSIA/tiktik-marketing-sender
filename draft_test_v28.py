@@ -59,6 +59,7 @@ _PRE = re.compile(r'(?s)<div[^>]*display:none[^>]*>(.*?)</div>')
 _H1 = re.compile(r'(?s)<h1[^>]*>(.*?)</h1>')
 _STRUCK = re.compile(r'text-decoration:line-through[^"]*">([^<]*)</span> <span[^>]*>([^<]*)</span>')
 _LABEL = '>TAVA CENA</div>'
+_XLABEL = '>IEPAZĪŠANĀS CENA</div>'
 _CLAIM = re.compile(r"(?i)\b(sava|tava|tavu|tavas)( īpašās)? cen")
 
 
@@ -85,19 +86,25 @@ def display_checks(tpl_html, rendered, subject, attrs):
     shown = [n for n in SLOTS if attrs.get(f"P{n}_NAME")] if attrs.get("KABINETS_HAS_PRODUCTS") else []
     want = sorted((str(attrs[f"P{n}_REF_PRICE"]), str(attrs.get(f"P{n}_PRICE")))
                   for n in shown if attrs.get(f"P{n}_REF_PRICE"))
+    # 235 intro price (Raivis 2026-10-01 17:53, PROPOSED fields): R1..R4 with Rn_REF_PRICE show struck + IEPAZĪŠANĀS CENA.
+    if "contact.R1_REF_PRICE" in (tpl_html or "") and attrs.get("XSELL_VALID_UNTIL"):
+        want = sorted(want + [(str(attrs[f"R{n}_REF_PRICE"]), str(attrs.get(f"R{n}_PRICE")))
+                              for n in range(1, 5) if attrs.get(f"R{n}_NAME") and attrs.get(f"R{n}_REF_PRICE")])
     got = sorted(_STRUCK.findall(rendered))
-    labels = rendered.count(_LABEL)
+    labels = rendered.count(_LABEL) + rendered.count(_XLABEL)
     p2 = {"slots_shown": shown, "struck_expected": want, "struck_rendered": got, "labels": labels,
           "ok": got == want and labels == len(want)}
 
     until = str(attrs.get("OFFER_VALID_UNTIL") or "")
+    if "contact.XSELL_VALID_UNTIL" in (tpl_html or ""):
+        until = str(attrs.get("XSELL_VALID_UNTIL") or "")
     lines = visible_lines(rendered)
     body = "\n".join(lines)
     pre = preheader(rendered) or ""
     line_shown = SPEKA_LIDZ in body
     # Only 232-234 carry a valid-until line (and a preheader that depends on it). A letter without one must
     # never show one; its preheader is its own and is not judged here.
-    has_until = "contact.OFFER_VALID_UNTIL" in (tpl_html or "")
+    has_until = "contact.OFFER_VALID_UNTIL" in (tpl_html or "") or "contact.XSELL_VALID_UNTIL" in (tpl_html or "")
     # 232-234 carry the date (or the offer) in the preheader too; 180 winback_1 (L4, 2026-09-28) keeps its fixed
     # preheader and carries the date line only in the body.
     pre_tpl = (_PRE.search(tpl_html or "") or [None, ""])[1]
