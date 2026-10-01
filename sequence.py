@@ -52,6 +52,19 @@ E2_BY_RUNG = {r: f"winback_{r}_e2" for r in (1, 2, 3)}
 E1_TYPES, E2_TYPES = set(E1_BY_RUNG.values()), set(E2_BY_RUNG.values())
 RUNG_OF = {**{v: k for k, v in E1_BY_RUNG.items()}, **{v: k for k, v in E2_BY_RUNG.items()}}
 HOLD_E2_TEMPLATE = "E2_TEMPLATE_PENDING"
+# G-EN (Raivis 2026-09-30 17:47): LV first, then EN in bulk. Until EN letters exist, an EN contact never receives an
+# LV engine letter. EN contact = Brevo list 46 OR attribute LANGUAGE = en (on any address of the person). The hold
+# replaces every "letter planned" outcome; holds that mean "no letter at all" stay as they are. Nothing is sent and
+# no state advances (state moves only in record_sent, on a real send).
+HOLD_EN = "EN_PENDING"
+EN_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", "LADDER_NO_RESTART", "SEQUENCE_DONE"}
+
+
+def language_hold(email_type, hold, is_en: bool):
+    """G-EN guard: the hold reason after the language check (hold None = would send)."""
+    if is_en and email_type and hold not in EN_KEEPS:
+        return HOLD_EN
+    return hold
 CADENCE = "cadence-v1 (Raivis 2026-09-30 19:11, K1-K7)"
 QUIET_WEEKS = 4
 QUIET_GAP_DAYS = 7 * (QUIET_WEEKS + 1)   # K2/K4: letter in week n -> weeks n+1..n+4 akcija only -> next in n+5

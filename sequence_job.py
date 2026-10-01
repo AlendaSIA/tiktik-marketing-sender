@@ -136,6 +136,23 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY plan_date DE
 """
 
 
+# G-EN (Raivis 2026-09-30 17:47): EN contacts get no LV engine letter until EN exists. EN = Brevo list 46
+# (business_marts.brevo_contacts_snapshot, nightly copy of Brevo list membership) OR LANGUAGE = 'en'
+# (business_marts.marketing_brevo_payload, the view the nightly sync writes to the Brevo LANGUAGE attribute), on
+# ANY address of the person (customer_identity). Measured 01.10: 624 addresses (list 46 609, LANGUAGE en 622).
+EN_LIST_ID = 46
+EN_ADDR_SQL = f"""
+SELECT LOWER(TRIM(email)) AS e FROM `{P}.business_marts.brevo_contacts_snapshot` WHERE {EN_LIST_ID} IN UNNEST(list_ids)
+UNION DISTINCT
+SELECT LOWER(TRIM(email)) FROM `{P}.business_marts.marketing_brevo_payload` WHERE LOWER(TRIM(LANGUAGE)) = 'en'
+"""
+EN_SQL = f"""SELECT DISTINCT i.master_key FROM `{P}.business_marts.customer_identity` i
+JOIN ({EN_ADDR_SQL}) en ON en.e = i.email_norm WHERE i.master_key IS NOT NULL"""
+EN_SOURCE_SQL = f"""SELECT (SELECT COUNT(*) FROM ({EN_ADDR_SQL})) AS en_addresses,
+  (SELECT TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), TIMESTAMP_MILLIS(last_modified_time), MINUTE) / 60.0
+   FROM `{P}.business_marts.__TABLES__` WHERE table_id = 'brevo_contacts_snapshot') AS list_snapshot_age_h"""
+
+
 def writeback_target(t, w):
     """Target as the write-back will act on it: held by the write-back guard, or 'create_person'
     for a contact v2.9.4 creates (C5 / org-only), else unchanged."""
@@ -216,6 +233,10 @@ def main():
     org_by_address = {r["email"]: set(r["org_ids"]) for r in bq.query(ORG_ADDR_SQL).result()}
     master_addr = {r["master_key"]: list(r["emails"]) for r in bq.query(MASTER_ADDR_SQL).result()}
     overrides = {r["email"]: (r["person_id"], r["org_id"]) for r in bq.query(OVERRIDE_SQL).result()}
+    en_masters = {r["master_key"] for r in bq.query(EN_SQL).result()}
+    en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
+    if not en_masters or not en_src["en_addresses"]:
+        raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
 
     states, log_rows, plan_rows, pd_rows, held_today = [], [], [], [], []
 
@@ -255,6 +276,7 @@ def main():
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
                                   bool(f["suppressed"]), prices.get(mk), f["entry_threshold_days"]), today)
         tid, hold = plan_template(d, tmap)
+        hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN
         s = d.state
         states.append({
             "master_key": mk, "send_email": f["send_email"], "lifecycle_stage": f["lifecycle_stage"],
@@ -399,12 +421,16 @@ def main():
         "pending_open": pstats["pending_open"], "pending_new": pstats["pending_new"],
         "pending_resolved": pstats["pending_resolved"], "pending_oldest_h": pstats["pending_oldest_h"],
         "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()],
-        "writeback_population": [{"kind": k, "n": v} for k, v in sorted(pop.items())]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
+        "writeback_population": [{"kind": k, "n": v} for k, v in sorted(pop.items())],
+        "en_pending": sum(r["hold_reason"] == S.HOLD_EN for r in plan_rows),
+        "en_masters": len(en_masters), "en_addresses": en_src["en_addresses"],
+        "en_list_snapshot_age_h": en_src["list_snapshot_age_h"]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
              "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s writeback_population=%s state_changes=%s "
-             "interface_v1_vs_map_disagreements=%s", RUN_ID, len(states), len(plan_rows),
+             "interface_v1_vs_map_disagreements=%s en_pending=%s en_masters=%s en_list_snapshot_age_h=%s", RUN_ID, len(states), len(plan_rows),
              sum(r["would_send"] for r in plan_rows), len(acts), kinds, rung_built_at, built_age_h,
-             persons_age_h, pstats, pop, len(log_rows), disagree)
+             persons_age_h, pstats, pop, len(log_rows), disagree,
+             sum(r["hold_reason"] == S.HOLD_EN for r in plan_rows), len(en_masters), en_src["list_snapshot_age_h"])
 
 
 def _no_pd_writer(record):
