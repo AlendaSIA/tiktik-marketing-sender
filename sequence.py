@@ -60,6 +60,31 @@ HOLD_EN = "EN_PENDING"
 EN_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", "LADDER_NO_RESTART", "SEQUENCE_DONE"}
 
 
+# G15 / G15.1 INTERFACE (MAIN 2026-10-01 16:35, contract sha 95d569b22d9a): a price letter (E1 or E2, any rung) whose
+# goods carry 0 priced slots is NOT sent -> NO_PRICED_SLOTS; a contact due a price letter with no row in
+# mkt_control.shadow_rung_goods_slots (latest run of the plan_date) -> NO_SLOT_ROW, never a fallback. A row built for
+# another rung than the planned one (G9.1 next_offer_rung) is not this letter's goods -> NO_SLOT_ROW as well.
+# Overrides the template-gap holds (a letter with no priced goods has no content whatever the template); every hold
+# decided by the planner itself (suppression, price gate, ...) stays. Nothing is sent; no state or rung advances
+# (they move only in record_sent, on a real send).
+HOLD_NO_PRICED = "NO_PRICED_SLOTS"
+HOLD_NO_SLOT_ROW = "NO_SLOT_ROW"
+G15_OVERRIDES = {None, "NO_TEMPLATE_IN_MAP", HOLD_E2_TEMPLATE}
+
+
+def is_price_letter(email_type, offer_rung) -> bool:
+    return email_type in LADDER_TYPES and bool(offer_rung)
+
+
+def goods_hold(email_type, offer_rung, hold, goods):
+    """G15: goods = None (no row) or (rung, zero_priced) for this contact from the latest goods run."""
+    if not is_price_letter(email_type, offer_rung) or hold not in G15_OVERRIDES:
+        return hold
+    if goods is None or goods[0] != offer_rung:
+        return HOLD_NO_SLOT_ROW
+    return HOLD_NO_PRICED if goods[1] else hold
+
+
 def language_hold(email_type, hold, is_en: bool):
     """G-EN guard: the hold reason after the language check (hold None = would send)."""
     if is_en and email_type and hold not in EN_KEEPS:
