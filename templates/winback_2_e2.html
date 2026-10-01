@@ -22,7 +22,7 @@
 <h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">{% if contact.OFFER_VALID_UNTIL %}Tavas īpašās cenas — vēl 7 dienas{% else %}Tavas ierastās preces{% endif %}</h1>
 </td></tr>
 <tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
-{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.OFFER_VALID_UNTIL %}Pirms nedēļas daļai no tevis pirktajām precēm piedāvājām nebijuši zemas cenas. Piedāvājumu saņēma daļa klientu, un preču skaits ir ierobežots — tava cena spēkā vēl 7 dienas, līdz {{ contact.OFFER_VALID_UNTIL }}. Ja gribi pirkt, bet tikai pēc pāris dienām, veic pasūtījumu ar apmaksu „pārskaitījums ar rēķinu“ — preces tev tiks rezervētas par šīm cenām uz 7 dienām.{% else %}Tavas ierastās preces ir šeit — lai nav jāmeklē no jauna.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Ja vajag ko no tavām ierastajām precēm, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
+{% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.OFFER_VALID_UNTIL %}Pirms nedēļas daļai no tevis pirktajām precēm piedāvājām nebijuši zemas cenas. Piedāvājumu saņēma daļa klientu, un preču skaits ir ierobežots — tava cena spēkā vēl 7 dienas, līdz {{ contact.OFFER_VALID_UNTIL }}. Ja gribi pirkt, bet tikai pēc pāris dienām, veic pasūtījumu ar apmaksu „pārskaitījums ar rēķinu“ — preces tev tiks rezervētas par šīm cenām uz 7 dienām. Ja tomēr viss pietiek — super! Paldies, ka iepērcies tiktik.lv.{% else %}Tavas ierastās preces ir šeit — lai nav jāmeklē no jauna.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Ja vajag ko no tavām ierastajām precēm, atbildi uz šo vēstuli — sagatavosim.</p>{% endif %}
 </td></tr>
 
 {% if contact.KABINETS_HAS_PRODUCTS %}
@@ -87,7 +87,7 @@
 {% endif %}
 
 <tr><td style="padding:20px 34px 0;">
-<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">{% if contact.OFFER_VALID_UNTIL %}Ja tev viss pietiek — super! {% endif %}Paldies, ka iepērcies tiktik.lv{% if contact.OFFER_VALID_UNTIL %}, un ļoti iespējams, ka pēc kāda laika varēsim tev piedāvāt labākas cenas nekā ikdienā{% endif %}. Ja rodas jautājumi — vienkārši atbildi uz šo e-pastu.</p>
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">{% if contact.OFFER_VALID_UNTIL %}{% else %}Paldies, ka iepērcies tiktik.lv. {% endif %}Ja rodas jautājumi — vienkārši atbildi uz šo e-pastu.</p>
 <p style="font-size:15px;line-height:1.6;color:#23303a;margin:12px 0 0;">tiktik.lv komanda</p>
 </td></tr>
 

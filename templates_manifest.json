@@ -179,10 +179,10 @@
    "episode": "E2",
    "e1_template_id": 232,
    "file": "templates/winback_2_e2.html",
-   "git_blob": "c3ab5d7fcad277535b4de796d0db51cac0b707db",
-   "sha256": "7ef7bc9236d9478026c101be521f6e8728313592d174a6c80d3bc6072b72ca33",
+   "git_blob": "8989e37e19c71310b067d0b16e3c160f3c84832e",
+   "sha256": "7ceaec128a39d21d52264ebe83d458b76bd94ae2f2f72da35fa1daaf30c7737f",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_PRICE }} — {{ contact.P1_SHORT | default : 'tavām precēm' }}",
-   "name": "money:winback_2_e2 v2 — no 232 v9 3 daļām (2026-10-01)"
+   "name": "money:winback_2_e2 v3 — Raivja beigas 01.10 12:30"
   },
   {
    "variant": "winback_3_e2",
