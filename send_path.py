@@ -11,6 +11,10 @@ Raivis himself says so. Today every lock is closed by design:
   L4  the template has an approved row in mkt_control.template_approval
   L5  the frozen audience for (batch_id, build_id) is non-empty and has 0 suppressed addresses
   L6  pd_record type configured (PD_ACTIVITY_TYPE_KEY) - no customer send without its PD record
+  L7  G15 (contract G15.1/G15.2): a PRICE letter needs that send date's goods run
+      (mkt_control.shadow_rung_goods_slots, latest run_id of plan_date = send date); no run -> refuse;
+      any audience member with 0 priced slots (NO_PRICED_SLOTS) or no row / a row for another rung
+      (NO_SLOT_ROW) -> refuse. Never a fallback. Non-price letters skip L7.
 
 Only when all six pass does it call Brevo sendNow (one call), then, per recipient of the frozen
 audience: one mkt_control.send_log row (source='engine_live'), one Pipedrive write through
@@ -24,6 +28,7 @@ import datetime as dt
 import os
 
 import pd_record
+import sequence
 
 RIGA = dt.timezone(dt.timedelta(hours=3))   # EEST; only the DATE is compared, DST edge = 1 h
 
@@ -70,11 +75,29 @@ def data_locks(*, campaign, track_enabled, template_approved, audience, suppress
     return closed
 
 
+def g15_lock(*, campaign, send_date, audience, goods_run, goods) -> list:
+    """L7. goods_run(send_date) -> run_id | None; goods(run_id, master_keys) -> {mk: (rung, zero_priced)}."""
+    rung = campaign.get("rung") or 0
+    if not sequence.is_price_letter(campaign.get("email_type"), rung):
+        return []
+    run_id = goods_run(send_date)
+    if not run_id:
+        return [("L7", f"G15: no goods run for send date {send_date} - nothing price-related is sent")]
+    g = goods(run_id, [a["master_key"] for a in audience])
+    bad = {}
+    for a in audience:
+        h = sequence.goods_hold(campaign["email_type"], rung, None, g.get(a["master_key"]))
+        if h:
+            bad[h] = bad.get(h, 0) + 1
+    return [("L7", f"G15 run {run_id}: " + ", ".join(f"{k} {v}" for k, v in sorted(bad.items())))] if bad else []
+
+
 def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, brevo_send,
              log_sink, pd_writer, state_advance, now=None) -> dict:
     """campaign: {campaign_id, email_type, track, template_id, rung, utm_campaign, brevo_list_id}.
     lookups: object with track_enabled(track), template_approved(template_id),
-             audience(batch_id, build_id) -> [ {master_key,email,person_id,reason} ], suppressed(emails)->int.
+             audience(batch_id, build_id) -> [ {master_key,email,person_id,reason} ], suppressed(emails)->int,
+             goods_run(send_date) -> run_id|None, goods(run_id, master_keys) -> {mk: (rung, zero_priced)}.
     Raises SendLocked before ANY external call when a lock is closed."""
     now = now or dt.datetime.now(dt.timezone.utc)
     today = now.astimezone(RIGA).date()
@@ -87,6 +110,8 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
                         template_approved=lookups.template_approved(campaign["template_id"]),
                         audience=audience,
                         suppressed_count=lookups.suppressed([a["email"] for a in audience]))
+    closed += g15_lock(campaign=campaign, send_date=send_date, audience=audience,
+                       goods_run=lookups.goods_run, goods=lookups.goods)
     if closed:
         raise SendLocked(closed)
 
@@ -128,7 +153,7 @@ class _ProductionLookupsNotWired:
     config lock still cannot send, because every data lock reads here and refuses."""
     def _no(self, *a):
         raise SendLocked([("L3-L5", "production lookups are not wired - the unlock change wires them")])
-    track_enabled = template_approved = audience = suppressed = _no
+    track_enabled = template_approved = audience = suppressed = goods_run = goods = _no
 
 
 def _unwired(*a, **k):

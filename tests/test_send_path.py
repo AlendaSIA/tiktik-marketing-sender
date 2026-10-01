@@ -34,13 +34,17 @@ def cfg(allow=True, dry=False):
 
 
 class Lookups:
-    def __init__(self, track=True, tpl=True, aud=AUD, sup=0):
+    def __init__(self, track=True, tpl=True, aud=AUD, sup=0, run="rg-1", goods=None):
         self.t, self.p, self.a, self.s, self.touched = track, tpl, aud, sup, []
+        self.run = run
+        self.g = {"m1": (2, False), "m2": (2, False)} if goods is None else goods
 
     def track_enabled(self, t): self.touched.append("track"); return self.t
     def template_approved(self, i): self.touched.append("tpl"); return self.p
     def audience(self, b, i): self.touched.append("aud"); return self.a
     def suppressed(self, e): self.touched.append("sup"); return self.s
+    def goods_run(self, d): self.touched.append("goods_run"); return self.run
+    def goods(self, r, mks): self.touched.append("goods"); return self.g
 
 
 def run(config=cfg(), lookups=None, unlocked="RAIVIS-2026-10-06", type_key="TESTTYPE"):
@@ -127,3 +131,59 @@ class CampaignLayerStillRefuses(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class L7G15PreSend(unittest.TestCase):
+    """G15.2: the hard G15 gate is pre-send (L7); refusal before the Brevo call, never a fallback."""
+
+    def _closed(self, lk, camp=None):
+        global CAMP
+        old = CAMP
+        try:
+            if camp:
+                CAMP = camp
+            out, err, brevo, log, pd, st, _ = run(lookups=lk)
+        finally:
+            CAMP = old
+        return out, err, brevo, log, pd, st
+
+    def test_no_goods_run_for_send_date_refuses(self):
+        out, err, brevo, log, pd, st = self._closed(Lookups(run=None))
+        self.assertIsNotNone(err)
+        self.assertIn("L7", [k for k, _ in err.closed])
+        self.assertIn("no goods run for send date 2026-10-06", str(err))
+        self.assertEqual((brevo.calls, log.calls, pd.calls, st.calls), ([], [], [], []))
+
+    def test_zero_priced_member_refuses(self):
+        _, err, brevo, *_ = self._closed(Lookups(goods={"m1": (2, True), "m2": (2, False)}))
+        self.assertIn("NO_PRICED_SLOTS 1", str(err)); self.assertEqual(brevo.calls, [])
+
+    def test_missing_row_refuses(self):
+        _, err, brevo, *_ = self._closed(Lookups(goods={"m1": (2, False)}))
+        self.assertIn("NO_SLOT_ROW 1", str(err)); self.assertEqual(brevo.calls, [])
+
+    def test_rung_mismatch_refuses(self):
+        _, err, brevo, *_ = self._closed(Lookups(goods={"m1": (1, False), "m2": (2, False)}))
+        self.assertIn("NO_SLOT_ROW 1", str(err)); self.assertEqual(brevo.calls, [])
+
+    def test_e2_is_a_price_letter_too(self):
+        camp = {**CAMP, "email_type": "winback_2_e2"}
+        _, err, *_ = self._closed(Lookups(run=None), camp)
+        self.assertIn("L7", [k for k, _ in err.closed])
+
+    def test_non_price_letter_skips_l7(self):
+        camp = {**CAMP, "email_type": "reorder_1", "rung": 0, "track": "reorder", "template_id": 179}
+        lk = Lookups(run=None)
+        out, err, brevo, *_ = self._closed(lk, camp)
+        self.assertIsNone(err); self.assertEqual(len(brevo.calls), 1)
+        self.assertNotIn("goods_run", lk.touched)
+
+    def test_l7_never_reached_while_config_locks_closed(self):
+        lk = Lookups(run=None)
+        out, err, brevo, log, pd, st, _ = run(config=cfg(allow=False), lookups=lk)
+        self.assertEqual([k for k, _ in err.closed][0], "L1")
+        self.assertEqual(lk.touched, [])
+
+    def test_production_lookups_refuse_g15_too(self):
+        with self.assertRaises(SP.SendLocked):
+            SP._ProductionLookupsNotWired().goods_run("2026-10-06")

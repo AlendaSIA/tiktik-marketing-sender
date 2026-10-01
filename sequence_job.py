@@ -136,16 +136,15 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY plan_date DE
 """
 
 
-# G15.1 INTERFACE (MAIN 2026-10-01 16:35, contract sha 95d569b22d9a): rows of the LATEST run_id for the plan_date,
-# per master_key (plan_date = the shadow plan_date, the job's UTC date). Writer = Nakts sinhronizācija. One rung and one g15_zero_priced per person (measured 01.10: 0 mixed).
+# G15.2 (MAIN 2026-10-01 16:55, contract sha 73e8f700b2e2): the daily planner only REPORTS G15, from the LATEST
+# AVAILABLE goods run (any plan_date - at 08:05 today's run does not exist yet); it never changes would_send or a hold.
+# The hard gate (G15.1: latest run of the SEND date) is send_path L7. Writer = Nakts sinhronizācija.
 T_GOODS = f"{P}.mkt_control.shadow_rung_goods_slots"
-GOODS_LATEST = f"""(SELECT ARRAY_AGG(run_id ORDER BY built_at DESC LIMIT 1)[SAFE_OFFSET(0)] FROM `{T_GOODS}`
-  WHERE plan_date = CURRENT_DATE())"""
+GOODS_LATEST = f"""(SELECT ARRAY_AGG(run_id ORDER BY built_at DESC LIMIT 1)[SAFE_OFFSET(0)] FROM `{T_GOODS}`)"""
 GOODS_SQL = f"""SELECT master_key, ANY_VALUE(rung) AS rung, LOGICAL_OR(g15_zero_priced) AS zero
-FROM `{T_GOODS}` WHERE plan_date = CURRENT_DATE() AND run_id = {GOODS_LATEST}
-  AND master_key IS NOT NULL GROUP BY 1"""
-GOODS_RUN_SQL = f"""SELECT {GOODS_LATEST} AS run_id,
-  (SELECT MAX(built_at) FROM `{T_GOODS}` WHERE plan_date = CURRENT_DATE()) AS built_at"""
+FROM `{T_GOODS}` WHERE run_id = {GOODS_LATEST} AND master_key IS NOT NULL GROUP BY 1"""
+GOODS_RUN_SQL = f"""SELECT run_id, plan_date, built_at FROM `{T_GOODS}` WHERE run_id = {GOODS_LATEST}
+ORDER BY built_at DESC LIMIT 1"""
 
 
 # G-EN (Raivis 2026-09-30 17:47): EN contacts get no LV engine letter until EN exists. EN = Brevo list 46
@@ -246,13 +245,14 @@ def main():
     master_addr = {r["master_key"]: list(r["emails"]) for r in bq.query(MASTER_ADDR_SQL).result()}
     overrides = {r["email"]: (r["person_id"], r["org_id"]) for r in bq.query(OVERRIDE_SQL).result()}
     goods = {r["master_key"]: (r["rung"], bool(r["zero"])) for r in bq.query(GOODS_SQL).result()}
-    goods_run = next(iter(bq.query(GOODS_RUN_SQL).result()))
+    goods_run = next(iter(bq.query(GOODS_RUN_SQL).result()), {"run_id": None, "plan_date": None, "built_at": None})
     en_masters = {r["master_key"] for r in bq.query(EN_SQL).result()}
     en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
     if not en_masters or not en_src["en_addresses"]:
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
 
     states, log_rows, plan_rows, pd_rows, held_today = [], [], [], [], []
+    g15_report = {}
 
     def resolve_now(email, mk):
         return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
@@ -290,7 +290,10 @@ def main():
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
                                   bool(f["suppressed"]), prices.get(mk), f["entry_threshold_days"]), today)
         tid, hold = plan_template(d, tmap)
-        hold = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))     # G15 (G15.1 interface)
+        # G15.2 (contract 73e8f700b2e2): the planner only REPORTS G15; the hard gate is send_path L7 (pre-send).
+        g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))
+        if g15 in (S.HOLD_NO_PRICED, S.HOLD_NO_SLOT_ROW) and g15 != hold:
+            g15_report[g15] = g15_report.get(g15, 0) + 1
         hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN
         s = d.state
         states.append({
@@ -438,19 +441,21 @@ def main():
         "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()],
         "writeback_population": [{"kind": k, "n": v} for k, v in sorted(pop.items())],
         "en_pending": sum(r["hold_reason"] == S.HOLD_EN for r in plan_rows),
-        "g15_no_priced_slots": sum(r["hold_reason"] == S.HOLD_NO_PRICED for r in plan_rows),
-        "g15_no_slot_row": sum(r["hold_reason"] == S.HOLD_NO_SLOT_ROW for r in plan_rows),
+        # G15.2 report-only: the hard-hold columns g15_no_priced_slots / g15_no_slot_row stay NULL from here on
+        "g15_would_be_no_priced": g15_report.get(S.HOLD_NO_PRICED, 0),
+        "g15_would_be_no_slot_row": g15_report.get(S.HOLD_NO_SLOT_ROW, 0),
         "g15_goods_run_id": goods_run["run_id"],
+        "g15_goods_plan_date": goods_run["plan_date"] and str(goods_run["plan_date"]),
         "en_masters": len(en_masters), "en_addresses": en_src["en_addresses"],
         "en_list_snapshot_age_h": en_src["list_snapshot_age_h"]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
              "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s writeback_population=%s state_changes=%s "
-             "interface_v1_vs_map_disagreements=%s en_pending=%s en_masters=%s en_list_snapshot_age_h=%s g15_goods_run=%s no_priced_slots=%s no_slot_row=%s", RUN_ID, len(states), len(plan_rows),
+             "interface_v1_vs_map_disagreements=%s en_pending=%s en_masters=%s en_list_snapshot_age_h=%s g15_report_only goods_run=%s goods_plan_date=%s would_be_no_priced=%s would_be_no_slot_row=%s", RUN_ID, len(states), len(plan_rows),
              sum(r["would_send"] for r in plan_rows), len(acts), kinds, rung_built_at, built_age_h,
              persons_age_h, pstats, pop, len(log_rows), disagree,
              sum(r["hold_reason"] == S.HOLD_EN for r in plan_rows), len(en_masters), en_src["list_snapshot_age_h"],
-             goods_run["run_id"], sum(r["hold_reason"] == S.HOLD_NO_PRICED for r in plan_rows),
-             sum(r["hold_reason"] == S.HOLD_NO_SLOT_ROW for r in plan_rows))
+             goods_run["run_id"], goods_run["plan_date"], g15_report.get(S.HOLD_NO_PRICED, 0),
+             g15_report.get(S.HOLD_NO_SLOT_ROW, 0))
 
 
 def _no_pd_writer(record):

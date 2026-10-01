@@ -50,16 +50,18 @@ class G15(unittest.TestCase):
         self.assertEqual((d2.next_email_type, d2.offer_rung, d2.state.rung, d2.state.rung_month, d2.state.step),
                          ("winback_2", 2, 1, "2026-09", 1))
 
-    def test_job_reads_latest_run_of_the_plan_date_and_wires_before_would_send(self):
+    def test_planner_reports_only_from_latest_available_run(self):
+        # G15.2: the 08:05 planner reads the latest AVAILABLE goods run and never changes a hold or would_send
         J = _job()
         self.assertIn("mkt_control.shadow_rung_goods_slots", J.T_GOODS)
         self.assertIn("ORDER BY built_at DESC LIMIT 1", J.GOODS_LATEST)
-        self.assertIn("plan_date = CURRENT_DATE()", J.GOODS_SQL)
+        self.assertNotIn("plan_date", J.GOODS_LATEST)
         self.assertIn("LOGICAL_OR(g15_zero_priced)", J.GOODS_SQL)
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
-        self.assertIn("hold = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))", src)
-        self.assertLess(src.index("S.goods_hold("), src.index("would = hold is None"))
-        self.assertLess(src.index("S.goods_hold("), src.index("S.language_hold(d.next_email_type"))
+        self.assertIn("g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))", src)
+        self.assertNotIn("hold = S.goods_hold(", src)
+        self.assertIn('"g15_would_be_no_priced"', src)
+        self.assertIn('"g15_would_be_no_slot_row"', src)
 
 
 if __name__ == "__main__":
