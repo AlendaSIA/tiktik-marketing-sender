@@ -66,11 +66,11 @@
    "variant": "lost_quarterly",
    "id": 234,
    "file": "templates/lost_quarterly.html",
-   "git_blob": "2cb2002601aa9231e1239a59c369bcf9c73dc336",
-   "sha256": "c948d1ef4d51026ba6479a83879635b235f5948f9ad5dac43c02fc5ebc35dca3",
-   "subject": "Atceramies, ko tu mēdzi ņemt",
-   "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tām pašām precēm tev tagad ir sava cena.{% endif %}",
-   "name": "money:lost_quarterly v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
+   "git_blob": "74f9cfaf9fc99153dbdd45518a491d0ce6cd2405",
+   "sha256": "0e5d9ddd04bf9fb8dab0e0f03cad480664817af9bbc8bc586fe2d3911a5949aa",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavas preces' }} — {{ contact.P1_PRICE }}, līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "preheader": "{% if contact.OFFER_VALID_UNTIL %}Speciālas cenas tavām precēm — spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
+   "name": "money:lost_quarterly v6 — 232 rāmis (3 daļas), Raivja stils (2026-10-01)",
    "purpose": "Quarterly wave to customers with no order for 12+ months: warm re-introduction, their restocked goods at a personal price until OFFER_VALID_UNTIL (contract v2.8), ordering via the cabinet."
   },
   {
