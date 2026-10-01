@@ -36,6 +36,14 @@ class LostQuarterly(unittest.TestCase):
         self.assertNotIn(str(W.RUNG_OPTION[3]), [f["field_value"] for f in rung])
         self.assertEqual(len([f for f in fw if f["object"] == "person_field"]), 3)
 
+    def test_rung_cap_read_back_from_a_string_column(self):
+        J = _job()
+        self.assertEqual((J._int("1"), J._int(None), J._int("")), (1, None, None))
+        st = S.State("s", rung_cap=J._int("1"), rung_cap_until=D(2027, 1, 1))
+        self.assertTrue(S.advance(st, F("lost"), D(2026, 10, 1)).lost_capped)
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertIn('_int(p.get("rung_cap"))', src)
+
     def test_job_writes_lost_capped_on_the_plan_row_and_counts_it(self):
         _job()
         src = open(os.path.join(ROOT, "sequence_job.py")).read()

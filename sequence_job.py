@@ -211,6 +211,11 @@ def rung_price_map(row) -> dict:
     return {r: _d(row[f"vu_r{r}"]) for r in (1, 2, 3) if row[f"vu_r{r}"] is not None}
 
 
+def _int(v):
+    """contact_sequence_state.rung_cap is a STRING column (DDL 28.09): "1" must come back as 1, or L6/LQ6 never match."""
+    return None if v in (None, "") else int(v)
+
+
 def _d(v):
     return None if v is None else (v if isinstance(v, dt.date) else dt.date.fromisoformat(str(v)[:10]))
 
@@ -277,7 +282,7 @@ def main():
         st = S.State(mk) if p is None else S.State(
             mk, p["track"], _d(p["track_entered_on"]), p["step"] or 0, p["rung"], _d(p["rung_set_on"]),
             p["rung_month"], _d(p["ladder_cleared_on"]), p["last_email_type"], _d(p["last_sent_on"]),
-            p.get("rung_cap"), _d(p.get("rung_cap_until")), _d(p.get("reorder_worked_at")))
+            _int(p.get("rung_cap")), _d(p.get("rung_cap_until")), _d(p.get("reorder_worked_at")))
         st, src = S.apply_history(st, history.get(mk, []))
         # L6 + L8 recomputed from the full counted history + paid orders; never loosened by a recompute
         cap, cap_until, worked = S.ladder_marks(
