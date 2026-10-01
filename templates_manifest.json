@@ -78,12 +78,12 @@
    "variant": "active_xsell",
    "id": 235,
    "file": "templates/active_xsell.html",
-   "git_blob": "b2eadafe124714c4f3d32b3883c5f4f3b4fec1ff",
-   "sha256": "3147fe02ffc291bf743d6a2125aff00094aad8fd83dde09b424ff3646322b31c",
+   "git_blob": "da5959106576d7de53d7626f4bca430e5b4421c4",
+   "sha256": "599020e94d9c50179a03d34f9adf08e8f10adcb164a58b7c42ad48cfd8bab136",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, mūsu TOP preces, ko izvēlas līdzīgi klienti",
    "preheader": "Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.",
    "name": "money:active_xsell v4 — iepazīšanās cena R precēm (Raivis 01.10 17:53)",
-   "purpose": "Recent customers not yet due to re-order: R1..R4 goods similar customers buy, at an intro price (shop -10 %, until XSELL_VALID_UNTIL) so they try them; own goods below at shop price; all in the cabinet."
+   "purpose": "Recent customers not yet due to re-order: R1..R4 goods similar customers buy, at an intro price (10 % below the CURRENT shop price incl. any shop sale, until XSELL_VALID_UNTIL; no percentage shown) so they try them; own goods below at shop price; all in the cabinet."
   },
   {
    "n": 8,

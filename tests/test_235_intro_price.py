@@ -16,7 +16,8 @@ class IntroPrice(unittest.TestCase):
         body = "\n".join(V.visible_lines(out))
         self.assertEqual(out.count(V._XLABEL), 2)
         self.assertIn("Iepazīšanās cena " + V.SPEKA_LIDZ + " 14.10.2026", body)
-        self.assertIn("papildu 10 procentu atlaide līdz 14.10.2026", body)
+        self.assertIn("lētāk nekā veikalā, līdz 14.10.2026", body)
+        self.assertNotIn("procent", body)
         self.assertNotIn("Kad nākamreiz", body)
         self.assertTrue(V.display_checks(TPL, out, "S", ON)["ok"])
 
