@@ -68,8 +68,8 @@ CONTRACT_FIELDS = frozenset(
     + [f"P{i}_REF_PRICE" for i in range(1, 9)] + ["P1_FRESH", "OFFER_VALID_UNTIL", "OFFER_RUNG"]
     # Contract v2.9 / v2.9.1 G2 (2026-09-28): +1, GREETING - the full greeting line, written by Nakts sinhronizacija.
     + ["GREETING"]
-    # PROPOSED (Raivis 2026-10-01, pending MAIN contract version): P1_SHORT - short name (<= 30 chars) of the P1 product
-    # for the subject; OFFER_HAS_STD - true when any filled P slot carries no REF (the "standard price" section shows).
+    # RUNG GOODS v1.1 (MAIN 2026-10-01 11:50, 58 -> 60): OFFER_HAS_STD (bool, true iff a filled P slot has REF ""),
+    # P1_SHORT (P1 name <= 32 chars, cut at a word boundary, no trailing punctuation, "" when no P1).
     + ["P1_SHORT", "OFFER_HAS_STD"])
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
