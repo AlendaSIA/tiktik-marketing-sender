@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ contact.UZRUNA | default : 'Sveiki' }}, mūsu TOP preces, ko izvēlas līdzīgi klienti</title>
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev iepazīšanās cena TOP precēm, ko izvēlas līdzīgi klienti</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f6fb;">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.</div>
@@ -19,7 +19,7 @@
 <div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
 </td></tr>
 <tr><td style="padding:14px 34px 0;">
-<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">Mūsu TOP preces, ko izvēlas līdzīgi klienti</h1>
+<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">{% if contact.XSELL_VALID_UNTIL %}Tikai tev: iepazīšanās cena TOP precēm, ko izvēlas līdzīgi klienti{% else %}Mūsu TOP preces, ko izvēlas līdzīgi klienti{% endif %}</h1>
 </td></tr>
 <tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
 {% if contact.KABINETS_HAS_PRODUCTS %}<p style="margin:0 0 4px;">{% if contact.R1_NAME %}Uzmetām aci tavām iepriekšējām precēm un pamanījām, ka citi klienti, kas pērk līdzīgas preces, ņem arī šīs. {% if contact.XSELL_VALID_UNTIL %}Lai vari tās izmēģināt, šīm precēm tev ir iepazīšanās cena — lētāk nekā veikalā, līdz {{ contact.XSELL_VALID_UNTIL }}. {% endif %}Varbūt tev noder — vienkārši palaidi garām.{% else %}Uzmetām aci tavām iepriekšējām precēm — tās ir zemāk, lai nav jāmeklē.{% endif %}</p>{% else %}<p style="margin:0 0 4px;">Paskatījāmies, ko pie mums ņem tie, kas pērk to pašu, ko tu. Ja gribi sarakstu, atbildi uz šo vēstuli — saliksim.</p>{% endif %}
