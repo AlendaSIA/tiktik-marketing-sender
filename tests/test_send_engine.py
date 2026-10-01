@@ -73,7 +73,7 @@ class Ladder(unittest.TestCase):
             day += dt.timedelta(days=1)
         self.assertEqual([g[:2] for g in got[:7]], [
             ("winback_1", 1), ("winback_1_e2", 1), ("winback_2", 2), ("winback_2_e2", 2),
-            ("winback_3", 3), ("winback_3_e2", 3), ("lost_quarterly", 3)])     # cap 3, ladder carries into lost
+            ("winback_3", 3), ("winback_3_e2", 3), ("lost_quarterly", 4)])     # LQ7: lost offer = rung 4
         self.assertEqual([g[2] for g in got[:7]], [D(2026, 9, 25), D(2026, 10, 2), D(2026, 11, 6), D(2026, 11, 13),
                                                   D(2026, 12, 18), D(2026, 12, 25), D(2027, 1, 29)])
 
@@ -230,8 +230,9 @@ class A2RungMonthOwnedHere(unittest.TestCase):
             S.record_sent(st, "winback_2", D(2026, 10, 2), 3)                     # skip
         st3 = dc_replace(st, rung=3, rung_month="2026-09")
         with self.assertRaises(AssertionError):
-            S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 2)              # fall
-        self.assertEqual(S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 3).rung_month, "2026-09")  # cap: no change
+            S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 2)              # lost carries only rung 4 (LQ7)
+        after = S.record_sent(st3, "lost_quarterly", D(2026, 11, 2), 4)
+        self.assertEqual((after.rung, after.rung_month), (3, "2026-09"))       # the lost letter never moves the ladder
 
     def test_second_change_in_one_month_refused_even_one_step_up(self):
         st = S.record_sent(S.State("a4"), "winback_1", D(2026, 10, 1), 1)

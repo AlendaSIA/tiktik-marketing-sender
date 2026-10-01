@@ -330,6 +330,7 @@ def main():
             # v2.8.2 A6: filled only for a letter that would go AND carries a rung price
             "offer_valid_until": (would and d.offer_valid_until and d.offer_valid_until.isoformat()) or None,
             "would_send": would, "hold_reason": hold, "reason": d.reason,
+            "lost_capped": d.lost_capped,                                   # LQ6, read by the writer
             "diff_vs_prev": "new" if lp is None else ("same" if key == prev_key else "changed"),
             "planned_at": now})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
@@ -441,6 +442,8 @@ def main():
         "pending_by_reason": [{"reason": k, "n": v} for k, v in pstats["pending_by_reason"].items()],
         "writeback_population": [{"kind": k, "n": v} for k, v in sorted(pop.items())],
         "en_pending": sum(r["hold_reason"] == S.HOLD_EN for r in plan_rows),
+        "lost_capped": sum(bool(r.get("lost_capped")) for r in plan_rows),
+        "pd_rung_option_missing": sum(1 for r in pd_rows if r.get("object") == "person_field_skipped"),
         # G15.2 report-only: the hard-hold columns g15_no_priced_slots / g15_no_slot_row stay NULL from here on
         "g15_would_be_no_priced": g15_report.get(S.HOLD_NO_PRICED, 0),
         "g15_would_be_no_slot_row": g15_report.get(S.HOLD_NO_SLOT_ROW, 0),

@@ -111,8 +111,8 @@ class K4K5Episodes(unittest.TestCase):
             self.assertEqual(((b[0] - a[0]).days, a[3], b[3]), (7, a[0] + dt.timedelta(days=13), a[3]))
         lost = [o for o in out if o[1] == "lost_quarterly"]
         self.assertGreaterEqual((lost[0][0] - wb[-1][0]).days, S.QUIET_GAP_DAYS)       # K4 before lost
-        self.assertEqual({o[2] for o in lost}, {3})                                     # L3 rung kept
-        self.assertTrue(all((b[0] - a[0]).days >= S.QUIET_GAP_DAYS for a, b in zip(lost, lost[1:])))
+        self.assertEqual({o[2] for o in lost}, {4})                                     # LQ7 rung 4
+        self.assertTrue(all((b[0] - a[0]).days >= S.LOST_GAP_DAYS for a, b in zip(lost, lost[1:])))   # LQ3
 
     def test_history_e1_before_track_entered_on_still_counts(self):
         # real state 30.09: track_entered_on 25.09 (first engine run), E1 = campaign 221 on 22.09
@@ -127,7 +127,7 @@ class K4K5Episodes(unittest.TestCase):
                      "winback_3_e2", D(2026, 12, 25))
         self.assertEqual(S.advance(st, F("winback"), D(2027, 3, 1)).hold_reason, "SEQUENCE_DONE")
         d = S.advance(st, F("lost"), D(2027, 1, 5))
-        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("lost_quarterly", D(2027, 1, 29), 3))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("lost_quarterly", D(2027, 1, 29), 4))
 
 
 class K6Purchase(unittest.TestCase):

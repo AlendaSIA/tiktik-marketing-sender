@@ -91,8 +91,13 @@ def field_writes(person_ref, *, email_type: str, send_date: dt.date, offer_rung:
     """The four v2.9.3 person-field writes for the recipient person (person_ref = id or 'new:person')."""
     ovu = offer_valid_until.isoformat() if isinstance(offer_valid_until, dt.date) else (offer_valid_until or "")
     sd = send_date.isoformat() if isinstance(send_date, dt.date) else send_date
+    opt = RUNG_OPTION.get(offer_rung or 0)
+    rung_write = ({"object": "person_field", "person_ref": person_ref, "field_key": F_RUNG, "field_value": str(opt)}
+                  if opt is not None else   # LQ7 rung 4: field 185 has no option -> never a guessed value; counted
+                  {"object": "person_field_skipped", "person_ref": person_ref, "field_key": F_RUNG,
+                   "field_value": None, "reason": f"field 185 has no option for rung {offer_rung}"})
     return [
-        {"object": "person_field", "person_ref": person_ref, "field_key": F_RUNG, "field_value": str(RUNG_OPTION[offer_rung or 0])},
+        rung_write,
         {"object": "person_field", "person_ref": person_ref, "field_key": F_OFFER_UNTIL, "field_value": ovu},
         {"object": "person_field", "person_ref": person_ref, "field_key": F_LAST_CAMPAIGN, "field_value": email_type},
         {"object": "person_field", "person_ref": person_ref, "field_key": F_LAST_CAMPAIGN_DATE, "field_value": sd},

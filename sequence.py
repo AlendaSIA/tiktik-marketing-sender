@@ -34,6 +34,12 @@ CADENCE v1 (Raivis 2026-09-30 19:11, contract K1-K7) replaces the reorder_1..3 -
      -> lost_quarterly as before (L3 rung). K6 a purchase ends the cycle; L6/L8 unchanged.
   Any two lifecycle letters other than an E1 -> E2 pair are >= MIN_GAP_ANY_DAYS apart (never consecutive weeks).
   E2 templates are not written yet: E2 types have NO template id and are held E2_TEMPLATE_PENDING, never a fallback.
+
+LOST QUARTERLY v1 (Raivis 2026-10-01 17:23/17:24, contract sha 17a8936613da) replaces L3 and K10 for lost_quarterly:
+  LQ3 at most once per 90 days (last lost letter + 90). LQ7 OFFER_RUNG = 4 ("lost offer", reporting only); the lost
+  letter never starts, moves or clears the ladder rung, and is not a rung-2/3 window for L6. LQ6 (MAIN): while
+  rung_cap = 1 is in force on the planned send date the plan row carries lost_capped = true -> the WRITER prices the
+  goods as rung 1. Goods and prices (LQ1/LQ2) are the writer's and PAP's, not this module's.
 """
 from __future__ import annotations
 
@@ -130,9 +136,20 @@ REORDER_TO_WINBACK1_GAP_DAYS = 56
 L8_FACTOR = 2
 HOLD_NO_RESTART = "LADDER_NO_RESTART"
 
+# LOST QUARTERLY v1
+LOST = "lost_quarterly"
+LOST_OFFER_RUNG = 4               # LQ7
+LOST_GAP_DAYS = 90                # LQ3
+
+
+def lost_capped(s: "State", due: dt.date) -> bool:
+    """LQ6: rung_cap = 1 (L6) in force on the planned send date."""
+    return bool(s.rung_cap == CAP_RUNG and s.rung_cap_until and s.rung_cap_until >= due)
+
+
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
 ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
-LOST_REPEATS = True               # lost_quarterly repeats monthly (A-Z 1.1 "monthly waves")
+LOST_REPEATS = True               # lost_quarterly repeats - LQ3: at most once per 90 days
 
 # GATE 232/233 (MAIN 2026-09-28 COMMAND 1 item 3, Vēstuļu šabloni pre-send row 13): winback_2 and
 # winback_3 are planned only for a contact whose letter will carry a non-empty OFFER_VALID_UNTIL.
@@ -183,6 +200,7 @@ class Decision:
     hold_reason: str | None
     changes: list                       # [(field, before, after)] for contact_sequence_log
     offer_valid_until: dt.date | None = None   # contract v2.8 OFFER_VALID_UNTIL (None -> "")
+    lost_capped: bool | None = None             # LQ6, only on a lost_quarterly plan (None otherwise)
 
 
 def _month(d: dt.date) -> str:
@@ -262,9 +280,9 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         elif track == "reorder":
             due = today                                        # K1: one letter; step >= 1 -> SEQUENCE_DONE above
         elif track == "lost_wave":
-            # one lost letter per calendar month, and (K4) never inside the quiet weeks after an episode
-            due = today if s.last_sent_on is None or _month(s.last_sent_on) != _month(today) \
-                else _first_of_next_month(today)
+            # LQ3: at most once per 90 days (replaces the monthly rule and K10); K4 floors still apply on entry
+            due = today if s.last_email_type != LOST or s.last_sent_on is None \
+                else max(today, s.last_sent_on + dt.timedelta(days=LOST_GAP_DAYS))
         else:  # active
             due = today if s.last_sent_on is None else \
                 max(today, s.last_sent_on + dt.timedelta(days=ACTIVE_XSELL_GAP_DAYS))
@@ -277,11 +295,12 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
     # A6 (v2.8.2) + K3: the ONE customer-facing date, owned here. E1 / lost = send + 13; E2 = its E1 + 13.
     ovu = (s.last_sent_on + dt.timedelta(days=13) if nxt in E2_TYPES else offer_valid_until(nxt, due)) if rung else None
-    has = has_rung_price(f, rung, due, ovu, today)
+    capped = lost_capped(s, due) if nxt == LOST else None
+    has = has_rung_price(f, rung, due, ovu, today, capped=bool(capped))
     if nxt in PRICE_GATED_TYPES and not has:
-        return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None)
+        return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None, capped)
     # OFFER_VALID_UNTIL only when the letter carries a rung price (OFFER_RUNG > 0 AND a price exists)
-    return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None)
+    return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None, capped)
 
 
 def cadence_floor(s: State, f: Facts):
@@ -329,6 +348,8 @@ def planned_rung(s: State, nxt: str, due: dt.date) -> int:
         return 0                                                  # L1
     if nxt in E2_TYPES:
         return s.rung or 0                                        # K3: same price as the E1
+    if nxt == LOST:
+        return LOST_OFFER_RUNG                                    # LQ7 (L3 retired for lost)
     stage = STAGE_RUNG.get(nxt)                                   # L2
     if stage is None:                                             # lost_quarterly - L3
         stage = min(RUNG_CAP, s.rung) if s.rung else LOST_ENTRY_RUNG
@@ -353,7 +374,7 @@ def ladder_marks(sends, orders) -> tuple:
     orders = sorted(set(orders))
     cap_until = None
     for h in sends:                                               # L6
-        if (h.get("rung") or 0) >= 2 and h["email_type"] in OFFER_VALID_DAYS:
+        if 2 <= (h.get("rung") or 0) <= 3 and h["email_type"] in OFFER_VALID_DAYS:   # L6 = rung 2/3 only (LQ7)
             end = h["sent_on"] + dt.timedelta(days=OFFER_VALID_DAYS[h["email_type"]] - 1)
             for o in orders:
                 if h["sent_on"] <= o <= end:
@@ -379,13 +400,19 @@ def offer_valid_until(email_type: str, send_date: dt.date) -> dt.date | None:
     return send_date + dt.timedelta(days=days - 1) if days else None
 
 
-def has_rung_price(f: Facts, rung: int, due: dt.date, ovu: dt.date | None, today: dt.date) -> bool:
+def has_rung_price(f: Facts, rung: int, due: dt.date, ovu: dt.date | None, today: dt.date, capped: bool = False) -> bool:
     """Engine-side "OFFER_VALID_UNTIL will be non-empty" (gate 232/233, contract v2.8.2 A6/A7).
     A price at this rung must exist in the (fresh, A7) PAP table. PAP valid_until is only a CONDITION,
     evaluated on the SEND DATE against that night's table: valid_until >= OFFER_VALID_UNTIL. For a
     letter due later, today's table cannot answer it (PAP refreshes nightly) - the run on the send
     date re-evaluates, so only existence counts until then."""
-    vu = (f.rung_price_valid_until or {}).get(rung)
+    m = f.rung_price_valid_until or {}
+    if rung == LOST_OFFER_RUNG:
+        # INTERIM until PAP names its LQ1/LQ2 lost-price column: capped -> the rung-1 row (LQ6); otherwise any PAP
+        # price row of the contact (its latest valid_until) stands in for "the lost letter carries a price".
+        vu = m.get(1) if capped else max(m.values(), default=None)
+    else:
+        vu = m.get(rung)
     if not rung or vu is None or ovu is None:
         return False
     return vu >= ovu if due <= today else True
@@ -396,6 +423,9 @@ def record_sent(s: State, email_type: str, sent_on: dt.date, rung: int) -> State
     s = dc.replace(s)
     s.step += 1
     s.last_email_type, s.last_sent_on = email_type, sent_on
+    if email_type == LOST:
+        assert rung in (0, LOST_OFFER_RUNG), f"lost_quarterly carries rung {rung}, expected {LOST_OFFER_RUNG}"
+        return s                                                  # LQ7: the lost letter never moves the ladder
     if rung:
         assert email_type in LADDER_TYPES, f"rung {rung} on non-ladder letter {email_type}"
         if s.rung != rung:
