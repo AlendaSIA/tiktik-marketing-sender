@@ -70,7 +70,11 @@ CONTRACT_FIELDS = frozenset(
     + ["GREETING"]
     # RUNG GOODS v1.1 (MAIN 2026-10-01 11:50, 58 -> 60): OFFER_HAS_STD (bool, true iff a filled P slot has REF ""),
     # P1_SHORT (P1 name <= 32 chars, cut at a word boundary, no trailing punctuation, "" when no P1).
-    + ["P1_SHORT", "OFFER_HAS_STD"])
+    + ["P1_SHORT", "OFFER_HAS_STD"]
+    # XSELL INTRO PRICE (Raivis 2026-10-01 17:53, PROPOSED names - pending MAIN contract, 60 -> 65): 235 recommended
+    # goods R1..R4 at shop -10 % ("iepazīšanās cena"), Rn_REF_PRICE = shop price ("" = no intro price),
+    # XSELL_VALID_UNTIL = last day of the intro price ("" = none). Own P goods stay at shop price.
+    + [f"R{i}_REF_PRICE" for i in range(1, 5)] + ["XSELL_VALID_UNTIL"])
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
 # Rule 6: an R row with spread reads "no <price>".
