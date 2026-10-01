@@ -192,9 +192,9 @@
    "episode": "E2",
    "e1_template_id": 233,
    "file": "templates/winback_3_e2.html",
-   "git_blob": "8e461c8bc12cf5656b9ea068fd4518195fde945f",
-   "sha256": "06baa0b223ca1861707141fb185520115a2fed297805bbd06c9e80b795970a97",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas tikai tev: {{ contact.P1_SHORT | default : 'tavai biežāk pirktajai precei' }} — {{ contact.P1_PRICE }}, līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "git_blob": "488afdd42b959208dc442bdd4a2aed5e87b3eefd",
+   "sha256": "61b073e590204e08ea28f5e07fda6ae98316ddd816bc844678b286623b5630f2",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_SHORT | default : 'tava biežāk pirktā prece' }} — {{ contact.P1_PRICE }}, tikai tev",
    "name": "money:winback_3_e2 v2 — no 233 v5 (2026-10-01)"
   }
  ]
