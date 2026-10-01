@@ -166,10 +166,10 @@
    "episode": "E2",
    "e1_template_id": 180,
    "file": "templates/winback_1_e2.html",
-   "git_blob": "0d64b2f18297e8b9b35a6c232cbacd8fbc4730d2",
-   "sha256": "be9a44afbd7a437245403462854260c9b75957a3cec23be8d1818951572cb733",
+   "git_blob": "1043521cf1a2d34c4d183a48e0fccb0e67a37064",
+   "sha256": "c8c18651b0da669bb02f43de21c2bc0951ab85ff48782cbc29bcf44515ca99de",
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, nepalaid garām — tavas cenas vēl 7 dienas",
-   "name": "money:winback_1_e2 v3 — Raivja teksts 01.10 10:24 (nepalaid garām, rezervācija ar rēķinu)"
+   "name": "money:winback_1_e2 v4 — Raivja teksts 01.10 10:29"
   },
   {
    "variant": "winback_2_e2",
