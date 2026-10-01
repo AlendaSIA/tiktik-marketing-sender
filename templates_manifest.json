@@ -78,11 +78,11 @@
    "variant": "active_xsell",
    "id": 235,
    "file": "templates/active_xsell.html",
-   "git_blob": "30d8dda392062f6c66dea5f300cb0813468f1796",
-   "sha256": "69dd451f2bd00f155b248274dc9b3b57806958e7f0013c210a3158cc276633e6",
-   "subject": "Ko citi ņem pie tavām precēm",
+   "git_blob": "acc6dde66fa2fe89264bcb02068a4f30168268e1",
+   "sha256": "5c7d684f113214a3d83a804b21b901a9f59e05466d800fddea006a48de708680",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, mūsu TOP preces, ko izvēlas līdzīgi klienti",
    "preheader": "Ja kaut kas noder, nākamreiz tas var atnākt tajā pašā kastē.",
-   "name": "money:active_xsell v5 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
+   "name": "money:active_xsell v3 — Raivja teksts 01.10 17:46",
    "purpose": "Category widening for recent customers not yet due to re-order: the R1..R4 'bought together' items lead at their normal price, own goods follow as a quiet reminder; no discount, no deadline."
   },
   {
