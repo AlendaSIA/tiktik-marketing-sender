@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{{ contact.UZRUNA | default : 'Sveiki' }}, tava cena vēl 7 dienas — {{ contact.P1_PRICE }}</title>
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas tikai tev: {{ contact.P1_SHORT | default : 'tavai biežāk pirktajai precei' }} — {{ contact.P1_PRICE }}, līdz {{ contact.OFFER_VALID_UNTIL }}</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f6fb;">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">{% if contact.OFFER_VALID_UNTIL %}{{ contact.P1_NAME }} par {{ contact.P1_PRICE }} — vēl 7 dienas, līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}</div>
