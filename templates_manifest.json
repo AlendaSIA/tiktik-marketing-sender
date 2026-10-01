@@ -166,10 +166,10 @@
    "episode": "E2",
    "e1_template_id": 180,
    "file": "templates/winback_1_e2.html",
-   "git_blob": "947c36648e4c32f061ef7fe8701308517def52ec",
-   "sha256": "9742605b41769d26dd055235d2419e59974653d5c33992c90473669a66df2768",
-   "subject": "Tava cena paliek spēkā līdz {{ contact.OFFER_VALID_UNTIL }}",
-   "name": "money:winback_1_e2 v1 — CADENCE v1 E2 rung 1 (2026-09-30)"
+   "git_blob": "48b0b61077550b35eb1c4ca06b5d50025b2e540b",
+   "sha256": "a8fe80d09431c5dce6972920abc825fbf0d3b823bbe98596b3922bf6124893de",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tavas cenas turam vēl 7 dienas — līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "name": "money:winback_1_e2 v2 — no apstiprinātās 180 (2026-10-01)"
   },
   {
    "variant": "winback_2_e2",
