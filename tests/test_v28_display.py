@@ -140,6 +140,12 @@ class ContractV28Display(unittest.TestCase):
                 '</span></div><div style="color:#12603f;font-size:11px;font-weight:bold;letter-spacing:.5px;">TAVA CENA</div>{%% else %%}'
                 '<div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P%d_PRICE }}</div>{%% endif %%}')
         for tid in ALL:
+            if tid == 232:   # Raivis 2026-10-01: 3 sections - special-price cards and standard-price cards are separate
+                for n in range(1, 9):
+                    t = tpl(tid)
+                    self.assertEqual(t.count('<span style="color:#98a2ad;text-decoration:line-through;font-size:13px;">{{ contact.P%d_REF_PRICE }}</span>' % n), 1, (tid, n))
+                    self.assertEqual(t.count('<div style="color:#1c2b23;font-weight:bold;font-size:15px;">{{ contact.P%d_PRICE }}</div>' % n), 1, (tid, n))
+                continue
             for n in range(1, 9):
                 self.assertEqual(tpl(tid).count(cell % (n, n, n, n)), 2 if n == 1 else 1, (tid, n))
 
