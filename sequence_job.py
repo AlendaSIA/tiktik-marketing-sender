@@ -50,7 +50,9 @@ BUNDLE = os.environ.get("ENGINE_BUNDLE", "unknown")
 # where it has none the engine config speaks, so the shadow plan is complete before the map is filled.
 # ENGINE_TEMPLATES_JSON='{"winback_1_e2": 251}' replaces a provisional id the day MAIN names the real one.
 TEMPLATES = {**S.INTERFACE_V2, **json.loads(os.environ.get("ENGINE_TEMPLATES_JSON") or "{}")}
-PRICE_MAX_AGE_H = 26            # v2.8.2 A7
+# v2.8.2 A7: a price table older than 26 h = no price that day. Env only for a labelled WHAT-IF run into temp
+# tables (e.g. the day after a failed night chain); the scheduled job never sets it.
+PRICE_MAX_AGE_H = int(os.environ.get("PRICE_MAX_AGE_H", "26"))
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
 LADDER_POLICY = ("ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080) + " + S.CADENCE +
@@ -99,7 +101,7 @@ SELECT master_key,
        MAX(IF(price_r3 < 0.95 * shop_gross, valid_until, NULL)) AS vu_r3
 FROM `{RUNG_PRICE_SOURCE}`
 WHERE master_key IS NOT NULL AND shop_gross > 0
-  AND built_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 26 HOUR)   -- v2.8.2 A7: stale = no price
+  AND built_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {PRICE_MAX_AGE_H} HOUR)   -- v2.8.2 A7: stale = no price
 GROUP BY master_key
 """
 
@@ -533,6 +535,9 @@ def main():
         g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))
         if g15 in (S.HOLD_NO_PRICED, S.HOLD_NO_SLOT_ROW) and g15 != hold:
             g15_report[g15] = g15_report.get(g15, 0) + 1
+        shop_order = pp_orders.get(mk)
+        hold = S.recent_order_hold(d.next_email_type, hold, shop_order and _d(shop_order.get("order_on")),
+                                   _d(f["last_order"]))                      # K6 / L5 on orders the stage cannot see yet
         flow, flow_from = flows.get(mk, (None, None))
         hold = S.flow_hold(d.next_email_type, hold, flow)                            # B2B / LEAD guard
         hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN

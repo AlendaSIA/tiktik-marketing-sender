@@ -81,6 +81,12 @@ class PostPurchase(unittest.TestCase):
                       D(2026, 10, 5))
         self.assertEqual(d.next_email_type, S.XSELL)
         self.assertIn("PP1 skipped: was due 2026-08-05", d.reason)
+        # K8 may not push it out of its window either: E1 on 22.09, order 21.09 handed over 23.09 -> floor 03.11
+        st = S.record_sent(S.State("p4c", "winback", D(2026, 9, 1)), "winback_1", D(2026, 9, 22), 1)
+        late = S.advance(st, F(last_order=D(2026, 9, 21), order_on=D(2026, 9, 21), ship=D(2026, 9, 23),
+                               rungs={1: D(2099, 1, 1)}), D(2026, 9, 24))
+        self.assertNotEqual(late.next_email_type, S.PP1)
+        self.assertIn("cannot go before", late.reason)
         ok = S.advance(S.State("p4b"), F(ship=D(2026, 9, 25), last_order=D(2026, 9, 24), order_on=D(2026, 9, 24)),
                        D(2026, 10, 5))                                 # due 28.09, 7 days late = last day
         self.assertEqual((ok.next_email_type, ok.next_due_on), (S.PP1, D(2026, 10, 5)))
@@ -170,6 +176,27 @@ class FlowGuard(unittest.TestCase):
         self.assertIn(J.F309_KEY, J.FLOW_SQL)
         self.assertIn("= '716'", J.FLOW_SQL)
         self.assertIn('raise RuntimeError("B2B guard source empty', src)
+
+
+class OrderAfterLastPurchase(unittest.TestCase):
+    def test_a_newer_shop_order_holds_every_sales_letter_of_the_old_cycle(self):
+        for et in ("reorder_1", "winback_1", "winback_1_e2", "winback_3", "lost_quarterly"):
+            self.assertEqual(S.recent_order_hold(et, None, D(2026, 10, 3), D(2026, 6, 1)), S.HOLD_ORDER_AFTER, et)
+        self.assertEqual(S.recent_order_hold("winback_2", "no_offer_valid_until", D(2026, 10, 3), D(2026, 6, 1)),
+                         S.HOLD_ORDER_AFTER)
+
+    def test_same_or_older_order_and_post_purchase_letters_are_untouched(self):
+        self.assertIsNone(S.recent_order_hold("reorder_1", None, D(2026, 6, 1), D(2026, 6, 1)))
+        self.assertIsNone(S.recent_order_hold("reorder_1", None, D(2026, 5, 1), D(2026, 6, 1)))
+        self.assertIsNone(S.recent_order_hold("reorder_1", None, None, D(2026, 6, 1)))
+        for et in (S.PP1, S.XSELL):
+            self.assertIsNone(S.recent_order_hold(et, None, D(2026, 10, 3), D(2026, 6, 1)), et)
+        self.assertEqual(S.recent_order_hold("reorder_1", "SUPPRESSED", D(2026, 10, 3), D(2026, 6, 1)), "SUPPRESSED")
+
+    def test_job_wires_it_before_would_send(self):
+        src = open(os.path.join(ROOT, "sequence_job.py")).read()
+        self.assertLess(src.index("S.recent_order_hold("), src.index("would = hold is None"))
+        self.assertLess(src.index("S.recent_order_hold("), src.index("S.flow_hold("))
 
 
 def ctx(**k):

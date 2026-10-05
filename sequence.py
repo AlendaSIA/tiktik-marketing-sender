@@ -127,6 +127,23 @@ def goods_hold(email_type, offer_rung, hold, goods):
     return HOLD_NO_PRICED if goods[1] else hold
 
 
+# FOUND 2026-10-05 (Sūtīšanas dzinējs 4, measured on the plan of that day: 31 contacts): the stage comes from
+# customer_lifecycle.last_order (booked Paytraq documents). A shop order that is newer than that date - placed in
+# the last days and not booked yet, or booked under another client card - is invisible to the stage, so the contact
+# would get "time to reorder" / a personal price days after ordering. K6 / L5: a purchase ends the cycle. Until the
+# stage sees the order, every SALES letter of the old cycle is held. Blocks only; never plans a letter.
+HOLD_ORDER_AFTER = "ORDER_AFTER_LAST_PURCHASE"
+ORDER_AFTER_OVERRIDES = {None, "no_offer_valid_until"}
+
+
+def recent_order_hold(email_type, hold, shop_order_on, last_order_on):
+    """shop_order_on = date of the contact's latest live shop order (P6 deal, not lost)."""
+    if email_type in SALES_TYPES and email_type != XSELL and hold in ORDER_AFTER_OVERRIDES \
+            and shop_order_on is not None and (last_order_on is None or shop_order_on > last_order_on):
+        return HOLD_ORDER_AFTER
+    return hold
+
+
 def language_hold(email_type, hold, is_en: bool):
     """G-EN guard: the hold reason after the language check (hold None = would send)."""
     if is_en and email_type and hold not in EN_KEEPS:
@@ -189,17 +206,17 @@ def post_purchase_next(s: "State", f: "Facts", today: dt.date, floor):
                 return PP1, None, HOLD_PP_NOT_SHIPPED, f"order {f.pp_order_nr} not handed over yet"
             note = f" PP1 skipped: order {f.pp_order_nr} not handed over in {PP_WAIT_SHIP_DAYS} d;"
         else:
-            due1 = f.pp_ship_on + dt.timedelta(days=PP1_AFTER_SHIP_DAYS)
-            if floor:
-                due1 = max(due1, floor)                                   # K8
+            natural = f.pp_ship_on + dt.timedelta(days=PP1_AFTER_SHIP_DAYS)
+            due1 = max(today, natural, floor) if floor else max(today, natural)   # K8 floor
             throttled = f.last_pp_sent_on is not None and \
                 due1 < f.last_pp_sent_on + dt.timedelta(days=PP1_THROTTLE_DAYS)
             if throttled:
                 note = f" PP1 skipped: last 244 on {f.last_pp_sent_on} (< {PP1_THROTTLE_DAYS} d);"
-            elif today > due1 + dt.timedelta(days=PP1_LATE_DAYS):
-                note = f" PP1 skipped: was due {due1}, more than {PP1_LATE_DAYS} d ago;"
+            elif due1 > natural + dt.timedelta(days=PP1_LATE_DAYS):
+                # the letter goes only inside [hand-over + 3, hand-over + 3 + 7], whatever pushed it (K8 or time)
+                note = f" PP1 skipped: was due {natural}, cannot go before {due1} (> {PP1_LATE_DAYS} d late);"
             else:
-                return PP1, max(today, due1), None, f"order {f.pp_order_nr} handed over {f.pp_ship_on} + 3 d"
+                return PP1, due1, None, f"order {f.pp_order_nr} handed over {f.pp_ship_on} + 3 d"
     elif not pp1_done:
         note = " PP1 skipped: no shop order found for this purchase;"
     anchor = f.pp_ship_on or f.pp_order_on or lo or today
