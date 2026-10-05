@@ -51,7 +51,7 @@ class Lookups:
 
     def presend_ctx(self, c, d, mks):
         self.touched.append("ctx")
-        ok = presend.Ctx(template_id=c.get("template_id"), template_approved=True, offer_valid_until="2026-10-19",
+        ok = presend.Ctx(letter_fields=True, template_id=c.get("template_id"), template_approved=True, offer_valid_until="2026-10-19",
                          goods=(c.get("rung"), False), r1_ref_price="9,90 €", xsell_valid_until="2026-10-19",
                          anketa_url="https://plani.tiktik.lv/atsauksme.php?o=X&t=t", order_nr="X")
         return {m: ok for m in mks} if self.ctx is None else self.ctx
@@ -228,8 +228,8 @@ class L8L9PreSend(unittest.TestCase):
         return lk
 
     def test_any_member_with_a_gate_refuses_the_campaign(self):
-        ok = presend.Ctx(template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
-        bad = presend.Ctx(template_id=232, template_approved=True, offer_valid_until=None, goods=(2, False))
+        ok = presend.Ctx(letter_fields=True, template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
+        bad = presend.Ctx(letter_fields=True, template_id=232, template_approved=True, offer_valid_until=None, goods=(2, False))
         _, err, brevo, _ = self._run(CAMP, self._lk({"m1": ok, "m2": bad}))
         self.assertIn(("L8", "pre-send gates: NO_OFFER_VALID_UNTIL 1"), err.closed)
         self.assertEqual(brevo.calls, [])
@@ -237,17 +237,17 @@ class L8L9PreSend(unittest.TestCase):
         self.assertIsNone(err); self.assertEqual(len(brevo.calls), 1)
 
     def test_a_member_without_ctx_refuses_never_passes(self):
-        ok = presend.Ctx(template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
+        ok = presend.Ctx(letter_fields=True, template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
         _, err, brevo, _ = self._run(CAMP, self._lk({"m1": ok}))
         self.assertIn("L8", [k for k, _ in err.closed]); self.assertEqual(brevo.calls, [])
 
     def test_244_without_anketa_url_and_235_without_intro_price(self):
         c244 = {**CAMP, "email_type": "post_purchase_feedback", "template_id": 244, "rung": 0, "track": "post_purchase"}
-        no = presend.Ctx(template_id=244, template_approved=True, anketa_url="", order_nr="M-1")
+        no = presend.Ctx(letter_fields=True, template_id=244, template_approved=True, anketa_url="", order_nr="M-1")
         _, err, brevo, _ = self._run(c244, self._lk({"m1": no, "m2": no}))
         self.assertIn("NO_ANKETA_URL 2", str(err)); self.assertEqual(brevo.calls, [])
         c235 = {**CAMP, "email_type": "active_xsell", "template_id": 235, "rung": 0, "track": "post_purchase"}
-        no = presend.Ctx(template_id=235, template_approved=True, r1_ref_price="", xsell_valid_until="2026-10-19")
+        no = presend.Ctx(letter_fields=True, template_id=235, template_approved=True, r1_ref_price="", xsell_valid_until="2026-10-19")
         _, err, brevo, _ = self._run(c235, self._lk({"m1": no, "m2": no}))
         self.assertIn("XS4_NO_INTRO_PRICE 2", str(err)); self.assertEqual(brevo.calls, [])
 
@@ -259,7 +259,7 @@ class L8L9PreSend(unittest.TestCase):
 
     def test_235_records_every_offered_r_product_and_refuses_without_the_sink(self):
         c235 = {**CAMP, "email_type": "active_xsell", "template_id": 235, "rung": 0, "track": "post_purchase"}
-        ok = presend.Ctx(template_id=235, template_approved=True, r1_ref_price="9 €", xsell_valid_until="2026-10-19",
+        ok = presend.Ctx(letter_fields=True, template_id=235, template_approved=True, r1_ref_price="9 €", xsell_valid_until="2026-10-19",
                          r_handles=("h1", "h2"), r_cabinet=("h1", "h2"))
         out, err, brevo, off = self._run(c235, self._lk({"m1": ok, "m2": ok}))
         self.assertIsNone(err)

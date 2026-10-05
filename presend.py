@@ -24,6 +24,9 @@ Gates (each a named reason):
   XSELL_REPEAT           235 with at least one R product already offered in an earlier 235 (PP3 "never repeat")
   NO_ANKETA_URL          244 with an empty ANKETA_URL (FS8) or without the triggering order number
   RCAB_MISMATCH          a letter with R slots whose R goods are not what the cabinet shows (R-CAB C4)
+  NO_LETTER_FIELDS_ROW   WO1 / WO2 (contract 7ca13f671703): no mkt_control.letter_fields row of this contact and this
+                         letter for TODAY's plan_date. Never an older plan_date, never another table. Reported LAST,
+                         so presend_gate still names the data reason when there is one.
 """
 from __future__ import annotations
 
@@ -44,8 +47,9 @@ XS_NOTHING_NEW = "XSELL_NOTHING_NEW"
 XS_REPEAT = "XSELL_REPEAT"
 NO_ANKETA = "NO_ANKETA_URL"
 RCAB = "RCAB_MISMATCH"
+NO_LF = "NO_LETTER_FIELDS_ROW"
 ALL = (T_PROVISIONAL, T_NOT_APPROVED, PRICE_STALE, NO_OVU, NO_PRICE, NO_SLOT_ROW, NO_PRICED, XS4, XS_NOTHING_NEW, XS_REPEAT,
-       NO_ANKETA, RCAB)
+       NO_ANKETA, RCAB, NO_LF)
 
 # Templates that print R1..R4 (grep "R1_NAME" over templates/ on feat/v2.8-price-fields @ 48dac94, 2026-10-05):
 # every lifecycle letter except 244. R-CAB applies to all of them.
@@ -68,6 +72,7 @@ class Ctx:
     xsell_offered: frozenset = frozenset()              # handles offered in earlier 235 letters to this contact
     anketa_url: str | None = None                       # PP4.2 / FS8
     order_nr: str | None = None                         # the order that triggers 244
+    letter_fields: bool = False                         # today's letter_fields row of this letter exists (WO2)
 
 
 def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
@@ -100,4 +105,6 @@ def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
         out.append(NO_ANKETA)
     if email_type in R_SLOT_TYPES and set(c.r_handles) != set(c.r_cabinet):
         out.append(RCAB)
+    if not c.letter_fields:
+        out.append(NO_LF)
     return out

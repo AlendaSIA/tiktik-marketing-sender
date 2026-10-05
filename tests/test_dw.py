@@ -133,3 +133,49 @@ class DW3DW4Gate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WriterOutputV1(unittest.TestCase):
+    """Contract 7ca13f671703 WO1 / WO2: the only field source is mkt_control.letter_fields, today's plan_date."""
+
+    def test_engine_code_never_names_the_retired_table(self):
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        hits = [p.name for p in list(root.glob("*.py")) + list(root.glob("tools/*")) + list(root.glob("sql/*"))
+                if p.is_file() and "shadow_brevo_price_" + "attrs" in p.read_text(errors="ignore")]
+        self.assertEqual(hits, [])
+
+    def test_field_source_is_todays_plan_date_only(self):
+        import sequence_job as J
+        self.assertIn("mkt_control.letter_fields`", J.LF_SQL)
+        self.assertIn("WHERE plan_date = CURRENT_DATE('Europe/Riga')", J.LF_SQL)
+        self.assertNotIn("<=", J.LF_SQL)
+        self.assertNotIn("MAX(plan_date)", J.LF_SQL)
+
+    def test_no_row_today_holds_every_letter_type_with_the_named_reason(self):
+        import presend as G
+        import sequence as S
+        full = dict(template_approved=True, offer_valid_until="2026-10-19", goods=(1, False), has_price=True,
+                    r1_ref_price="9 €", xsell_valid_until="2026-10-19", anketa_url="https://x", order_nr="M-1")
+        for et, rung, tid in (("reorder_1", 0, 179), ("winback_1", 1, 180), (S.LOST, 4, 234), (S.XSELL, 0, 235),
+                              (S.PP1, 0, 244)):
+            goods = (rung, False)
+            self.assertEqual(G.gates(et, rung, G.Ctx(template_id=tid, **{**full, "goods": goods})), [G.NO_LF], et)
+            self.assertEqual(G.gates(et, rung, G.Ctx(template_id=tid, letter_fields=True, **{**full, "goods": goods})),
+                             [], et)
+
+    def test_a_row_of_another_letter_is_not_this_letters_row(self):
+        import sequence_job as J
+        rows = {"a@x.lv": {"email_type": "winback_1"}}
+        self.assertIsNotNone(J.letter_row(rows, " A@x.lv ", "winback_1"))
+        self.assertIsNone(J.letter_row(rows, "a@x.lv", "active_xsell"))
+        self.assertIsNone(J.letter_row(rows, "b@x.lv", "winback_1"))
+        self.assertIsNone(J.letter_row({}, None, "winback_1"))
+
+    def test_244_link_counts_only_for_the_plan_rows_own_order(self):
+        import inspect
+        import sequence_job as J
+        src = inspect.getsource(J)
+        self.assertIn('w["ORDER_NR"] == d.trigger_order_nr', src)
+        self.assertNotIn("(mintable)", src)
+        self.assertNotIn("(xs_intro)", src)

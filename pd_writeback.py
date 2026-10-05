@@ -136,9 +136,10 @@ def plan(target, *, email: str, person_name: str | None, org_name: str | None, r
 
 
 def offer_summary(slots: list) -> tuple:
-    """slots: [{sku, price, ref}] from the writer's shadow attrs -> (subject tail, note lines)."""
-    shown = [s for s in slots if s.get("sku") and s.get("price")]
+    """slots: [{name, price, ref}] = P1..P8 of today's mkt_control.letter_fields row, texts as the letter carries
+    them -> (subject tail, note lines)."""
+    shown = [s for s in slots if s.get("name") and s.get("price")]
     priced = [s for s in shown if s.get("ref")]
     tail = f"{len(priced)} personīgas cenas" if priced else "bez personīgas cenas"
-    lines = [f"{s['sku']}: {s['price']}" + (f" (veikalā {s['ref']})" if s.get("ref") else "") for s in shown]
+    lines = [f"{s['name']}: {s['price']}" + (f" (veikalā {s['ref']})" if s.get("ref") else "") for s in shown]
     return tail, lines

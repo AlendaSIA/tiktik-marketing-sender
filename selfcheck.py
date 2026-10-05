@@ -31,7 +31,7 @@ def _row(name, level, ok, value, detail=None):
 
 
 def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_send_address, suppressed_any_address,
-        today, ages_h, writer_missing, map_disagreements) -> list:
+        today, ages_h, no_letter_fields, map_disagreements) -> list:
     ws = [r for r in plan_rows if r["would_send"]]
     wd = [r for r in plan_rows if r.get("would_deliver")]
     out = []
@@ -81,7 +81,8 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     v = ages_h.get("goods_run_days")
     out.append(_row("goods_run_not_older_than_1_day", "warn", v is not None and v <= 1, v,
                     "writer run of mkt_control.shadow_rung_goods_slots (G15); the hard gate is at send time"))
-    out.append(_row("writer_fields_present", "warn", not writer_missing, len(writer_missing), writer_missing))
+    out.append(_row("letter_fields_row_today_for_every_would_send", "warn", not no_letter_fields,
+                    sum(no_letter_fields.values()), no_letter_fields))   # always open at 08:05: the writer runs 08:40
     out.append(_row("template_map_agrees_with_interface_v2", "warn", not map_disagreements, len(map_disagreements),
                     [{"email_type": e, "engine": t, "map": m} for e, t, m in map_disagreements]))
     # ---- info: the counts and the difference to yesterday

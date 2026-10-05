@@ -220,6 +220,7 @@ def ctx(**k):
                 r_handles=("a", "b"), r_cabinet=("a", "b"), r1_ref_price="9,90 €",
                 xsell_valid_until=D(2026, 10, 19), anketa_url="https://x/atsauksme.php?o=M-1&t=t", order_nr="M-1")
     base.update(k)
+    base.setdefault("letter_fields", True)
     return G.Ctx(**base)
 
 
@@ -272,11 +273,11 @@ class PreSendGates(unittest.TestCase):
         self.assertEqual(G.gates("reorder_1", 0, ctx(template_id=179, template_approved=False)), [G.T_NOT_APPROVED])
 
     def test_empty_ctx_refuses_and_gates_are_named_and_ordered(self):
-        self.assertEqual(G.gates("winback_1", 1, G.Ctx()), [G.T_NOT_APPROVED, G.NO_OVU, G.NO_SLOT_ROW])
-        self.assertEqual(G.gates(S.XSELL, 0, G.Ctx()), [G.T_NOT_APPROVED, G.XS4])
-        self.assertEqual(G.gates(S.PP1, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_ANKETA])
+        self.assertEqual(G.gates("winback_1", 1, G.Ctx()), [G.T_NOT_APPROVED, G.NO_OVU, G.NO_SLOT_ROW, G.NO_LF])
+        self.assertEqual(G.gates(S.XSELL, 0, G.Ctx()), [G.T_NOT_APPROVED, G.XS4, G.NO_LF])
+        self.assertEqual(G.gates(S.PP1, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_ANKETA, G.NO_LF])
         self.assertEqual(G.gates(None, 0, G.Ctx()), [])
-        self.assertEqual(len(set(G.ALL)), 12)
+        self.assertEqual(len(set(G.ALL)), 13)
 
     def test_job_stores_the_gate_next_to_the_plan_and_never_changes_would_send(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
@@ -334,7 +335,7 @@ class SelfCheck(unittest.TestCase):
     def run_(self, rows, akc=(), **k):
         base = dict(prev_counts=[], flows={}, en_masters=set(), suppressed_send_address=0, suppressed_any_address=0,
                     today=D(2026, 10, 5), ages_h={k: 1 for k in SC.MAX_AGE_H} | {"goods_run_days": 0},
-                    writer_missing=[], map_disagreements=[])
+                    no_letter_fields={}, map_disagreements=[])
         base.update(k)
         return {c["check_name"]: c for c in SC.run(rows, list(akc), **base)}
 
@@ -374,11 +375,11 @@ class SelfCheck(unittest.TestCase):
         self.assertIn("winback_1 | NO_PRICE_ROW", out["count_blocked_by_gate"]["detail"])
 
     def test_stale_inputs_and_open_seams_are_warnings_only(self):
-        out = self.run_([plan("a")], ages_h={"rung_price": 40, "goods_run_days": 4}, writer_missing=["ANKETA_URL"],
+        out = self.run_([plan("a")], ages_h={"rung_price": 40, "goods_run_days": 4}, no_letter_fields={"winback_1": 3},
                         map_disagreements=[("lost_quarterly", 234, None)])
         self.assertEqual(self.failed(out), [])
         w = self.failed(out, "warn")
-        for name in ("fresh_rung_price", "goods_run_not_older_than_1_day", "writer_fields_present",
+        for name in ("fresh_rung_price", "goods_run_not_older_than_1_day", "letter_fields_row_today_for_every_would_send",
                      "template_map_agrees_with_interface_v2", "fresh_pd_persons"):
             self.assertIn(name, w)
 

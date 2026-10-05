@@ -97,7 +97,7 @@ class Fields(unittest.TestCase):
 
 class Activity(unittest.TestCase):
     def test_type_32_done_person_and_org_and_offer_in_subject_note(self):
-        tail, lines = W.offer_summary([{"sku": "NIT-M", "price": "8,90 €", "ref": "10,50 €"}, {"sku": None, "price": None, "ref": None}])
+        tail, lines = W.offer_summary([{"name": "NIT-M", "price": "8,90 €", "ref": "10,50 €"}, {"name": None, "price": None, "ref": None}])
         r = pd_record.render(person_id=10, org_id=7, master_key="m", email="a@b.lv", email_type="winback_1",
                              template_id=180, send_date=D(2026, 10, 1), offer_rung=1, reason="r", campaign_ref="c",
                              offer_valid_until=D(2026, 10, 7), offer_tail=tail, product_lines=lines)

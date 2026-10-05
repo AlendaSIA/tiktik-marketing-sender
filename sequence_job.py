@@ -150,16 +150,6 @@ GROUP BY 1
 
 # v2.9.3 / v2.9.4 write-back inputs (read-only)
 ORGS_SQL = f"SELECT id, name, reg_number FROM `{P}.channel_raw.pipedrive_orgs`"
-ATTRS_SQL = f"""
-SELECT LOWER(TRIM(email)) AS email, plan_date,
-  [STRUCT(audit_p1_sku AS sku, P1_PRICE AS price, P1_REF_PRICE AS ref), STRUCT(audit_p2_sku, P2_PRICE, P2_REF_PRICE),
-   STRUCT(audit_p3_sku, P3_PRICE, P3_REF_PRICE), STRUCT(audit_p4_sku, P4_PRICE, P4_REF_PRICE),
-   STRUCT(audit_p5_sku, P5_PRICE, P5_REF_PRICE), STRUCT(audit_p6_sku, P6_PRICE, P6_REF_PRICE),
-   STRUCT(audit_p7_sku, P7_PRICE, P7_REF_PRICE), STRUCT(audit_p8_sku, P8_PRICE, P8_REF_PRICE)] AS slots
-FROM `{P}.mkt_control.shadow_brevo_price_attrs`
-WHERE plan_date <= CURRENT_DATE('Europe/Riga')
-QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY plan_date DESC) = 1
-"""
 
 
 # G15.2 (MAIN 2026-10-01 16:55, contract sha 73e8f700b2e2): the daily planner only REPORTS G15, from the LATEST
@@ -297,12 +287,26 @@ WHERE a.kind = 'R' AND a.handle IS NOT NULL GROUP BY 1
 OFFERED_SQL = f"SELECT master_key, ARRAY_AGG(DISTINCT handle) AS handles FROM `{T_OFFERED}` GROUP BY 1"
 APPROVAL_SQL = f"SELECT template_id, email_type FROM `{P}.mkt_control.template_approval` WHERE approved"
 
-# The WRITER's shadow output (Nakts sinhronizācija; mkt_control.shadow_brevo_price_attrs). The fields the gates
-# need from it may not exist yet (the writer is built in parallel) - so the columns are looked up, never assumed.
-T_WRITER = f"{P}.mkt_control.shadow_brevo_price_attrs"
-WRITER_FIELDS = ("R1_REF_PRICE", "XSELL_VALID_UNTIL", "ANKETA_URL", "ORDER_NR")
-WRITER_COLS_SQL = f"""SELECT column_name FROM `{P}.mkt_control.INFORMATION_SCHEMA.COLUMNS`
-WHERE table_name = 'shadow_brevo_price_attrs'"""
+# WRITER OUTPUT v1 (contract 7ca13f671703, WO1 / WO2): the ONLY per-letter field source is mkt_control.letter_fields,
+# TODAY's plan_date only. No row for today = the letter is held (presend gate NO_LETTER_FIELDS_ROW); there is no
+# fallback to an older plan_date and no other table. The scheduled plan (08:05) runs BEFORE the writer (08:40), so in
+# the 08:05 plan every would_send row carries that gate; send_path L8 evaluates the same gate again at send time.
+LF_SLOTS = ", ".join(f"STRUCT(P{i}_NAME AS name, P{i}_PRICE AS price, P{i}_REF_PRICE AS ref)" for i in range(1, 9))
+LF_SQL = f"""
+SELECT email, email_type, template_id, plan_run_id, run_id, OFFER_VALID_UNTIL, XSELL_VALID_UNTIL, R1_REF_PRICE,
+       ANKETA_URL, ORDER_NR, [{LF_SLOTS}] AS slots
+FROM `{P}.mkt_control.letter_fields`
+WHERE plan_date = CURRENT_DATE('Europe/Riga')
+QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1
+"""
+
+
+def letter_row(rows: dict, email, email_type):
+    """Today's letter_fields row of this address FOR THIS LETTER, or None (= held). A row written for another
+    letter of the same contact is not this letter's field set."""
+    r = rows.get((email or "").strip().lower())
+    return r if r and r["email_type"] == email_type else None
+
 
 SUPPRESSED_CHECK_SQL = f"""
 SELECT COUNT(DISTINCT IF(LOWER(TRIM(s.email)) = LOWER(TRIM(p.email)), p.master_key, NULL)) AS send_address,
@@ -316,16 +320,6 @@ WHERE p.plan_date = CURRENT_DATE() AND p.run_id = @run AND p.would_send
 PREV_COUNTS_SQL = f"""
 SELECT email_type, would_send, hold_reason, COUNT(*) AS n FROM `{T_PLAN}`
 WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE()) GROUP BY 1, 2, 3"""
-
-
-def writer_sql(cols) -> str | None:
-    """Today's writer row per address with whichever of WRITER_FIELDS exist (None = none of them exists)."""
-    have = [c for c in WRITER_FIELDS if c in cols]
-    if not have:
-        return None
-    return (f"SELECT LOWER(TRIM(email)) AS email, {', '.join(have)} FROM `{T_WRITER}` "
-            f"WHERE plan_date = CURRENT_DATE('Europe/Riga') "
-            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY written_at DESC) = 1")
 
 
 _ORDER_NR = re.compile(r"^(M-\d+-\d+|PAP-\d+-\d+|ALE \d+|PAS/\d+/\d+|PR/\d+/\d+)")
@@ -500,7 +494,6 @@ def main():
     by_address = persons_index(person_rows)
     org_idx = W.build_org_index([dict(r) for r in bq.query(ORGS_SQL).result()],
                                 [{"org_id": r["org_id"], "emails": r["emails"]} for r in person_rows])
-    attrs = {r["email"]: [dict(x) for x in r["slots"]] for r in bq.query(ATTRS_SQL).result()}
     age = next(iter(bq.query(PERSONS_AGE_SQL).result()))
     persons_age_h, persons_ingested_at = age["age_h"], age["ingested_at"]
     org_by_address = {r["email"]: set(r["org_ids"]) for r in bq.query(ORG_ADDR_SQL).result()}
@@ -517,10 +510,8 @@ def main():
     r_goods = {r["email"]: (tuple(r["r"]), tuple(r["r_cab"])) for r in bq.query(R_SQL).result()}
     offered = {r["master_key"]: frozenset(r["handles"]) for r in bq.query(OFFERED_SQL).result()}
     approved = {(r["template_id"], r["email_type"]) for r in bq.query(APPROVAL_SQL).result()}
-    writer_cols = {r["column_name"] for r in bq.query(WRITER_COLS_SQL).result()}
-    wsql = writer_sql(writer_cols)
-    writer = {r["email"]: dict(r) for r in bq.query(wsql).result()} if wsql else {}
-    writer_missing = [c for c in WRITER_FIELDS if c not in writer_cols]
+    lf_rows = {r["email"]: {**dict(r), "slots": [dict(x) for x in r["slots"]]} for r in bq.query(LF_SQL).result()}
+    no_lf = {}
     age_h = lambda t: None if t is None else round(  # noqa: E731
         (dt.datetime.now(dt.timezone.utc) - t).total_seconds() / 3600, 1)
     rung_stale = age_h(rung_built_at) is None or age_h(rung_built_at) > PRICE_MAX_AGE_H
@@ -533,7 +524,7 @@ def main():
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
 
     states, log_rows, plan_rows, pd_rows, held_today, akcija_rows = [], [], [], [], [], []
-    g15_report, basis = {}, {}
+    g15_report, basis = {}, {"xs4": "letter_fields", "anketa": "letter_fields", "fields": "letter_fields today only"}
 
     def resolve_now(email, mk):
         return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
@@ -618,28 +609,24 @@ def main():
         gate_list = []
         if would:
             r, r_cab = r_goods.get(f["send_email"], ((), ()))
-            w = writer.get(f["send_email"], {})
-            if "R1_REF_PRICE" in writer_cols and w:                      # the writer's own field, when it exists
-                r1_ref, basis["xs4"] = w.get("R1_REF_PRICE"), "writer"
-            else:                                                        # field names alone: the price source
-                r1_ref = "(xs_intro)" if (lx is not None and not lqxs_stale and r and r[0] in (lx["xs_handles"] or [])) \
-                    else None
-                basis["xs4"] = "price_source"
+            w = letter_row(lf_rows, f["send_email"], et)             # WO1 / WO2: today's row or the letter is held
+            if w is None:
+                no_lf[et] = no_lf.get(et, 0) + 1
+            r1_ref = w and w["R1_REF_PRICE"]
             xvu = d.xsell_valid_until
-            if et == S.XSELL and r1_ref and lx is not None and d.next_due_on <= today and (
+            if et == S.XSELL and lx is not None and d.next_due_on <= today and (
                     lx["vu_xs"] is None or _d(lx["vu_xs"]) < xvu):
                 xvu = None                                               # K12 / XS2: price must hold to send + 13
-            if "ANKETA_URL" in writer_cols and w:
-                anketa, basis["anketa"] = w.get("ANKETA_URL"), "writer"
-            else:                                                        # the link is minted by the writer AFTER the plan
-                anketa = "(mintable)" if order_nr_usable(d.trigger_order_nr) and f["send_email"] else None
-                basis["anketa"] = "order_nr_usable"
+            # 244: the writer's link counts only when it was minted for THIS plan row's order (WO3)
+            same_order = bool(w) and bool(d.trigger_order_nr) and w["ORDER_NR"] == d.trigger_order_nr
+            anketa = w["ANKETA_URL"] if same_order else None
             gate_list = G.gates(et, d.offer_rung, G.Ctx(
                 template_id=tid, template_approved=(tid, et) in approved,
                 offer_valid_until=d.offer_valid_until, goods=goods.get(mk), has_price=d.has_price,
                 price_stale=lqxs_stale if et in (S.LOST, S.XSELL) else rung_stale,
                 r_handles=r, r_cabinet=r_cab, r1_ref_price=r1_ref, xsell_valid_until=xvu,
-                xsell_offered=offered.get(mk, frozenset()), anketa_url=anketa, order_nr=d.trigger_order_nr))
+                xsell_offered=offered.get(mk, frozenset()), anketa_url=anketa,
+                order_nr=d.trigger_order_nr if same_order or et != S.PP1 else None, letter_fields=w is not None))
         lp = last_plan.get(mk)
         key = (d.next_email_type, due_token(d.next_due_on, today), would, d.offer_rung)
         prev_key = lp and (lp["email_type"], due_token(_d(lp["planned_send_date"]), _d(lp["plan_date"])),
@@ -675,7 +662,8 @@ def main():
                                    "hold_reason": hold_pd, "pd_class": tg.cls, "template_id": tid,
                                    "send_date": d.next_due_on.isoformat(), "offer_rung": d.offer_rung,
                                    "reason": d.reason})
-            tail, lines = W.offer_summary(attrs.get(f["send_email"], []))
+            lfr = letter_row(lf_rows, f["send_email"], d.next_email_type)
+            tail, lines = W.offer_summary(lfr["slots"] if lfr else [])
             pid = wb["person_ref"] if isinstance(wb["person_ref"], int) else tg.person_id
             oid = wb["org_ref"] if isinstance(wb["org_ref"], int) else tg.org_id
             rec = pd_record.render(person_id=pid, org_id=oid, master_key=mk,
@@ -769,7 +757,7 @@ def main():
                             "pd_orgs_mirror": age_h(flow_src["pd_orgs_ingested_at"]),
                             "goods_run_days": None if goods_run["plan_date"] is None
                             else (today - _d(goods_run["plan_date"])).days},
-                    writer_missing=writer_missing, map_disagreements=disagree)
+                    no_letter_fields=no_lf, map_disagreements=disagree)
     bq.load_table_from_json([{"plan_date": today.isoformat(), "run_id": RUN_ID, "checked_at": now, **c}
                              for c in checks], T_CHECK, job_config=J(write_disposition="WRITE_APPEND")).result()
     failed = [c["check_name"] for c in checks if c["level"] == "hard" and not c["ok"]]
@@ -809,7 +797,7 @@ def main():
         "bundle": BUNDLE, "would_deliver": sum(bool(r.get("would_deliver")) for r in plan_rows),
         "holds_json": cnt(("email_type", "hold_reason"), [r for r in plan_rows if not r["would_send"]]),
         "gates_json": cnt(("email_type", "presend_gate"), [r for r in plan_rows if r["would_send"]]),
-        "gate_basis": json.dumps(basis, sort_keys=True), "writer_fields_missing": ",".join(writer_missing) or None,
+        "gate_basis": json.dumps(basis, sort_keys=True), "writer_fields_missing": json.dumps({"no_letter_fields_row_today": no_lf}, sort_keys=True) if no_lf else None,
         "flow_b2b": sum(v[0] == "B2B" for v in flows.values()), "flow_lead": sum(v[0] == "LEAD" for v in flows.values()),
         "flow_classification_built_at": flow_src["classification_built_at"] and flow_src["classification_built_at"].isoformat(),
         "flow_pd_orgs_ingested_at": flow_src["pd_orgs_ingested_at"] and flow_src["pd_orgs_ingested_at"].isoformat(),
