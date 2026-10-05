@@ -701,8 +701,10 @@ def main():
                                            dt.datetime.now(dt.timezone.utc))
 
     # idempotent per day: today's shadow rows are replaced, state is replaced whole (single writer)
-    for t in (T_PLAN, T_PDW, T_AKCIJA, T_CHECK):
+    for t in (T_PLAN, T_PDW, T_AKCIJA):
         bq.query(f"DELETE FROM `{t}` WHERE plan_date = CURRENT_DATE()").result()
+    # the marker of a dash row already posted today survives a re-run (never two dash rows a day)
+    bq.query(f"DELETE FROM `{T_CHECK}` WHERE plan_date = CURRENT_DATE() AND check_name != '_dash_row_posted'").result()
     J = bigquery.LoadJobConfig
     bq.load_table_from_json(states, T_STATE, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
     if pending_rows:
