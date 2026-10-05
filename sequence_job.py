@@ -15,6 +15,7 @@ history only. A row is applied once: only sends after the person's state.last_se
 import datetime as dt
 import logging
 import os
+import re
 import uuid
 
 from google.cloud import bigquery
@@ -327,6 +328,20 @@ def writer_sql(cols) -> str | None:
             f"QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY written_at DESC) = 1")
 
 
+_ORDER_NR = re.compile(r"^(M-\d+-\d+|PAP-\d+-\d+|ALE \d+|PAS/\d+/\d+|PR/\d+/\d+)")
+
+
+def order_nr_of(title):
+    """The order number as the customer knows it, from a P6 deal title. Measured 2026-10-05: once the Paytraq
+    document exists the title becomes '<order> _ <document>' ('M-860325-35060 _ ALE 2605715'), and notes are
+    appended ('ALE 2605233 COD', '... (testa)'). The FIRST part is the customer's number; never the whole title."""
+    t = (title or "").strip()
+    m = _ORDER_NR.match(t)
+    if m:
+        return m.group(1)
+    return t.split(" _ ")[0].strip() or None
+
+
 def pp_facts(o, last_order):
     """(order_nr, order_on, ship_on) of the P6 order when it belongs to THIS purchase, else (None, None, None)."""
     if not o or o.get("order_on") is None:
@@ -334,11 +349,10 @@ def pp_facts(o, last_order):
     order_on = _d(o["order_on"])
     if last_order is not None and order_on < last_order - dt.timedelta(days=PP_ORDER_MATCH_DAYS):
         return None, None, None
-    return (o.get("order_nr") or "").strip() or None, order_on, _d(o.get("ship_on"))
+    return order_nr_of(o.get("order_nr")), order_on, _d(o.get("ship_on"))
 
 
 def order_nr_usable(nr) -> bool:
-    import re
     return bool(nr) and re.fullmatch(ORDER_NR_OK, nr.upper()) is not None
 
 

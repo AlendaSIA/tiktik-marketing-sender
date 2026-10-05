@@ -143,6 +143,20 @@ class PostPurchase(unittest.TestCase):
         self.assertEqual(J.pp_facts({"order_nr": " M-2 ", "order_on": D(2026, 9, 29), "ship_on": None},
                                     D(2026, 10, 1)), ("M-2", D(2026, 9, 29), None))
 
+    def test_order_number_is_the_customers_number_not_the_deal_title(self):
+        J = _job()
+        for title, nr in (("M-860325-35060 _ ALE 2605715", "M-860325-35060"), ("M-860325-35194", "M-860325-35194"),
+                          ("PAP-2026-0075", "PAP-2026-0075"), ("ALE 2605233 COD", "ALE 2605233"),
+                          ("PAS/0926/00048 _ ALE 2605714", "PAS/0926/00048"),
+                          ("M-860325-35114 _ PR/1026/00001", "M-860325-35114"),
+                          ("M-860325-32678 _ ALE 2603421 (testa)", "M-860325-32678"), ("  ", None), (None, None)):
+            self.assertEqual(J.order_nr_of(title), nr, title)
+            if nr:
+                self.assertTrue(J.order_nr_usable(nr), nr)
+        self.assertFalse(J.order_nr_usable("x" * 41))
+        self.assertFalse(J.order_nr_usable("M-1;DROP"))
+        self.assertFalse(J.order_nr_usable(None))
+
     def test_state_never_moves_in_shadow(self):
         st = S.State("p11")
         d = S.advance(st, F(), D(2026, 10, 5))
