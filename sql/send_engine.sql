@@ -96,3 +96,51 @@ ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_pd_writes`
   ADD COLUMN IF NOT EXISTS create_name STRING;
 ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
   ADD COLUMN IF NOT EXISTS writeback_population ARRAY<STRUCT<kind STRING, n INT64>>;
+
+-- Sūtīšanas dzinējs 4 (MAIN 2026-10-05 16:10, contract 682ad015f0ab): complete LV shadow plan. Additive only.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_send_plan`
+  ADD COLUMN IF NOT EXISTS template_source STRING,
+  ADD COLUMN IF NOT EXISTS flow STRING,
+  ADD COLUMN IF NOT EXISTS flow_source STRING,
+  ADD COLUMN IF NOT EXISTS trigger_order_nr STRING,
+  ADD COLUMN IF NOT EXISTS xsell_valid_until DATE,
+  ADD COLUMN IF NOT EXISTS presend_gate STRING,
+  ADD COLUMN IF NOT EXISTS presend_gates STRING,
+  ADD COLUMN IF NOT EXISTS would_deliver BOOL;
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
+  ADD COLUMN IF NOT EXISTS bundle STRING,
+  ADD COLUMN IF NOT EXISTS would_deliver INT64,
+  ADD COLUMN IF NOT EXISTS holds_json STRING,
+  ADD COLUMN IF NOT EXISTS gates_json STRING,
+  ADD COLUMN IF NOT EXISTS gate_basis STRING,
+  ADD COLUMN IF NOT EXISTS writer_fields_missing STRING,
+  ADD COLUMN IF NOT EXISTS flow_b2b INT64,
+  ADD COLUMN IF NOT EXISTS flow_lead INT64,
+  ADD COLUMN IF NOT EXISTS flow_classification_built_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS flow_pd_orgs_ingested_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS flow_pd_orgs_309_b2b INT64,
+  ADD COLUMN IF NOT EXISTS lqxs_built_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS lqxs_age_h FLOAT64,
+  ADD COLUMN IF NOT EXISTS akcija_week STRING,
+  ADD COLUMN IF NOT EXISTS akcija_send_date DATE,
+  ADD COLUMN IF NOT EXISTS akcija_in_audience INT64,
+  ADD COLUMN IF NOT EXISTS akcija_excluded_json STRING,
+  ADD COLUMN IF NOT EXISTS selfcheck_failed INT64,
+  ADD COLUMN IF NOT EXISTS selfcheck_failed_names STRING;
+
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.shadow_akcija_audience` (
+  plan_date DATE, run_id STRING, offer_week STRING, send_date DATE, master_key STRING, email STRING,
+  in_audience BOOL, excluded_reason STRING, personal_email_type STRING, personal_send_date DATE,
+  planned_at TIMESTAMP)
+PARTITION BY plan_date
+OPTIONS(description="SHADOW. Who would get the weekly akcija (236, list send) of offer_week: every lifecycle contact except SUPPRESSED / BLOCKED / B2B_FLOW / LEAD_FLOW / EN_PENDING and except those with a deliverable personal SALES letter in the same ISO week ('personal letter OR akcija, never both', MAIN 2026-10-05). The engine plans the audience only; rendering and sending 236 is not here. Writer = Sūtīšanas dzinējs.");
+
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.shadow_selfcheck` (
+  plan_date DATE, run_id STRING, check_name STRING, level STRING, ok BOOL, value STRING, detail STRING,
+  checked_at TIMESTAMP)
+PARTITION BY plan_date
+OPTIONS(description="Daily self-check written with the shadow plan. level hard = the plan broke its own rule (one dash row that day), warn = stale input / open seam (no dash row), info = counts per type / per blocking reason / diff vs yesterday. Writer = Sūtīšanas dzinējs.");
+
+CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.xsell_offered` (
+  master_key STRING, email STRING, handle STRING, sent_at TIMESTAMP, campaign_id INT64, run_id STRING)
+OPTIONS(description="PP3 'never repeat an R product already offered': one row per (recipient, R product) of every 235 actually SENT. Written ONLY by the live send path (send_path.dispatch offered_sink); shadow never writes here. Read by the planner gate XSELL_REPEAT / XSELL_NOTHING_NEW. Writer = Sūtīšanas dzinējs.");

@@ -9,7 +9,8 @@ refreshed nightly (the cadence is tested, not the prices).
 """
 import datetime as dt
 
-FAR = {1: dt.date(2099, 1, 1), 2: dt.date(2099, 1, 1), 3: dt.date(2099, 1, 1)}
+FAR = {1: dt.date(2099, 1, 1), 2: dt.date(2099, 1, 1), 3: dt.date(2099, 1, 1),
+       4: dt.date(2099, 1, 1), "4c": dt.date(2099, 1, 1)}   # 4 / "4c" = lost prices (LQ/XS PRICE SOURCE v1)
 
 
 def stage_on(day, stage_today, last_order, thr, first_order=None):

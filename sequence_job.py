@@ -24,22 +24,37 @@ import pd_record
 import pd_target
 import pd_writeback as W
 import json
+import presend as G
+import selfcheck as SC
 import sequence as S
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("sequence_job")
 
 P = "jaunais-za-aizv04022026"
-T_STATE = f"{P}.mkt_control.contact_sequence_state"
-T_SLOG = f"{P}.mkt_control.contact_sequence_log"
-T_PLAN = f"{P}.mkt_control.shadow_send_plan"
-T_PDW = f"{P}.mkt_control.shadow_pd_writes"
-T_RUN = f"{P}.mkt_control.shadow_run_report"
+# "Build into temp, then swap" (Raivis' standing order): SHADOW_TABLE_SUFFIX=_tmp4 makes a whole run write to
+# copies of the eight tables this job writes (clones made beforehand) - nothing the daily run owns is touched.
+SFX = os.environ.get("SHADOW_TABLE_SUFFIX", "")
+T_STATE = f"{P}.mkt_control.contact_sequence_state{SFX}"
+T_SLOG = f"{P}.mkt_control.contact_sequence_log{SFX}"
+T_PLAN = f"{P}.mkt_control.shadow_send_plan{SFX}"
+T_PDW = f"{P}.mkt_control.shadow_pd_writes{SFX}"
+T_RUN = f"{P}.mkt_control.shadow_run_report{SFX}"
 T_OVERRIDE = f"{P}.mkt_control.pd_target_override"
-T_PEND = f"{P}.mkt_control.pd_write_pending"
+T_PEND = f"{P}.mkt_control.pd_write_pending{SFX}"
+T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
+T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
+T_OFFERED = f"{P}.mkt_control.xsell_offered"
+BUNDLE = os.environ.get("ENGINE_BUNDLE", "unknown")
+# INTERFACE email_type v2: template per letter. The map row (Vēstuļu šabloni's table) wins where it has an id;
+# where it has none the engine config speaks, so the shadow plan is complete before the map is filled.
+# ENGINE_TEMPLATES_JSON='{"winback_1_e2": 251}' replaces a provisional id the day MAIN names the real one.
+TEMPLATES = {**S.INTERFACE_V2, **json.loads(os.environ.get("ENGINE_TEMPLATES_JSON") or "{}")}
+PRICE_MAX_AGE_H = 26            # v2.8.2 A7
 RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]}"
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
-LADDER_POLICY = "ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080) + " + S.CADENCE
+LADDER_POLICY = ("ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080) + " + S.CADENCE +
+                 " + post-purchase-v1.2 + gates (MAIN 2026-10-05 16:10, contract 682ad015f0ab)")
 HISTORY_SQL = f"""
 SELECT l.master_key, l.email_type, l.track, l.rung, DATE(l.sent_at, 'Europe/Riga') AS sent_on,
        l.campaign_id, l.source
@@ -164,6 +179,193 @@ EN_SOURCE_SQL = f"""SELECT (SELECT COUNT(*) FROM ({EN_ADDR_SQL})) AS en_addresse
    FROM `{P}.business_marts.__TABLES__` WHERE table_id = 'brevo_contacts_snapshot') AS list_snapshot_age_h"""
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# Sūtīšanas dzinējs 4 (MAIN 2026-10-05 16:10): inputs of the complete LV plan. All read-only.
+
+# B2B / LEAD guard. TWO sources, either one is enough:
+#   (1) legacy_paytraq.b2b_shop_flow_classification_v2 (Data & analytics 2, rule v2): flow B2B | LEAD, keyed
+#       cid:<Paytraq client id> (+ its e-mail);
+#   (2) Pipedrive ORGANISATION field 309 "MKT Plūsma" (key 0366…0115) = option 716 "B2B", read from the nightly
+#       mirror channel_raw.pipedrive_orgs (so a mark set in Pipedrive today is seen tomorrow), reaching the person
+#       through the organisation's persons and through the organisation's Paytraq client id.
+F309_KEY = "036687330a0d889920e7166c94392ca6238c0115"
+F309_B2B = "716"
+FLOW_SQL = f"""
+WITH idn AS (SELECT DISTINCT client_id, email_norm, master_key FROM `{P}.business_marts.customer_identity`
+             WHERE master_key IS NOT NULL),
+cls AS (SELECT REGEXP_EXTRACT(customer_key, r'^cid:(.+)$') AS cid, LOWER(TRIM(email)) AS email, flow
+        FROM `{P}.legacy_paytraq.b2b_shop_flow_classification_v2` WHERE flow IN ('B2B', 'LEAD')),
+o309 AS (SELECT id AS org_id, paytraq_client_id FROM `{P}.channel_raw.pipedrive_orgs`
+         WHERE REGEXP_EXTRACT(raw_json, r'"{F309_KEY}":\\s*"?(\\d+)') = '{F309_B2B}'),
+a AS (
+  SELECT idn.master_key, cls.flow, 'classification_v2' AS src FROM cls JOIN idn ON idn.client_id = cls.cid
+  UNION ALL
+  SELECT idn.master_key, cls.flow, 'classification_v2' FROM cls JOIN idn ON idn.email_norm = cls.email
+  WHERE IFNULL(cls.email, '') != ''
+  UNION ALL
+  SELECT idn.master_key, 'B2B', 'pd_field_309' FROM o309
+  JOIN `{P}.channel_raw.pipedrive_persons` p ON p.org_id = o309.org_id,
+       UNNEST(SPLIT(IFNULL(p.email_all, ''), ',')) e
+  JOIN idn ON idn.email_norm = LOWER(TRIM(e))
+  UNION ALL
+  SELECT idn.master_key, 'B2B', 'pd_field_309' FROM o309 JOIN idn ON idn.client_id = o309.paytraq_client_id)
+SELECT master_key, IF(LOGICAL_OR(flow = 'B2B'), 'B2B', 'LEAD') AS flow, STRING_AGG(DISTINCT src ORDER BY src) AS src
+FROM a GROUP BY 1
+"""
+FLOW_SRC_SQL = f"""SELECT
+  (SELECT MAX(built_at) FROM `{P}.legacy_paytraq.b2b_shop_flow_classification_v2`) AS classification_built_at,
+  (SELECT COUNTIF(flow = 'B2B') FROM `{P}.legacy_paytraq.b2b_shop_flow_classification_v2`) AS classification_b2b,
+  (SELECT COUNTIF(flow = 'LEAD') FROM `{P}.legacy_paytraq.b2b_shop_flow_classification_v2`) AS classification_lead,
+  (SELECT MAX(ingested_at) FROM `{P}.channel_raw.pipedrive_orgs`) AS pd_orgs_ingested_at,
+  (SELECT COUNT(*) FROM `{P}.channel_raw.pipedrive_orgs`
+   WHERE REGEXP_EXTRACT(raw_json, r'"{F309_KEY}":\\s*"?(\\d+)') = '{F309_B2B}') AS pd_orgs_309_b2b"""
+
+# POST-PURCHASE: the shop order of the contact's latest purchase = the latest deal of the delivery pipeline (P6,
+# pipeline_id 6; deal title = the order number the customer knows, e.g. M-860325-34895). Handed to the courier =
+# the parcel was staged (business_marts.parcel_watch.staged_at, keyed by order number or deal id) - the moment the
+# deal enters stage 62; picked up = stage 68 won (won_time); last resort = the stage-change time of a deal that
+# is already in a courier stage. Lost / deleted deals are not orders.
+PP_SQL = f"""
+WITH idn AS (SELECT DISTINCT email_norm, master_key FROM `{P}.business_marts.customer_identity`
+             WHERE master_key IS NOT NULL AND email_norm IS NOT NULL),
+d AS (SELECT id, title, person_id, DATE(add_time, 'Europe/Riga') AS order_on, stage_id, status, won_time,
+             stage_change_time
+      FROM `{P}.channel_raw.pipedrive_deals`
+      WHERE pipeline_id = 6 AND NOT IFNULL(is_deleted, FALSE) AND status != 'lost'
+        AND add_time >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 180 DAY)),
+pw AS (SELECT order_ref, MIN(staged_at) AS staged, ANY_VALUE(LOWER(TRIM(email))) AS email
+       FROM `{P}.business_marts.parcel_watch` WHERE order_ref IS NOT NULL GROUP BY 1),
+x AS (SELECT d.id, d.title, d.order_on, d.person_id, COALESCE(p1.email, p2.email) AS parcel_email,
+        COALESCE(DATE(p1.staged, 'Europe/Riga'), DATE(p2.staged, 'Europe/Riga'),
+                 IF(d.stage_id = 68 AND d.status = 'won', DATE(d.won_time, 'Europe/Riga'), NULL),
+                 IF(d.stage_id IN (62, 63, 64, 65, 66), DATE(d.stage_change_time, 'Europe/Riga'), NULL)) AS ship_on,
+        CASE WHEN p1.staged IS NOT NULL OR p2.staged IS NOT NULL THEN 'parcel_staged'
+             WHEN d.stage_id = 68 AND d.status = 'won' THEN 'picked_up'
+             WHEN d.stage_id IN (62, 63, 64, 65, 66) THEN 'stage_change' END AS ship_src
+      FROM d LEFT JOIN pw p1 ON p1.order_ref = d.title LEFT JOIN pw p2 ON p2.order_ref = CAST(d.id AS STRING)),
+em AS (SELECT x.id, LOWER(TRIM(e)) AS email FROM x
+       JOIN `{P}.channel_raw.pipedrive_persons` p ON p.id = x.person_id,
+            UNNEST(SPLIT(IFNULL(p.email_all, ''), ',')) e WHERE TRIM(e) NOT IN ('', 'nan')
+       UNION DISTINCT SELECT id, parcel_email FROM x WHERE parcel_email IS NOT NULL),
+m AS (SELECT DISTINCT em.id, idn.master_key FROM em JOIN idn ON idn.email_norm = em.email)
+SELECT m.master_key,
+       ARRAY_AGG(STRUCT(x.title AS order_nr, x.order_on, x.ship_on, x.ship_src)
+                 ORDER BY x.order_on DESC, x.id DESC LIMIT 1)[OFFSET(0)] AS o
+FROM m JOIN x USING (id) GROUP BY 1
+"""
+PP_ORDER_MATCH_DAYS = 7      # the P6 deal belongs to THIS purchase when it is not older than last_order - 7 d
+ORDER_NR_OK = r"[A-Z0-9 _./-]{1,40}"     # FS8: what anketa_url() accepts as an order number (upper-cased)
+
+# LQ/XS PRICE SOURCE v1 (PS1-PS6): lost_quarterly and the 235 intro prices come ONLY from this view. A row counts
+# when it is a real saving (lost: P2, > 5 % below the shop; intro: below the shop).
+T_LQXS = f"{P}.business_marts.pap_lqxs_current_v281"
+LQXS_SQL = f"""
+SELECT master_key,
+  MAX(IF(email_type = 'lost_quarterly' AND price_role IN ('lq1_floor', 'lq2_minus13')
+         AND price < 0.95 * shop_gross, valid_until, NULL)) AS vu_lost,
+  MAX(IF(email_type = 'lost_quarterly' AND price_role = 'lq6_capped_r1'
+         AND price < 0.95 * shop_gross, valid_until, NULL)) AS vu_lost_capped,
+  ARRAY_AGG(DISTINCT IF(email_type = 'active_xsell' AND price_role = 'xs_intro' AND price < shop_gross,
+                        handle, NULL) IGNORE NULLS) AS xs_handles,
+  MAX(IF(email_type = 'active_xsell' AND price_role = 'xs_intro', valid_until, NULL)) AS vu_xs
+FROM `{T_LQXS}` WHERE master_key IS NOT NULL AND shop_gross > 0 GROUP BY 1
+"""
+LQXS_BUILT_SQL = f"SELECT MAX(built_at) AS built_at FROM `{T_LQXS}`"
+
+# R goods: the letter's R1..R4 = business_marts.attrs_slots kind 'R' (R-CAB C1: the ONE source the Brevo writer and
+# the cabinet both read). The cabinet does not show a product that is hidden or out of stock (C3) - so "what the
+# cabinet shows" = the same rows that are sellable with stock in business_marts.shop_sellable_product.
+R_SQL = f"""
+SELECT LOWER(TRIM(a.email)) AS email, ARRAY_AGG(a.handle ORDER BY a.slot) AS r,
+       ARRAY_AGG(IF(s.handle IS NOT NULL, a.handle, NULL) IGNORE NULLS ORDER BY a.slot) AS r_cab
+FROM `{P}.business_marts.attrs_slots` a
+LEFT JOIN (SELECT handle FROM `{P}.business_marts.shop_sellable_product` GROUP BY 1 HAVING MAX(stock_qty) > 0) s
+  USING (handle)
+WHERE a.kind = 'R' AND a.handle IS NOT NULL GROUP BY 1
+"""
+OFFERED_SQL = f"SELECT master_key, ARRAY_AGG(DISTINCT handle) AS handles FROM `{T_OFFERED}` GROUP BY 1"
+APPROVAL_SQL = f"SELECT template_id, email_type FROM `{P}.mkt_control.template_approval` WHERE approved"
+
+# The WRITER's shadow output (Nakts sinhronizācija; mkt_control.shadow_brevo_price_attrs). The fields the gates
+# need from it may not exist yet (the writer is built in parallel) - so the columns are looked up, never assumed.
+T_WRITER = f"{P}.mkt_control.shadow_brevo_price_attrs"
+WRITER_FIELDS = ("R1_REF_PRICE", "XSELL_VALID_UNTIL", "ANKETA_URL", "ORDER_NR")
+WRITER_COLS_SQL = f"""SELECT column_name FROM `{P}.mkt_control.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name = 'shadow_brevo_price_attrs'"""
+
+SUPPRESSED_CHECK_SQL = f"""
+SELECT COUNT(DISTINCT IF(LOWER(TRIM(s.email)) = LOWER(TRIM(p.email)), p.master_key, NULL)) AS send_address,
+       COUNT(DISTINCT p.master_key) AS any_address
+FROM `{T_PLAN}` p
+JOIN `{P}.business_marts.customer_identity` i ON i.master_key = p.master_key
+JOIN `{P}.business_marts.email_suppression_all` s
+  ON LOWER(TRIM(s.email)) IN (i.email_norm, LOWER(TRIM(p.email)))
+WHERE p.plan_date = CURRENT_DATE() AND p.run_id = @run AND p.would_send
+"""
+PREV_COUNTS_SQL = f"""
+SELECT email_type, would_send, hold_reason, COUNT(*) AS n FROM `{T_PLAN}`
+WHERE plan_date = (SELECT MAX(plan_date) FROM `{T_PLAN}` WHERE plan_date < CURRENT_DATE()) GROUP BY 1, 2, 3"""
+
+
+def writer_sql(cols) -> str | None:
+    """Today's writer row per address with whichever of WRITER_FIELDS exist (None = none of them exists)."""
+    have = [c for c in WRITER_FIELDS if c in cols]
+    if not have:
+        return None
+    return (f"SELECT LOWER(TRIM(email)) AS email, {', '.join(have)} FROM `{T_WRITER}` "
+            f"WHERE plan_date = CURRENT_DATE('Europe/Riga') "
+            f"QUALIFY ROW_NUMBER() OVER (PARTITION BY LOWER(TRIM(email)) ORDER BY written_at DESC) = 1")
+
+
+def pp_facts(o, last_order):
+    """(order_nr, order_on, ship_on) of the P6 order when it belongs to THIS purchase, else (None, None, None)."""
+    if not o or o.get("order_on") is None:
+        return None, None, None
+    order_on = _d(o["order_on"])
+    if last_order is not None and order_on < last_order - dt.timedelta(days=PP_ORDER_MATCH_DAYS):
+        return None, None, None
+    return (o.get("order_nr") or "").strip() or None, order_on, _d(o.get("ship_on"))
+
+
+def order_nr_usable(nr) -> bool:
+    import re
+    return bool(nr) and re.fullmatch(ORDER_NR_OK, nr.upper()) is not None
+
+
+def last_sent(history_rows, email_type):
+    ds = [_d(h["sent_on"]) for h in history_rows if h["email_type"] == email_type]
+    return max(ds) if ds else None
+
+
+def akcija_week(today):
+    """The next weekly akcija: Tuesday on/after today, its ISO week label and the Monday..Sunday it owns."""
+    tue = today + dt.timedelta(days=(1 - today.weekday()) % 7)
+    iso = tue.isocalendar()
+    return tue, f"{iso[0]}-W{iso[1]:02d}", tue - dt.timedelta(days=1), tue + dt.timedelta(days=5)
+
+
+def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week):
+    """'Personal letter OR akcija, never both' (one sales letter per week). plan = that contact's plan row."""
+    tue, label, mon, sun = week
+    reason = None
+    if suppressed:
+        reason = "SUPPRESSED"
+    elif stage in (None, "blocked"):
+        reason = "BLOCKED_OR_UNKNOWN"
+    elif flow in S.FLOW_HOLD:
+        reason = S.FLOW_HOLD[flow]
+    elif is_en:
+        reason = S.HOLD_EN                       # G-EN: no LV letter, the LV akcija included
+    elif plan and plan.get("would_deliver") and plan["email_type"] in S.SALES_TYPES and plan["planned_send_date"] \
+            and mon.isoformat() <= plan["planned_send_date"] <= sun.isoformat():
+        reason = "PERSONAL_LETTER_THIS_WEEK"
+    personal = reason == "PERSONAL_LETTER_THIS_WEEK"
+    return {"offer_week": label, "send_date": tue.isoformat(), "master_key": mk, "email": email,
+            "in_audience": reason is None, "excluded_reason": reason,
+            "personal_email_type": plan["email_type"] if personal else None,
+            "personal_send_date": plan["planned_send_date"] if personal else None}
+
+
 def writeback_target(t, w):
     """Target as the write-back will act on it: held by the write-back guard, or 'create_person'
     for a contact v2.9.4 creates (C5 / org-only), else unchanged."""
@@ -176,17 +378,20 @@ def writeback_target(t, w):
     return t
 
 
-def plan_template(d, tmap):
-    """(template id, hold). The map row for the EXACT email_type or nothing - never a fallback. CADENCE v1 K7:
-    E2 texts are not written yet, so an E2 without its own row is held E2_TEMPLATE_PENDING (template NULL)."""
-    if not d.next_email_type:
-        return None, d.hold_reason
-    tid = tmap.get(d.next_email_type)
-    if d.hold_reason:
-        return tid, d.hold_reason
+def plan_template(d, tmap, templates=None):
+    """(template id, hold, source). The id for the EXACT email_type or nothing - never another letter's template.
+    source: 'map' (mkt_control.email_template_map has an id) | 'config' (INTERFACE v2) | 'config_provisional'
+    (9180 / 9232 / 9233 - the pre-send gate TEMPLATE_PROVISIONAL keeps such a letter from being delivered)."""
+    templates = S.INTERFACE_V2 if templates is None else templates
+    et = d.next_email_type
+    if not et:
+        return None, d.hold_reason, None
+    tid, src = (tmap[et], "map") if tmap.get(et) is not None else (templates.get(et), "config")
     if tid is None:
-        return None, S.HOLD_E2_TEMPLATE if d.next_email_type in S.E2_TYPES else "NO_TEMPLATE_IN_MAP"
-    return tid, None
+        return None, d.hold_reason or "NO_TEMPLATE", None
+    if tid in S.PROVISIONAL_TEMPLATE_IDS:
+        src = "config_provisional"
+    return tid, d.hold_reason, src
 
 
 def persons_index(rows) -> dict:
@@ -250,14 +455,33 @@ def main():
     master_addr = {r["master_key"]: list(r["emails"]) for r in bq.query(MASTER_ADDR_SQL).result()}
     overrides = {r["email"]: (r["person_id"], r["org_id"]) for r in bq.query(OVERRIDE_SQL).result()}
     goods = {r["master_key"]: (r["rung"], bool(r["zero"])) for r in bq.query(GOODS_SQL).result()}
+    flows = {r["master_key"]: (r["flow"], r["src"]) for r in bq.query(FLOW_SQL).result()}
+    flow_src = dict(next(iter(bq.query(FLOW_SRC_SQL).result())))
+    if not flow_src["classification_b2b"]:
+        raise RuntimeError("B2B guard source empty - refusing to plan without the B2B / LEAD guard")
+    pp_orders = {r["master_key"]: dict(r["o"]) for r in bq.query(PP_SQL).result()}
+    lqxs = {r["master_key"]: r for r in bq.query(LQXS_SQL).result()}
+    lqxs_built_at = next(iter(bq.query(LQXS_BUILT_SQL).result()))["built_at"]
+    r_goods = {r["email"]: (tuple(r["r"]), tuple(r["r_cab"])) for r in bq.query(R_SQL).result()}
+    offered = {r["master_key"]: frozenset(r["handles"]) for r in bq.query(OFFERED_SQL).result()}
+    approved = {(r["template_id"], r["email_type"]) for r in bq.query(APPROVAL_SQL).result()}
+    writer_cols = {r["column_name"] for r in bq.query(WRITER_COLS_SQL).result()}
+    wsql = writer_sql(writer_cols)
+    writer = {r["email"]: dict(r) for r in bq.query(wsql).result()} if wsql else {}
+    writer_missing = [c for c in WRITER_FIELDS if c not in writer_cols]
+    age_h = lambda t: None if t is None else round(  # noqa: E731
+        (dt.datetime.now(dt.timezone.utc) - t).total_seconds() / 3600, 1)
+    rung_stale = age_h(rung_built_at) is None or age_h(rung_built_at) > PRICE_MAX_AGE_H
+    lqxs_stale = age_h(lqxs_built_at) is None or age_h(lqxs_built_at) > PRICE_MAX_AGE_H
+    week = akcija_week(today)
     goods_run = next(iter(bq.query(GOODS_RUN_SQL).result()), {"run_id": None, "plan_date": None, "built_at": None})
     en_masters = {r["master_key"] for r in bq.query(EN_SQL).result()}
     en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
     if not en_masters or not en_src["en_addresses"]:
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
 
-    states, log_rows, plan_rows, pd_rows, held_today = [], [], [], [], []
-    g15_report = {}
+    states, log_rows, plan_rows, pd_rows, held_today, akcija_rows = [], [], [], [], [], []
+    g15_report, basis = {}, {}
 
     def resolve_now(email, mk):
         return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
@@ -292,13 +516,25 @@ def main():
             st.rung_cap, st.rung_cap_until = cap, cap_until
         if worked and (st.reorder_worked_at is None or worked > st.reorder_worked_at):
             st.reorder_worked_at = worked
+        lx = lqxs.get(mk)
+        pr = dict(prices.get(mk) or {})
+        if lx is not None and not lqxs_stale:                          # PS1: lost prices come only from the LQ/XS view
+            if lx["vu_lost"] is not None:
+                pr[S.LOST_OFFER_RUNG] = _d(lx["vu_lost"])
+            if lx["vu_lost_capped"] is not None:
+                pr["4c"] = _d(lx["vu_lost_capped"])
+        hist = history.get(mk, [])
+        pp_nr, pp_on, pp_ship = pp_facts(pp_orders.get(mk), _d(f["last_order"]))
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
-                                  bool(f["suppressed"]), prices.get(mk), f["entry_threshold_days"]), today)
-        tid, hold = plan_template(d, tmap)
+                                  bool(f["suppressed"]), pr or None, f["entry_threshold_days"],
+                                  pp_nr, pp_on, pp_ship, last_sent(hist, S.PP1), last_sent(hist, S.XSELL)), today)
+        tid, hold, tsrc = plan_template(d, tmap, TEMPLATES)
         # G15.2 (contract 73e8f700b2e2): the planner only REPORTS G15; the hard gate is send_path L7 (pre-send).
         g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))
         if g15 in (S.HOLD_NO_PRICED, S.HOLD_NO_SLOT_ROW) and g15 != hold:
             g15_report[g15] = g15_report.get(g15, 0) + 1
+        flow, flow_from = flows.get(mk, (None, None))
+        hold = S.flow_hold(d.next_email_type, hold, flow)                            # B2B / LEAD guard
         hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN
         s = d.state
         states.append({
@@ -322,6 +558,33 @@ def main():
                              "after_value": None if after is None else str(after),
                              "reason": d.reason, "shadow": True})
         would = hold is None and d.next_email_type is not None
+        # PRE-SEND GATES, evaluated on the newest data that exists now; send_path L8 re-evaluates at send time.
+        et = d.next_email_type
+        gate_list = []
+        if would:
+            r, r_cab = r_goods.get(f["send_email"], ((), ()))
+            w = writer.get(f["send_email"], {})
+            if "R1_REF_PRICE" in writer_cols and w:                      # the writer's own field, when it exists
+                r1_ref, basis["xs4"] = w.get("R1_REF_PRICE"), "writer"
+            else:                                                        # field names alone: the price source
+                r1_ref = "(xs_intro)" if (lx is not None and not lqxs_stale and r and r[0] in (lx["xs_handles"] or [])) \
+                    else None
+                basis["xs4"] = "price_source"
+            xvu = d.xsell_valid_until
+            if et == S.XSELL and r1_ref and lx is not None and d.next_due_on <= today and (
+                    lx["vu_xs"] is None or _d(lx["vu_xs"]) < xvu):
+                xvu = None                                               # K12 / XS2: price must hold to send + 13
+            if "ANKETA_URL" in writer_cols and w:
+                anketa, basis["anketa"] = w.get("ANKETA_URL"), "writer"
+            else:                                                        # the link is minted by the writer AFTER the plan
+                anketa = "(mintable)" if order_nr_usable(d.trigger_order_nr) and f["send_email"] else None
+                basis["anketa"] = "order_nr_usable"
+            gate_list = G.gates(et, d.offer_rung, G.Ctx(
+                template_id=tid, template_approved=(tid, et) in approved,
+                offer_valid_until=d.offer_valid_until, goods=goods.get(mk),
+                price_stale=lqxs_stale if et in (S.LOST, S.XSELL) else rung_stale,
+                r_handles=r, r_cabinet=r_cab, r1_ref_price=r1_ref, xsell_valid_until=xvu,
+                xsell_offered=offered.get(mk, frozenset()), anketa_url=anketa, order_nr=d.trigger_order_nr))
         lp = last_plan.get(mk)
         key = (d.next_email_type, due_token(d.next_due_on, today), would, d.offer_rung)
         prev_key = lp and (lp["email_type"], due_token(_d(lp["planned_send_date"]), _d(lp["plan_date"])),
@@ -330,14 +593,23 @@ def main():
             "plan_date": today.isoformat(), "run_id": RUN_ID, "master_key": mk, "email": f["send_email"],
             "track": s.track, "step": s.step + 1 if d.next_email_type else s.step,
             "email_type": d.next_email_type, "template_id": tid,
-            "interface_template_id": S.INTERFACE_V1.get(d.next_email_type),
             "offer_rung": d.offer_rung, "planned_send_date": d.next_due_on and d.next_due_on.isoformat(),
             # v2.8.2 A6: filled only for a letter that would go AND carries a rung price
             "offer_valid_until": (would and d.offer_valid_until and d.offer_valid_until.isoformat()) or None,
             "would_send": would, "hold_reason": hold, "reason": d.reason,
             "lost_capped": d.lost_capped,                                   # LQ6, read by the writer
+            "interface_template_id": TEMPLATES.get(et), "template_source": tsrc,
+            "flow": flow, "flow_source": flow_from,
+            "trigger_order_nr": d.trigger_order_nr,                         # 244: read by the writer (ANKETA_URL / ORDER_NR)
+            "xsell_valid_until": (would and d.xsell_valid_until and d.xsell_valid_until.isoformat()) or None,
+            "presend_gate": gate_list[0] if gate_list else None,
+            "presend_gates": ",".join(gate_list) or None,
+            "would_deliver": would and not gate_list,
             "diff_vs_prev": "new" if lp is None else ("same" if key == prev_key else "changed"),
             "planned_at": now})
+        akcija_rows.append({"plan_date": today.isoformat(), "run_id": RUN_ID, "planned_at": now, **akcija_row(
+            mk=mk, email=f["send_email"], stage=f["lifecycle_stage"], suppressed=bool(f["suppressed"]), flow=flow,
+            is_en=mk in en_masters, plan=plan_rows[-1], week=week)})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
             tg = resolve_now(f["send_email"], mk)
             wb = W.plan(tg, email=f["send_email"], person_name=f["full_name"], org_name=f["client_name"],
@@ -416,16 +688,35 @@ def main():
                                            dt.datetime.now(dt.timezone.utc))
 
     # idempotent per day: today's shadow rows are replaced, state is replaced whole (single writer)
-    for t in (T_PLAN, T_PDW):
+    for t in (T_PLAN, T_PDW, T_AKCIJA, T_CHECK):
         bq.query(f"DELETE FROM `{t}` WHERE plan_date = CURRENT_DATE()").result()
     J = bigquery.LoadJobConfig
     bq.load_table_from_json(states, T_STATE, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
     if pending_rows:
         bq.load_table_from_json(pending_rows, T_PEND, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
-    for rows, t in ((log_rows, T_SLOG), (plan_rows, T_PLAN), (pd_rows, T_PDW)):
+    for rows, t in ((log_rows, T_SLOG), (plan_rows, T_PLAN), (pd_rows, T_PDW), (akcija_rows, T_AKCIJA)):
         if rows:
             bq.load_table_from_json(rows, t, job_config=J(write_disposition="WRITE_APPEND")).result()
     disagree = S.template_disagreements(tmap)
+    # DAILY SELF-CHECK (MAIN 2026-10-05 16:10 item 5), written with the plan. Hard failures -> one dash row (posted
+    # by the small job tiktik-shadow-selfcheck-dash on the ops service account; this job has no Drive access).
+    sup = next(iter(bq.query(SUPPRESSED_CHECK_SQL, job_config=bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("run", "STRING", RUN_ID)])).result()))
+    prev_counts = [dict(r) for r in bq.query(PREV_COUNTS_SQL).result()]
+    checks = SC.run(plan_rows, akcija_rows, prev_counts=prev_counts, flows={k: v[0] for k, v in flows.items()},
+                    en_masters=en_masters, suppressed_send_address=sup["send_address"],
+                    suppressed_any_address=sup["any_address"], today=today,
+                    ages_h={"rung_price": age_h(rung_built_at), "lqxs_price": age_h(lqxs_built_at),
+                            "pd_persons": persons_age_h, "en_list_snapshot": en_src["list_snapshot_age_h"],
+                            "flow_classification": age_h(flow_src["classification_built_at"]),
+                            "pd_orgs_mirror": age_h(flow_src["pd_orgs_ingested_at"]),
+                            "goods_run_days": None if goods_run["plan_date"] is None
+                            else (today - _d(goods_run["plan_date"])).days},
+                    writer_missing=writer_missing, map_disagreements=disagree)
+    bq.load_table_from_json([{"plan_date": today.isoformat(), "run_id": RUN_ID, "checked_at": now, **c}
+                             for c in checks], T_CHECK, job_config=J(write_disposition="WRITE_APPEND")).result()
+    failed = [c["check_name"] for c in checks if c["level"] == "hard" and not c["ok"]]
+    cnt = lambda key, rows: json.dumps(SC.count_by(rows, key), ensure_ascii=False, sort_keys=True)  # noqa: E731
     kinds = {}
     acts = [r for r in pd_rows if r["object"] == "activity"]
     for r in acts:
@@ -455,7 +746,23 @@ def main():
         "g15_goods_run_id": goods_run["run_id"],
         "g15_goods_plan_date": goods_run["plan_date"] and str(goods_run["plan_date"]),
         "en_masters": len(en_masters), "en_addresses": en_src["en_addresses"],
-        "en_list_snapshot_age_h": en_src["list_snapshot_age_h"]}], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
+        "en_list_snapshot_age_h": en_src["list_snapshot_age_h"],
+        # Sūtīšanas dzinējs 4
+        "bundle": BUNDLE, "would_deliver": sum(bool(r.get("would_deliver")) for r in plan_rows),
+        "holds_json": cnt(("email_type", "hold_reason"), [r for r in plan_rows if not r["would_send"]]),
+        "gates_json": cnt(("email_type", "presend_gate"), [r for r in plan_rows if r["would_send"]]),
+        "gate_basis": json.dumps(basis, sort_keys=True), "writer_fields_missing": ",".join(writer_missing) or None,
+        "flow_b2b": sum(v[0] == "B2B" for v in flows.values()), "flow_lead": sum(v[0] == "LEAD" for v in flows.values()),
+        "flow_classification_built_at": flow_src["classification_built_at"] and flow_src["classification_built_at"].isoformat(),
+        "flow_pd_orgs_ingested_at": flow_src["pd_orgs_ingested_at"] and flow_src["pd_orgs_ingested_at"].isoformat(),
+        "flow_pd_orgs_309_b2b": flow_src["pd_orgs_309_b2b"],
+        "lqxs_built_at": lqxs_built_at and lqxs_built_at.isoformat(), "lqxs_age_h": age_h(lqxs_built_at),
+        "akcija_week": week[1], "akcija_send_date": week[0].isoformat(),
+        "akcija_in_audience": sum(r["in_audience"] for r in akcija_rows),
+        "akcija_excluded_json": cnt(("excluded_reason",), [r for r in akcija_rows if not r["in_audience"]]),
+        "selfcheck_failed": len(failed), "selfcheck_failed_names": ",".join(failed) or None,
+        }], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
+    log.info("SELFCHECK run=%s failed=%s %s", RUN_ID, len(failed), failed)
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
              "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s writeback_population=%s state_changes=%s "
              "interface_v1_vs_map_disagreements=%s en_pending=%s en_masters=%s en_list_snapshot_age_h=%s g15_report_only goods_run=%s goods_plan_date=%s would_be_no_priced=%s would_be_no_slot_row=%s", RUN_ID, len(states), len(plan_rows),

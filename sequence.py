@@ -50,7 +50,27 @@ INTERFACE_V1 = {
     "welcome_1": 229, "reorder_1": 179, "reorder_2": 230, "reorder_3": 231,
     "winback_1": 180, "winback_2": 232, "winback_3": 233, "lost_quarterly": 234,
     "active_xsell": 235, "akcija_weekly": 236,
+}   # HISTORY ONLY (25.09). The engine plans from INTERFACE_V2 below.
+
+# INTERFACE email_type v2 (MAIN 2026-10-05 16:10, command to Sūtīšanas dzinējs 4; contract sha 682ad015f0ab):
+# the LV letters the engine plans, with the template each one uses.
+#   229 welcome_1 is OUT (POST-PURCHASE v1.2: no mapping, no "once per contact ever" rule) - never planned.
+#   reorder_2 / reorder_3 (230 / 231) are OUT of the chain (CADENCE v1 K1) - never planned.
+#   9180 / 9232 / 9233 are PROVISIONAL ids of the E2 letters: config only, MAIN gives the real Brevo ids
+#   (env ENGINE_TEMPLATES_JSON in the job overrides any id without a code change).
+#   236 akcija_weekly is a LIST send: the engine plans its audience only, never a per-person row.
+PP1 = "post_purchase_feedback"
+XSELL = "active_xsell"
+AKCIJA = "akcija_weekly"
+INTERFACE_V2 = {
+    "reorder_1": 179,
+    "winback_1": 180, "winback_1_e2": 9180,
+    "winback_2": 232, "winback_2_e2": 9232,
+    "winback_3": 233, "winback_3_e2": 9233,
+    "lost_quarterly": 234, XSELL: 235, PP1: 244, AKCIJA: 236,
 }
+PROVISIONAL_TEMPLATE_IDS = {9180, 9232, 9233}
+NEVER_PLANNED = {"welcome_1", "reorder_2", "reorder_3"}
 # CADENCE v1 K3/K7: E1 of rung r = winback_r (180/232/233 are the E1 candidates); E2 = winback_r_e2, whose texts
 # Vēstuļu šabloni is still writing -> no template id exists; the planner must hold them, never fall back.
 E1_BY_RUNG = {1: "winback_1", 2: "winback_2", 3: "winback_3"}
@@ -64,6 +84,22 @@ HOLD_E2_TEMPLATE = "E2_TEMPLATE_PENDING"
 # no state advances (state moves only in record_sent, on a real send).
 HOLD_EN = "EN_PENDING"
 EN_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", "LADDER_NO_RESTART", "SEQUENCE_DONE"}
+
+# B2B / LEAD guard (Raivis FLOW RULE v2, 2026-10-05 11:45; MAIN command 16:10 item 3): a contact whose flow is B2B
+# (Pipedrive organisation field 309 "MKT Plūsma" = option 716, or legacy_paytraq.b2b_shop_flow_classification_v2
+# flow = 'B2B') or LEAD gets NO lifecycle letter. Person-level, like G-EN: it replaces every "letter planned"
+# outcome; SUPPRESSED / BLOCKED keep their own reason. Checked BEFORE G-EN (a B2B contact is B2B in any language).
+HOLD_B2B, HOLD_LEAD = "B2B_FLOW", "LEAD_FLOW"
+FLOW_HOLD = {"B2B": HOLD_B2B, "LEAD": HOLD_LEAD}
+FLOW_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN"}
+PERSON_HOLDS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", HOLD_B2B, HOLD_LEAD, HOLD_EN}   # the person gets nothing at all
+
+
+def flow_hold(email_type, hold, flow):
+    """B2B / LEAD guard: the hold reason after the flow check (flow = 'B2B' | 'LEAD' | None)."""
+    if flow in FLOW_HOLD and hold not in FLOW_KEEPS:
+        return FLOW_HOLD[flow]
+    return hold
 
 
 # G15 / G15.1 INTERFACE (MAIN 2026-10-01 16:35, contract sha 95d569b22d9a): a price letter (E1 or E2, any rung) whose
@@ -106,14 +142,77 @@ RETIRED = {"rhythm_next": "active_xsell"}
 
 # lifecycle_stage -> (track, ordered letters). Only letters in INTERFACE_V1 may be emitted.
 TRACKS = {
-    "new": ("welcome_buyer", ["welcome_1"]),
+    "new": ("post_purchase", [PP1, XSELL]),                                     # POST-PURCHASE v1.2 (229 out)
     "reorder_due": ("reorder", ["reorder_1"]),                                  # K1
     "winback": ("winback", ["winback_1", "winback_1_e2", "winback_2", "winback_2_e2",
                             "winback_3", "winback_3_e2"]),                     # K3/K5 (order by last letter)
     "lost": ("lost_wave", ["lost_quarterly"]),
-    "active": ("active", ["active_xsell"]),
+    "active": ("post_purchase", [PP1, XSELL]),                                  # POST-PURCHASE v1.2
 }
+
+# POST-PURCHASE v1 + v1.1 + v1.2 (contract sha 682ad015f0ab) - every purchase: PP1 (244) -> weekly akcija as usual
+# -> PP3 (235). First and repeat purchases are the same. K8 applies; 179 falling due earlier wins (the stage turns
+# reorder_due and the reorder track takes over); a new purchase restarts the chain.
+#   PP1 timing: 3 days after the order is handed to the courier (P6 stage 62) or picked up; at most once per
+#   30 days per contact. The plan row carries the order number that triggers it (writer: ANKETA_URL / ORDER_NR).
+# INTERPRETATIONS of Sūtīšanas dzinējs 4 (reported to MAIN, reversible - constants only):
+#   (a) PP1 not sent within PP1_LATE_DAYS of its due day is skipped, never sent late (same principle as a missed
+#       E2): "how was THIS order" weeks later is a different letter. This is also what keeps the go-live day from
+#       sending 244 for every old order.
+#   (b) an order not yet handed over is waited for PP_WAIT_SHIP_DAYS (hold PP_NOT_SHIPPED), then PP1 is skipped.
+#   (c) PP3 once per purchase, no earlier than hand-over + 3 + 14 days and >= 14 d after PP1 (K8) - so at least
+#       one weekly akcija lies between them. The old "active_xsell every 28 days" rule is retired.
+PP1_AFTER_SHIP_DAYS = 3
+PP1_THROTTLE_DAYS = 30
+PP1_LATE_DAYS = 7
+PP_WAIT_SHIP_DAYS = 21
+XSELL_VALID_DAYS = 14                 # XS2: XSELL_VALID_UNTIL = send + 13
+HOLD_PP_NOT_SHIPPED = "PP_NOT_SHIPPED"
+POST_PURCHASE_TYPES = {PP1, XSELL}
+SALES_TYPES = None                    # filled below (needs LADDER_TYPES)
+
+
+def post_purchase_next(s: "State", f: "Facts", today: dt.date, floor):
+    """-> (email_type | None, due | None, hold | None, note). Pure."""
+    lo = f.last_order_on
+
+    def this_purchase(sent_on):                      # was that letter sent for THIS purchase?
+        return sent_on is not None and (lo is None or sent_on >= lo)
+
+    if this_purchase(f.last_xsell_sent_on):
+        return None, None, "SEQUENCE_DONE", "post-purchase chain done (PP3 sent for this purchase)"
+    pp1_done = this_purchase(f.last_pp_sent_on)
+    note = ""
+    if not pp1_done and f.pp_order_on is not None:
+        if f.pp_ship_on is None:
+            if (today - f.pp_order_on).days <= PP_WAIT_SHIP_DAYS:
+                return PP1, None, HOLD_PP_NOT_SHIPPED, f"order {f.pp_order_nr} not handed over yet"
+            note = f" PP1 skipped: order {f.pp_order_nr} not handed over in {PP_WAIT_SHIP_DAYS} d;"
+        else:
+            due1 = f.pp_ship_on + dt.timedelta(days=PP1_AFTER_SHIP_DAYS)
+            if floor:
+                due1 = max(due1, floor)                                   # K8
+            throttled = f.last_pp_sent_on is not None and \
+                due1 < f.last_pp_sent_on + dt.timedelta(days=PP1_THROTTLE_DAYS)
+            if throttled:
+                note = f" PP1 skipped: last 244 on {f.last_pp_sent_on} (< {PP1_THROTTLE_DAYS} d);"
+            elif today > due1 + dt.timedelta(days=PP1_LATE_DAYS):
+                note = f" PP1 skipped: was due {due1}, more than {PP1_LATE_DAYS} d ago;"
+            else:
+                return PP1, max(today, due1), None, f"order {f.pp_order_nr} handed over {f.pp_ship_on} + 3 d"
+    elif not pp1_done:
+        note = " PP1 skipped: no shop order found for this purchase;"
+    anchor = f.pp_ship_on or f.pp_order_on or lo or today
+    due3 = anchor + dt.timedelta(days=PP1_AFTER_SHIP_DAYS + MIN_GAP_ANY_DAYS)
+    if floor:
+        due3 = max(due3, floor)          # K8: >= 14 d after the last lifecycle letter (the 244 of this purchase included)
+    return XSELL, max(today, due3), None, (note + f" PP3 from {anchor} + 17 d").strip()
+
 LADDER_TYPES = E1_TYPES | E2_TYPES | {"lost_quarterly"}
+# "One sales letter per week: personal letter OR akcija, never both" (MAIN 2026-10-05 16:10 item 1). The personal
+# SALES letters; 244 asks about an order and sells nothing, so it does not take the week's akcija away
+# (interpretation of Sūtīšanas dzinējs 4, reported).
+SALES_TYPES = {"reorder_1", XSELL} | LADDER_TYPES
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}
 RUNG_CAP = 3
 
@@ -148,7 +247,7 @@ def lost_capped(s: "State", due: dt.date) -> bool:
 
 
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
-ACTIVE_XSELL_GAP_DAYS = 28        # UNCONFIRMED - one cross-sell a month
+ACTIVE_XSELL_GAP_DAYS = 28        # RETIRED 2026-10-05 (POST-PURCHASE v1.2: 235 once per purchase); history only
 LOST_REPEATS = True               # lost_quarterly repeats - LQ3: at most once per 90 days
 
 # GATE 232/233 (MAIN 2026-09-28 COMMAND 1 item 3, Vēstuļu šabloni pre-send row 13): winback_2 and
@@ -186,8 +285,14 @@ class Facts:
     last_order_on: dt.date | None
     first_order_on: dt.date | None
     suppressed: bool = False
-    rung_price_valid_until: dict | None = None   # {rung: date}; see PRICE_GATED_TYPES
+    rung_price_valid_until: dict | None = None   # {rung: date}; see PRICE_GATED_TYPES. 4 = lost (LQ1/LQ2), "4c" = LQ6
     entry_threshold_days: int | None = None      # customer_lifecycle: reorder_due starts at last_order + this
+    # POST-PURCHASE: the shop order of THIS purchase (latest P6 deal) and the two letters already sent
+    pp_order_nr: str | None = None
+    pp_order_on: dt.date | None = None
+    pp_ship_on: dt.date | None = None            # handed to the courier (P6 stage 62 / parcel staged) or picked up
+    last_pp_sent_on: dt.date | None = None       # last 244
+    last_xsell_sent_on: dt.date | None = None    # last 235
 
 
 @dc.dataclass
@@ -201,6 +306,8 @@ class Decision:
     changes: list                       # [(field, before, after)] for contact_sequence_log
     offer_valid_until: dt.date | None = None   # contract v2.8 OFFER_VALID_UNTIL (None -> "")
     lost_capped: bool | None = None             # LQ6, only on a lost_quarterly plan (None otherwise)
+    trigger_order_nr: str | None = None         # PP1: the order the 244 asks about (writer: ANKETA_URL / ORDER_NR)
+    xsell_valid_until: dt.date | None = None    # XS2: send + 13, only on a 235 plan
 
 
 def _month(d: dt.date) -> str:
@@ -266,26 +373,25 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
             earliest = f.last_order_on + dt.timedelta(days=f.entry_threshold_days
                                                       + L8_FACTOR * REORDER_TO_WINBACK1_GAP_DAYS)
             due = max(due, earliest)
+    elif track == "post_purchase":
+        nxt, due, pp_hold, pp_note = post_purchase_next(s, f, today, floor)
+        if nxt is None or pp_hold:
+            return Decision(s, nxt, due, 0, f"track={track} {pp_note}", pp_hold, changes,
+                            trigger_order_nr=f.pp_order_nr if nxt == PP1 else None)
     else:
         if s.step < len(letters):
             nxt = letters[s.step]
-        elif track in ("lost_wave", "active") and (LOST_REPEATS or track == "active"):
+        elif track == "lost_wave" and LOST_REPEATS:
             nxt = letters[-1]
         else:
             return Decision(s, None, None, 0, f"track={track} step={s.step}/{len(letters)} done",
                             "SEQUENCE_DONE", changes)
-        if track == "welcome_buyer":
-            base = f.first_order_on or today
-            due = max(today, base + dt.timedelta(days=3))
-        elif track == "reorder":
+        if track == "reorder":
             due = today                                        # K1: one letter; step >= 1 -> SEQUENCE_DONE above
-        elif track == "lost_wave":
+        else:  # lost_wave
             # LQ3: at most once per 90 days (replaces the monthly rule and K10); K4 floors still apply on entry
             due = today if s.last_email_type != LOST or s.last_sent_on is None \
                 else max(today, s.last_sent_on + dt.timedelta(days=LOST_GAP_DAYS))
-        else:  # active
-            due = today if s.last_sent_on is None else \
-                max(today, s.last_sent_on + dt.timedelta(days=ACTIVE_XSELL_GAP_DAYS))
         if floor:
             due = max(due, floor)
 
@@ -293,6 +399,11 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     rung = planned_rung(s, nxt, due)
     reason = (f"track={track} step={s.step + 1}/{len(letters)} letter={nxt} rung={rung}"
               f" last_order={f.last_order_on} last_sent={s.last_sent_on}")
+    if track == "post_purchase":
+        reason = f"track={track} letter={nxt} {pp_note} last_order={f.last_order_on} last_sent={s.last_sent_on}"
+        return Decision(s, nxt, due, 0, reason, None, changes,
+                        trigger_order_nr=f.pp_order_nr if nxt == PP1 else None,
+                        xsell_valid_until=due + dt.timedelta(days=XSELL_VALID_DAYS - 1) if nxt == XSELL else None)
     # A6 (v2.8.2) + K3: the ONE customer-facing date, owned here. E1 / lost = send + 13; E2 = its E1 + 13.
     ovu = (s.last_sent_on + dt.timedelta(days=13) if nxt in E2_TYPES else offer_valid_until(nxt, due)) if rung else None
     capped = lost_capped(s, due) if nxt == LOST else None
@@ -408,9 +519,9 @@ def has_rung_price(f: Facts, rung: int, due: dt.date, ovu: dt.date | None, today
     date re-evaluates, so only existence counts until then."""
     m = f.rung_price_valid_until or {}
     if rung == LOST_OFFER_RUNG:
-        # INTERIM until PAP names its LQ1/LQ2 lost-price column: capped -> the rung-1 row (LQ6); otherwise any PAP
-        # price row of the contact (its latest valid_until) stands in for "the lost letter carries a price".
-        vu = m.get(1) if capped else max(m.values(), default=None)
+        # LQ/XS PRICE SOURCE v1 (PS1): lost prices come ONLY from business_marts.pap_lqxs_current_v281 - the job puts
+        # the latest valid_until of the contact's lost rows under key 4 (LQ1/LQ2) and "4c" (LQ6 capped, rung-1 price).
+        vu = m.get("4c") if capped else m.get(LOST_OFFER_RUNG)
     else:
         vu = m.get(rung)
     if not rung or vu is None or ovu is None:
@@ -454,7 +565,7 @@ def apply_history(s: State, rows) -> tuple:
 def template_disagreements(template_map: dict) -> list:
     """INTERFACE_V1 vs mkt_control.email_template_map (email_type -> template_id)."""
     out = []
-    for et, tid in INTERFACE_V1.items():
+    for et, tid in INTERFACE_V2.items():
         if et == "akcija_weekly":
             continue
         if template_map.get(et) != tid:

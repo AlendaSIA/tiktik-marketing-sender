@@ -23,10 +23,14 @@ class LostQuarterly(unittest.TestCase):
 
     def test_lost_price_gate_capped_reads_rung_1_uncapped_any_row(self):
         far = D(2027, 1, 1)
-        self.assertTrue(S.has_rung_price(F("lost", rungs={1: far}), 4, D(2026, 10, 1), D(2026, 10, 14), D(2026, 10, 1), capped=True))
-        self.assertFalse(S.has_rung_price(F("lost", rungs={2: far}), 4, D(2026, 10, 1), D(2026, 10, 14), D(2026, 10, 1), capped=True))
-        self.assertTrue(S.has_rung_price(F("lost", rungs={2: far}), 4, D(2026, 10, 1), D(2026, 10, 14), D(2026, 10, 1)))
-        self.assertFalse(S.has_rung_price(F("lost", rungs=None), 4, D(2026, 10, 1), D(2026, 10, 14), D(2026, 10, 1)))
+        # LQ/XS PRICE SOURCE v1 (PS1): lost prices only from pap_lqxs_current_v281 -> key 4 (LQ1/LQ2), "4c" (LQ6);
+        # a ladder price row (v281 r1..r3) never stands in for a lost price any more.
+        a = (4, D(2026, 10, 1), D(2026, 10, 14), D(2026, 10, 1))
+        self.assertTrue(S.has_rung_price(F("lost", rungs={"4c": far}), *a, capped=True))
+        self.assertFalse(S.has_rung_price(F("lost", rungs={4: far, 1: far}), *a, capped=True))
+        self.assertTrue(S.has_rung_price(F("lost", rungs={4: far}), *a))
+        self.assertFalse(S.has_rung_price(F("lost", rungs={1: far, 2: far, 3: far, "4c": far}), *a))
+        self.assertFalse(S.has_rung_price(F("lost", rungs=None), *a))
 
     def test_pd_field_185_has_no_option_for_4_skipped_never_guessed(self):
         fw = W.field_writes(10, email_type="lost_quarterly", send_date=D(2026, 10, 1), offer_rung=4,

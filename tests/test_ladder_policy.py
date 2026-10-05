@@ -10,7 +10,7 @@ sys.path.insert(0, ROOT)
 import sequence as S  # noqa: E402
 
 D = dt.date
-FAR = {1: D(2027, 1, 1), 2: D(2027, 1, 1), 3: D(2027, 1, 1)}
+FAR = {1: D(2027, 1, 1), 2: D(2027, 1, 1), 3: D(2027, 1, 1), 4: D(2027, 1, 1)}   # 4 = lost price (PS1)
 
 
 def F(stage, last_order=D(2026, 3, 1), thr=30, rungs=FAR):

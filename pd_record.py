@@ -34,6 +34,7 @@ LETTER_LABEL = {
     # CADENCE v1 K3: the second letter of a price episode (same price, same deadline)
     "winback_1_e2": "Tava cena 1 · 2. vēstule", "winback_2_e2": "Tava cena 2 · 2. vēstule",
     "winback_3_e2": "Tava cena 3 · 2. vēstule",
+    "post_purchase_feedback": "Kā veicās ar pasūtījumu",      # POST-PURCHASE v1.1 PP1 (244)
 }
 
 

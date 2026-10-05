@@ -15,8 +15,15 @@ Raivis himself says so. Today every lock is closed by design:
       (mkt_control.shadow_rung_goods_slots, latest run_id of plan_date = send date); no run -> refuse;
       any audience member with 0 priced slots (NO_PRICED_SLOTS) or no row / a row for another rung
       (NO_SLOT_ROW) -> refuse. Never a fallback. Non-price letters skip L7.
+  L8  PRE-SEND DATA GATES (MAIN 2026-10-05 16:10 item 3): presend.gates() - the SAME function the daily plan
+      stores as presend_gate - is evaluated again for every audience member on that moment's data
+      (OFFER_VALID_UNTIL, XS4 R1_REF_PRICE + XSELL_VALID_UNTIL, ANKETA_URL, R-CAB, PP3 no-repeat, template
+      approval / provisional id). Any member with a gate -> the campaign is refused (a frozen audience is clean
+      or nothing goes, as L5).
+  L9  PERSON RE-CHECK at send time: B2B_FLOW / LEAD_FLOW (Pipedrive field 309 or the flow classification) and
+      G-EN (EN_PENDING). Any member blocked -> refuse.
 
-Only when all six pass does it call Brevo sendNow (one call), then, per recipient of the frozen
+Only when ALL pass does it call Brevo sendNow (one call), then, per recipient of the frozen
 audience: one mkt_control.send_log row (source='engine_live'), one Pipedrive write through
 pd_record.write(shadow=False) - the SAME record the shadow plan stored - and the sequence state is
 advanced with sequence.record_sent. Every dependency is injected, so the refusals are proven
@@ -28,6 +35,7 @@ import datetime as dt
 import os
 
 import pd_record
+import presend
 import sequence
 
 RIGA = dt.timezone(dt.timedelta(hours=3))   # EEST; only the DATE is compared, DST edge = 1 h
@@ -92,12 +100,39 @@ def g15_lock(*, campaign, send_date, audience, goods_run, goods) -> list:
     return [("L7", f"G15 run {run_id}: " + ", ".join(f"{k} {v}" for k, v in sorted(bad.items())))] if bad else []
 
 
+def presend_lock(*, campaign, send_date, audience, presend_ctx) -> list:
+    """L8. presend_ctx(campaign, send_date, master_keys) -> {master_key: presend.Ctx}; no Ctx = every gate that
+    needs data refuses (an empty Ctx), never a pass."""
+    ctx = presend_ctx(campaign, send_date, [a["master_key"] for a in audience])
+    bad = {}
+    for a in audience:
+        for g in presend.gates(campaign.get("email_type"), campaign.get("rung") or 0,
+                               ctx.get(a["master_key"]) or presend.Ctx())[:1]:
+            bad[g] = bad.get(g, 0) + 1
+    return [("L8", "pre-send gates: " + ", ".join(f"{k} {v}" for k, v in sorted(bad.items())))] if bad else []
+
+
+def person_lock(*, send_date, audience, person_blocks) -> list:
+    """L9. person_blocks(send_date, master_keys) -> {master_key: 'B2B_FLOW' | 'LEAD_FLOW' | 'EN_PENDING'}."""
+    blocked = person_blocks(send_date, [a["master_key"] for a in audience])
+    bad = {}
+    for a in audience:
+        r = blocked.get(a["master_key"])
+        if r:
+            bad[r] = bad.get(r, 0) + 1
+    return [("L9", "person re-check: " + ", ".join(f"{k} {v}" for k, v in sorted(bad.items())))] if bad else []
+
+
 def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, brevo_send,
-             log_sink, pd_writer, state_advance, now=None) -> dict:
+             log_sink, pd_writer, state_advance, offered_sink=None, now=None) -> dict:
     """campaign: {campaign_id, email_type, track, template_id, rung, utm_campaign, brevo_list_id}.
     lookups: object with track_enabled(track), template_approved(template_id),
              audience(batch_id, build_id) -> [ {master_key,email,person_id,reason} ], suppressed(emails)->int,
-             goods_run(send_date) -> run_id|None, goods(run_id, master_keys) -> {mk: (rung, zero_priced)}.
+             goods_run(send_date) -> run_id|None, goods(run_id, master_keys) -> {mk: (rung, zero_priced)},
+             presend_ctx(campaign, send_date, master_keys) -> {mk: presend.Ctx},
+             person_blocks(send_date, master_keys) -> {mk: reason}.
+    offered_sink(rows): REQUIRED for 235 - one row per (recipient, R product) into mkt_control.xsell_offered, so
+    the next 235 never repeats an R product (PP3).
     Raises SendLocked before ANY external call when a lock is closed."""
     now = now or dt.datetime.now(dt.timezone.utc)
     today = now.astimezone(RIGA).date()
@@ -112,8 +147,16 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
                         suppressed_count=lookups.suppressed([a["email"] for a in audience]))
     closed += g15_lock(campaign=campaign, send_date=send_date, audience=audience,
                        goods_run=lookups.goods_run, goods=lookups.goods)
+    if audience:
+        closed += presend_lock(campaign=campaign, send_date=send_date, audience=audience,
+                               presend_ctx=lookups.presend_ctx)
+        closed += person_lock(send_date=send_date, audience=audience, person_blocks=lookups.person_blocks)
+    if campaign.get("email_type") == sequence.XSELL and offered_sink is None:
+        closed.append(("WIRE", "235 needs offered_sink (mkt_control.xsell_offered) - PP3 no-repeat"))
     if closed:
         raise SendLocked(closed)
+    offered_ctx = lookups.presend_ctx(campaign, send_date, [a["master_key"] for a in audience]) \
+        if campaign.get("email_type") == sequence.XSELL else {}
 
     brevo_send(campaign["campaign_id"])                       # the ONE send call
     sent_at = now.isoformat()
@@ -134,6 +177,10 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
             pd_results.append(pd_record.write(rec, shadow=False, pd_writer=pd_writer, shadow_sink=None))
         state_advance(a["master_key"], campaign["email_type"], today, campaign.get("rung") or 0)
     log_sink(rows)
+    if offered_ctx:
+        offered_sink([{"master_key": a["master_key"], "email": a["email"], "handle": h, "sent_at": sent_at,
+                       "campaign_id": campaign["campaign_id"], "run_id": batch_id}
+                      for a in audience for h in (offered_ctx.get(a["master_key"]) or presend.Ctx()).r_handles])
     return {"sent": len(rows), "pd_writes": len(pd_results), "no_person": len(rows) - len(pd_results)}
 
 
@@ -154,6 +201,7 @@ class _ProductionLookupsNotWired:
     def _no(self, *a):
         raise SendLocked([("L3-L5", "production lookups are not wired - the unlock change wires them")])
     track_enabled = template_approved = audience = suppressed = goods_run = goods = _no
+    presend_ctx = person_blocks = _no
 
 
 def _unwired(*a, **k):

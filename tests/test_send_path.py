@@ -11,6 +11,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import pd_record  # noqa: E402
+import presend  # noqa: E402
 import send_path as SP  # noqa: E402
 
 NOW = dt.datetime(2026, 10, 6, 7, 0, tzinfo=dt.timezone.utc)      # 10:00 Riga, 06.10
@@ -45,6 +46,17 @@ class Lookups:
     def suppressed(self, e): self.touched.append("sup"); return self.s
     def goods_run(self, d): self.touched.append("goods_run"); return self.run
     def goods(self, r, mks): self.touched.append("goods"); return self.g
+    ctx = None      # {mk: presend.Ctx}; default = a letter that passes every gate
+    blocks = {}
+
+    def presend_ctx(self, c, d, mks):
+        self.touched.append("ctx")
+        ok = presend.Ctx(template_id=c.get("template_id"), template_approved=True, offer_valid_until="2026-10-19",
+                         goods=(c.get("rung"), False), r1_ref_price="9,90 €", xsell_valid_until="2026-10-19",
+                         anketa_url="https://plani.tiktik.lv/atsauksme.php?o=X&t=t", order_nr="X")
+        return {m: ok for m in mks} if self.ctx is None else self.ctx
+
+    def person_blocks(self, d, mks): self.touched.append("person"); return self.blocks
 
 
 def run(config=cfg(), lookups=None, unlocked="RAIVIS-2026-10-06", type_key="TESTTYPE"):
@@ -187,3 +199,81 @@ class L7G15PreSend(unittest.TestCase):
     def test_production_lookups_refuse_g15_too(self):
         with self.assertRaises(SP.SendLocked):
             SP._ProductionLookupsNotWired().goods_run("2026-10-06")
+
+
+class L8L9PreSend(unittest.TestCase):
+    """MAIN 2026-10-05 16:10 item 3: the data gates (L8) and the person re-check (L9) refuse before the Brevo call."""
+
+    def _run(self, camp, lk, offered="rec"):
+        brevo, log, pd, st, off = Rec(), Rec(), Rec(), Rec(), Rec()
+        with mock.patch.dict(os.environ, {"SEND_UNLOCKED_BY": "RAIVIS-2026-10-06"}, clear=False), \
+             mock.patch.object(pd_record, "PD_ACTIVITY_TYPE_KEY", "T"), mock.patch.object(pd_record, "PD_ACTIVITY_TYPE_ID", 7):
+            try:
+                out = SP.dispatch(dict(camp), send_date="2026-10-06", batch_id="B", build_id="b1", config=cfg(),
+                                  lookups=lk, brevo_send=brevo, log_sink=log, pd_writer=pd, state_advance=st,
+                                  offered_sink=off if offered == "rec" else offered, now=NOW)
+                return out, None, brevo, off
+            except SP.SendLocked as e:
+                return None, e, brevo, off
+
+    def _lk(self, ctx=None, blocks=None):
+        lk = Lookups()
+        lk.ctx = ctx
+        lk.blocks = blocks or {}
+        return lk
+
+    def test_any_member_with_a_gate_refuses_the_campaign(self):
+        ok = presend.Ctx(template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
+        bad = presend.Ctx(template_id=232, template_approved=True, offer_valid_until=None, goods=(2, False))
+        _, err, brevo, _ = self._run(CAMP, self._lk({"m1": ok, "m2": bad}))
+        self.assertIn(("L8", "pre-send gates: NO_OFFER_VALID_UNTIL 1"), err.closed)
+        self.assertEqual(brevo.calls, [])
+        out, err, brevo, _ = self._run(CAMP, self._lk({"m1": ok, "m2": ok}))
+        self.assertIsNone(err); self.assertEqual(len(brevo.calls), 1)
+
+    def test_a_member_without_ctx_refuses_never_passes(self):
+        ok = presend.Ctx(template_id=232, template_approved=True, offer_valid_until="2026-10-19", goods=(2, False))
+        _, err, brevo, _ = self._run(CAMP, self._lk({"m1": ok}))
+        self.assertIn("L8", [k for k, _ in err.closed]); self.assertEqual(brevo.calls, [])
+
+    def test_244_without_anketa_url_and_235_without_intro_price(self):
+        c244 = {**CAMP, "email_type": "post_purchase_feedback", "template_id": 244, "rung": 0, "track": "post_purchase"}
+        no = presend.Ctx(template_id=244, template_approved=True, anketa_url="", order_nr="M-1")
+        _, err, brevo, _ = self._run(c244, self._lk({"m1": no, "m2": no}))
+        self.assertIn("NO_ANKETA_URL 2", str(err)); self.assertEqual(brevo.calls, [])
+        c235 = {**CAMP, "email_type": "active_xsell", "template_id": 235, "rung": 0, "track": "post_purchase"}
+        no = presend.Ctx(template_id=235, template_approved=True, r1_ref_price="", xsell_valid_until="2026-10-19")
+        _, err, brevo, _ = self._run(c235, self._lk({"m1": no, "m2": no}))
+        self.assertIn("XS4_NO_INTRO_PRICE 2", str(err)); self.assertEqual(brevo.calls, [])
+
+    def test_L9_b2b_lead_en_recheck_at_send_time(self):
+        for reason in ("B2B_FLOW", "LEAD_FLOW", "EN_PENDING"):
+            _, err, brevo, _ = self._run(CAMP, self._lk(blocks={"m2": reason}))
+            self.assertIn(("L9", f"person re-check: {reason} 1"), err.closed)
+            self.assertEqual(brevo.calls, [])
+
+    def test_235_records_every_offered_r_product_and_refuses_without_the_sink(self):
+        c235 = {**CAMP, "email_type": "active_xsell", "template_id": 235, "rung": 0, "track": "post_purchase"}
+        ok = presend.Ctx(template_id=235, template_approved=True, r1_ref_price="9 €", xsell_valid_until="2026-10-19",
+                         r_handles=("h1", "h2"), r_cabinet=("h1", "h2"))
+        out, err, brevo, off = self._run(c235, self._lk({"m1": ok, "m2": ok}))
+        self.assertIsNone(err)
+        rows = off.calls[0][0]
+        self.assertEqual(sorted((r["master_key"], r["handle"]) for r in rows),
+                         [("m1", "h1"), ("m1", "h2"), ("m2", "h1"), ("m2", "h2")])
+        _, err, brevo, _ = self._run(c235, self._lk({"m1": ok, "m2": ok}), offered=None)
+        self.assertIn("WIRE", [k for k, _ in err.closed]); self.assertEqual(brevo.calls, [])
+        # a non-235 letter writes nothing there
+        out, err, brevo, off = self._run(CAMP, self._lk())
+        self.assertIsNone(err); self.assertEqual(off.calls, [])
+
+    def test_never_reached_while_config_locks_closed_and_production_is_unwired(self):
+        lk = self._lk()
+        with mock.patch.dict(os.environ, {"SEND_UNLOCKED_BY": "x"}, clear=False):
+            with self.assertRaises(SP.SendLocked):
+                SP.dispatch(dict(CAMP), send_date="2026-10-06", batch_id="B", build_id="b1", config=cfg(False, True),
+                            lookups=lk, brevo_send=Rec(), log_sink=Rec(), pd_writer=Rec(), state_advance=Rec(), now=NOW)
+        self.assertEqual(lk.touched, [])
+        for name in ("presend_ctx", "person_blocks"):
+            with self.assertRaises(SP.SendLocked):
+                getattr(SP._ProductionLookupsNotWired(), name)(1, 2, 3)

@@ -24,8 +24,12 @@ class UtmReorder3(unittest.TestCase):
 
     def test_every_email_type_the_engine_can_emit_has_a_theme(self):
         # CADENCE v1: track letters + E2 of rungs 1..3 + every interface name (akcija_weekly is named per campaign)
-        emitted = {n for _, letters in S.TRACKS.values() for n in letters} | S.E2_TYPES | set(S.INTERFACE_V1)
+        emitted = {n for _, letters in S.TRACKS.values() for n in letters} | S.E2_TYPES | set(S.INTERFACE_V2)
         emitted.discard("akcija_weekly")
+        # 244 has NO theme yet: a customer-facing theme is agreed with MAIN, never invented by code. Until then a
+        # live send of 244 refuses (UnknownVariantTheme) - fail closed, on the go-live sheet.
+        self.assertRaises(utm.UnknownVariantTheme, utm.slug, "2026-10-06", S.PP1, "lv")
+        emitted.discard(S.PP1)
         for et in sorted(emitted):
             self.assertTrue(utm.theme(et), et)
             utm.slug("2026-10-06", et, "lv")          # raises UnknownVariantTheme on a miss
@@ -103,7 +107,8 @@ class Ladder(unittest.TestCase):
 
     def test_only_interface_v1_names_are_emitted(self):
         names = {n for _, letters in S.TRACKS.values() for n in letters}
-        self.assertTrue(names <= set(S.INTERFACE_V1) | S.E2_TYPES)
+        self.assertTrue(names <= set(S.INTERFACE_V2))
+        self.assertFalse(S.NEVER_PLANNED & names)                      # 229 out (POST-PURCHASE v1.2), 230/231 out
         self.assertFalse({"reorder_2", "reorder_3"} & names)          # CADENCE v1 K1
         self.assertNotIn("rhythm_next", names)
 
@@ -166,7 +171,7 @@ class OfferDeadline(unittest.TestCase):
         far = {1: D(2026, 12, 31)}
         d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))                 # CADENCE v1 K3: E1 + 13
-        d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs=far), D(2026, 10, 6))
+        d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs={4: D(2026, 12, 31)}), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))
         d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
         self.assertIsNone(d.offer_valid_until)
