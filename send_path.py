@@ -23,6 +23,10 @@ Raivis himself says so. Today every lock is closed by design:
   L9  PERSON RE-CHECK at send time: B2B_FLOW / LEAD_FLOW (Pipedrive field 309 or the flow classification) and
       G-EN (EN_PENDING). Any member blocked -> refuse.
 
+  L10 DATES AND SEND WINDOW v1 (contract 9d7c6584cc16, DW3 / DW4): the send is inside 09:00-23:00 Europe/Riga
+      of the send date, mkt_control.letter_fields_log has an OK run for the send date, and that run read the
+      LATEST plan run of the date (a plan rebuilt after the writer -> refuse until the writer runs again).
+
 Only when ALL pass does it call Brevo sendNow (one call), then, per recipient of the frozen
 audience: one mkt_control.send_log row (source='engine_live'), one Pipedrive write through
 pd_record.write(shadow=False) - the SAME record the shadow plan stored - and the sequence state is
@@ -123,6 +127,34 @@ def person_lock(*, send_date, audience, person_blocks) -> list:
     return [("L9", "person re-check: " + ", ".join(f"{k} {v}" for k, v in sorted(bad.items())))] if bad else []
 
 
+SEND_WINDOW = (dt.time(9, 0), dt.time(23, 0))          # DW3, Europe/Riga wall clock
+
+
+def riga(now: dt.datetime) -> dt.datetime:
+    import zoneinfo
+    return now.astimezone(zoneinfo.ZoneInfo("Europe/Riga"))
+
+
+def window_lock(*, send_date, now, letter_fields, plan_run) -> list:
+    """L10. letter_fields(send_date) -> {'status', 'plan_run_id', 'run_id'} | None (latest writer run of the date);
+    plan_run(send_date) -> run_id of the latest plan run of the date | None."""
+    closed = []
+    local = riga(now)
+    if str(send_date) != local.date().isoformat():
+        closed.append(("L10", f"send date {send_date} is not today in Riga ({local.date()})"))
+    elif not (SEND_WINDOW[0] <= local.time() < SEND_WINDOW[1]):
+        closed.append(("L10", f"outside the send window 09:00-23:00 Riga (now {local.strftime('%H:%M')})"))
+    lf, plan = letter_fields(send_date), plan_run(send_date)
+    if plan is None:
+        closed.append(("L10", f"no plan run for send date {send_date}"))
+    if lf is None or lf.get("status") != "OK":
+        closed.append(("L10", f"letter_fields_log is not OK for send date {send_date}"))
+    elif plan is not None and lf.get("plan_run_id") != plan:
+        closed.append(("L10", f"the plan was rebuilt after the letter writer ran (writer read {lf.get('plan_run_id')}, "
+                              f"latest plan {plan}) - the writer must run again"))
+    return closed
+
+
 def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, brevo_send,
              log_sink, pd_writer, state_advance, offered_sink=None, now=None) -> dict:
     """campaign: {campaign_id, email_type, track, template_id, rung, utm_campaign, brevo_list_id}.
@@ -140,6 +172,10 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
                           unlocked_by=os.environ.get("SEND_UNLOCKED_BY"), today=today)
     if closed:
         raise SendLocked(closed)                              # no lookup, no network
+    closed = window_lock(send_date=send_date, now=now, letter_fields=lookups.letter_fields,
+                         plan_run=lookups.plan_run)
+    if closed:
+        raise SendLocked(closed)                              # before the audience is even read
     audience = lookups.audience(batch_id, build_id)
     closed = data_locks(campaign=campaign, track_enabled=lookups.track_enabled(campaign["track"]),
                         template_approved=lookups.template_approved(campaign["template_id"]),
@@ -201,7 +237,7 @@ class _ProductionLookupsNotWired:
     def _no(self, *a):
         raise SendLocked([("L3-L5", "production lookups are not wired - the unlock change wires them")])
     track_enabled = template_approved = audience = suppressed = goods_run = goods = _no
-    presend_ctx = person_blocks = _no
+    presend_ctx = person_blocks = letter_fields = plan_run = _no
 
 
 def _unwired(*a, **k):

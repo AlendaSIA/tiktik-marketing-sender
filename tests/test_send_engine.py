@@ -172,7 +172,7 @@ class OfferDeadline(unittest.TestCase):
         d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))                 # CADENCE v1 K3: E1 + 13
         d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs={4: D(2026, 12, 31)}), D(2026, 10, 6))
-        self.assertEqual(d.offer_valid_until, D(2026, 10, 19))
+        self.assertEqual(d.offer_valid_until, D(2026, 10, 20))                 # DW1: 234 = send + 14
         d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
         self.assertIsNone(d.offer_valid_until)
 
@@ -278,7 +278,8 @@ class Gate232233(unittest.TestCase):
     def test_no_price_rows_hold(self):
         d = S.advance(self.ST, facts("winback", D(2026, 3, 1)), D(2026, 11, 3))
         self.assertEqual((d.next_email_type, d.offer_rung, d.hold_reason, d.offer_valid_until),
-                         ("winback_2", 2, "no_offer_valid_until", None))
+                         ("winback_2", 2, "no_offer_valid_until", D(2026, 11, 16)))   # DW1: the date is carried anyway
+        self.assertIs(d.has_price, False)
 
     def test_price_only_at_other_rung_holds(self):
         d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={1: D(2026, 11, 30)}), D(2026, 11, 3))
@@ -294,7 +295,8 @@ class Gate232233(unittest.TestCase):
 
     def test_a6_pap_valid_until_below_our_date_on_send_day_holds(self):
         d = S.advance(self.ST, facts("winback", D(2026, 3, 1), rungs={2: D(2026, 11, 15)}), D(2026, 11, 3))
-        self.assertEqual((d.hold_reason, d.offer_valid_until), ("no_offer_valid_until", None))
+        self.assertEqual((d.hold_reason, d.offer_valid_until, d.has_price),
+                         ("no_offer_valid_until", D(2026, 11, 16), False))
 
     def test_a6_condition_is_deferred_to_the_send_date(self):
         # planned 28.10 for 03.11: today's table cannot decide; existence counts, date is ours
@@ -341,7 +343,7 @@ class A6OneOfferValidUntil(unittest.TestCase):
         self.assertEqual(S.offer_valid_until("winback_1", D(2026, 10, 1)), D(2026, 10, 14))
         self.assertEqual(S.offer_valid_until("winback_3", D(2026, 10, 1)), D(2026, 10, 14))
         self.assertEqual(S.offer_valid_until("winback_3_e2", D(2026, 10, 8)), D(2026, 10, 14))
-        self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 14))
+        self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 15))   # DW1: + 14
         for et in ("reorder_1", "welcome_1", "active_xsell"):
             self.assertIsNone(S.offer_valid_until(et, D(2026, 10, 1)))
 
@@ -351,11 +353,15 @@ class A6OneOfferValidUntil(unittest.TestCase):
             d = S.advance(S.State("n"), facts(stage, D(2026, 9, 1), D(2026, 9, 1), rungs=far), D(2026, 10, 1))
             self.assertIsNone(d.offer_valid_until, stage)
         d = S.advance(S.State("n2"), facts("winback", D(2026, 3, 1)), D(2026, 10, 1))   # winback_1, no price
-        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until), ("winback_1", None, None))
+        # DW1 (contract 9d7c6584cc16): the date is on the row although no price exists yet; has_price says so
+        self.assertEqual((d.next_email_type, d.hold_reason, d.offer_valid_until, d.has_price),
+                         ("winback_1", None, D(2026, 10, 14), False))
 
-    def test_job_writes_ovu_only_on_would_send(self):
+    def test_job_writes_the_date_on_every_planned_priced_row(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
-        self.assertIn('"offer_valid_until": (would and d.offer_valid_until', src)
+        self.assertIn('"offer_valid_until": d.offer_valid_until and d.offer_valid_until.isoformat(),', src)
+        self.assertIn('"xsell_valid_until": d.xsell_valid_until and d.xsell_valid_until.isoformat(),', src)
+        self.assertNotIn("(would and d.offer_valid_until", src)
 
 
 class DiffNoise(unittest.TestCase):

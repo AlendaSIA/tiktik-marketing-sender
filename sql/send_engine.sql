@@ -144,3 +144,7 @@ OPTIONS(description="Daily self-check written with the shadow plan. level hard =
 CREATE TABLE IF NOT EXISTS `jaunais-za-aizv04022026.mkt_control.xsell_offered` (
   master_key STRING, email STRING, handle STRING, sent_at TIMESTAMP, campaign_id INT64, run_id STRING)
 OPTIONS(description="PP3 'never repeat an R product already offered': one row per (recipient, R product) of every 235 actually SENT. Written ONLY by the live send path (send_path.dispatch offered_sink); shadow never writes here. Read by the planner gate XSELL_REPEAT / XSELL_NOTHING_NEW. Writer = Sūtīšanas dzinējs.");
+
+-- DATES AND SEND WINDOW v1 (contract 9d7c6584cc16): DW4 made visible.
+ALTER TABLE `jaunais-za-aizv04022026.mkt_control.shadow_run_report`
+  ADD COLUMN IF NOT EXISTS replanned_after_writer BOOL;

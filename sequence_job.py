@@ -449,8 +449,36 @@ def _d(v):
     return None if v is None else (v if isinstance(v, dt.date) else dt.date.fromisoformat(str(v)[:10]))
 
 
+# DW3 / DW4: 06:00 sync -> 08:05 plan -> 08:40 letter writer -> send window 09:00-23:00. The plan is not re-run
+# after the writer ran on a send day. This job REFUSES to rebuild today's plan once mkt_control.letter_fields_log
+# holds an OK row for today (the writer has already copied the dates), unless ALLOW_REPLAN_AFTER_WRITER=1 is set on
+# that one execution - and then the run report says so (replanned_after_writer) and send_path lock L10 refuses every
+# send until the writer has run again on the new plan. Temp runs (SHADOW_TABLE_SUFFIX) never touch the real plan.
+WRITER_LOG_SQL = f"""SELECT run_id, finished_at, JSON_VALUE(counts, '$.plan_run_id') AS plan_run_id
+FROM `{P}.mkt_control.letter_fields_log` WHERE plan_date = CURRENT_DATE() AND status = 'OK'
+ORDER BY finished_at DESC LIMIT 1"""
+
+
+class ReplanRefused(RuntimeError):
+    pass
+
+
+def replan_guard(writer_row, allow: bool, temp: bool) -> bool:
+    """-> replanned_after_writer. Raises ReplanRefused when the writer already ran today and no override is set."""
+    if writer_row is None or temp:
+        return False
+    if not allow:
+        raise ReplanRefused(
+            f"DW4: the letter writer already ran today ({writer_row['run_id']}, plan {writer_row['plan_run_id']}) - "
+            "the plan is not rebuilt after it on a send day. Set ALLOW_REPLAN_AFTER_WRITER=1 on this execution only "
+            "if the writer will run again before any send.")
+    return True
+
+
 def main():
     bq = bigquery.Client(project=P)
+    replanned = replan_guard(next(iter(bq.query(WRITER_LOG_SQL).result()), None),
+                             os.environ.get("ALLOW_REPLAN_AFTER_WRITER") == "1", bool(SFX))
     today = dt.date.today()
     now = dt.datetime.now(dt.timezone.utc).isoformat()
 
@@ -608,7 +636,7 @@ def main():
                 basis["anketa"] = "order_nr_usable"
             gate_list = G.gates(et, d.offer_rung, G.Ctx(
                 template_id=tid, template_approved=(tid, et) in approved,
-                offer_valid_until=d.offer_valid_until, goods=goods.get(mk),
+                offer_valid_until=d.offer_valid_until, goods=goods.get(mk), has_price=d.has_price,
                 price_stale=lqxs_stale if et in (S.LOST, S.XSELL) else rung_stale,
                 r_handles=r, r_cabinet=r_cab, r1_ref_price=r1_ref, xsell_valid_until=xvu,
                 xsell_offered=offered.get(mk, frozenset()), anketa_url=anketa, order_nr=d.trigger_order_nr))
@@ -621,14 +649,14 @@ def main():
             "track": s.track, "step": s.step + 1 if d.next_email_type else s.step,
             "email_type": d.next_email_type, "template_id": tid,
             "offer_rung": d.offer_rung, "planned_send_date": d.next_due_on and d.next_due_on.isoformat(),
-            # v2.8.2 A6: filled only for a letter that would go AND carries a rung price
-            "offer_valid_until": (would and d.offer_valid_until and d.offer_valid_until.isoformat()) or None,
+            # DW1 (contract 9d7c6584cc16): EVERY planned priced letter carries its date - held rows too
+            "offer_valid_until": d.offer_valid_until and d.offer_valid_until.isoformat(),
             "would_send": would, "hold_reason": hold, "reason": d.reason,
             "lost_capped": d.lost_capped,                                   # LQ6, read by the writer
             "interface_template_id": TEMPLATES.get(et), "template_source": tsrc,
             "flow": flow, "flow_source": flow_from,
             "trigger_order_nr": d.trigger_order_nr,                         # 244: read by the writer (ANKETA_URL / ORDER_NR)
-            "xsell_valid_until": (would and d.xsell_valid_until and d.xsell_valid_until.isoformat()) or None,
+            "xsell_valid_until": d.xsell_valid_until and d.xsell_valid_until.isoformat(),
             "presend_gate": gate_list[0] if gate_list else None,
             "presend_gates": ",".join(gate_list) or None,
             "would_deliver": would and not gate_list,
@@ -777,6 +805,7 @@ def main():
         "en_masters": len(en_masters), "en_addresses": en_src["en_addresses"],
         "en_list_snapshot_age_h": en_src["list_snapshot_age_h"],
         # Sūtīšanas dzinējs 4
+        "replanned_after_writer": replanned,
         "bundle": BUNDLE, "would_deliver": sum(bool(r.get("would_deliver")) for r in plan_rows),
         "holds_json": cnt(("email_type", "hold_reason"), [r for r in plan_rows if not r["would_send"]]),
         "gates_json": cnt(("email_type", "presend_gate"), [r for r in plan_rows if r["would_send"]]),

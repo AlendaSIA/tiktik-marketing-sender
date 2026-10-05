@@ -57,6 +57,11 @@ class Lookups:
         return {m: ok for m in mks} if self.ctx is None else self.ctx
 
     def person_blocks(self, d, mks): self.touched.append("person"); return self.blocks
+    lf = {"status": "OK", "plan_run_id": "plan-1", "run_id": "lf-1"}
+    plan = "plan-1"
+
+    def letter_fields(self, d): self.touched.append("lf"); return self.lf
+    def plan_run(self, d): self.touched.append("plan"); return self.plan
 
 
 def run(config=cfg(), lookups=None, unlocked="RAIVIS-2026-10-06", type_key="TESTTYPE"):

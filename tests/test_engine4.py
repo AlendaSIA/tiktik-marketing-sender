@@ -236,7 +236,11 @@ class PreSendGates(unittest.TestCase):
             self.assertEqual(G.gates(et, rung, ctx(goods=(rung, True))), [G.NO_PRICED], et)
             self.assertEqual(G.gates(et, rung, ctx(goods=None)), [G.NO_SLOT_ROW], et)
             self.assertEqual(G.gates(et, rung, ctx(goods=(rung + 1, False))), [G.NO_SLOT_ROW], et)
-        self.assertEqual(G.gates("winback_1", 1, ctx(offer_valid_until=None, price_stale=True)), [G.PRICE_STALE])
+        # DW1: the date is always there; a missing PRICE is its own gate (stale table or no row at the rung)
+        self.assertEqual(G.gates("winback_1", 1, ctx(has_price=False, price_stale=True)), [G.PRICE_STALE])
+        self.assertEqual(G.gates("winback_1", 1, ctx(has_price=False)), [G.NO_PRICE])
+        self.assertEqual(G.gates("winback_1", 1, ctx(has_price=True)), [])
+        self.assertEqual(G.gates("winback_1", 1, ctx(offer_valid_until=None, price_stale=True)), [G.NO_OVU])
         self.assertEqual(G.gates("reorder_1", 0, ctx(offer_valid_until=None, goods=None)), [])   # no price letter
 
     def test_235_xs4_needs_both_fields(self):
@@ -272,7 +276,7 @@ class PreSendGates(unittest.TestCase):
         self.assertEqual(G.gates(S.XSELL, 0, G.Ctx()), [G.T_NOT_APPROVED, G.XS4])
         self.assertEqual(G.gates(S.PP1, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_ANKETA])
         self.assertEqual(G.gates(None, 0, G.Ctx()), [])
-        self.assertEqual(len(set(G.ALL)), 11)
+        self.assertEqual(len(set(G.ALL)), 12)
 
     def test_job_stores_the_gate_next_to_the_plan_and_never_changes_would_send(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
@@ -350,18 +354,24 @@ class SelfCheck(unittest.TestCase):
         self.assertEqual(self.failed(self.run_([plan("a", "welcome_1", False, "X")])), ["retired_letters_planned"])
         self.assertEqual(self.failed(self.run_([plan("a", template_id=None)])), ["would_send_without_template_or_date"])
         self.assertEqual(self.failed(self.run_([plan("a", "winback_1", offer_rung=1)])),
-                         ["price_letter_deliverable_without_offer_valid_until"])
+                         ["planned_priced_row_without_date", "price_letter_deliverable_without_offer_valid_until"])
         self.assertEqual(self.failed(self.run_([plan("a", S.PP1, template_id=244)])), ["244_deliverable_without_order_nr"])
         self.assertEqual(self.failed(self.run_([plan("a", S.XSELL, template_id=235)])),
-                         ["235_deliverable_without_xsell_valid_until"])
+                         ["235_deliverable_without_xsell_valid_until", "planned_priced_row_without_date"])
         self.assertEqual(self.failed(self.run_([plan("a"), plan("a")])), ["one_plan_row_per_person"])
+        self.assertEqual(self.failed(self.run_([plan("a", "lost_quarterly", False, "EN_PENDING", offer_rung=4)])),
+                         ["planned_priced_row_without_date"])
+        self.assertEqual(self.failed(self.run_([plan("a", S.XSELL, False, "B2B_FLOW", template_id=235)])),
+                         ["planned_priced_row_without_date"])
+        ok = plan("a", "winback_1", False, "EN_PENDING", offer_rung=1, offer_valid_until="2026-10-18")
+        self.assertEqual(self.failed(self.run_([ok])), [])
         akc = [{"master_key": "a", "in_audience": True, "send_date": "2026-10-06", "excluded_reason": None}]
         self.assertEqual(self.failed(self.run_([plan("a")], akc)), ["personal_letter_and_akcija_same_week"])
 
     def test_a_gated_letter_is_not_a_hard_failure(self):
-        out = self.run_([plan("a", "winback_1", gate="NO_OFFER_VALID_UNTIL", offer_rung=1)])
+        out = self.run_([plan("a", "winback_1", gate="NO_PRICE_ROW", offer_rung=1, offer_valid_until="2026-10-18")])
         self.assertEqual(self.failed(out), [])
-        self.assertIn("winback_1 | NO_OFFER_VALID_UNTIL", out["count_blocked_by_gate"]["detail"])
+        self.assertIn("winback_1 | NO_PRICE_ROW", out["count_blocked_by_gate"]["detail"])
 
     def test_stale_inputs_and_open_seams_are_warnings_only(self):
         out = self.run_([plan("a")], ages_h={"rung_price": 40, "goods_run_days": 4}, writer_missing=["ANKETA_URL"],

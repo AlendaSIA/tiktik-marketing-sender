@@ -240,7 +240,14 @@ RUNG_CAP = 3
 # valid 7 days for reorder/winback rungs, 14 days for the lost wave. Counted INCLUDING the send day,
 # so OFFER_VALID_UNTIL = send date + (days - 1). reorder has no rung (P5) -> no deadline from here.
 # CADENCE v1 K3: an episode's price holds 14 days from E1 (E1 + 13 = E2 + 6), so E1 = 14 d, E2 = 7 d, lost 14 d.
-OFFER_VALID_DAYS = {**{t: 14 for t in E1_TYPES}, **{t: 7 for t in E2_TYPES}, "lost_quarterly": 14}
+# DATES AND SEND WINDOW v1 (MAIN 2026-10-05 18:30, contract sha 9d7c6584cc16) DW1 - the ENGINE owns every validity
+# date and EVERY planned priced letter's plan row carries it, whether or not a price exists yet (the writer needs
+# the date to price the slots; the old "date only when a price exists" was a circle that left every date NULL):
+#   E1 180 / 232 / 233 = planned send date + 13 · E2 = the date of its E1 · 234 = planned send date + 14 ·
+#   235 xsell_valid_until = planned send date + 13.
+# NOTE 234: DW1 says + 14; LQ4 and A6 of the same contract say + 13. DW1 is the newer wording and is applied;
+# reported to MAIN.
+OFFER_VALID_DAYS = {**{t: 14 for t in E1_TYPES}, **{t: 7 for t in E2_TYPES}, "lost_quarterly": 15}
 
 # LADDER POLICY v1 (Raivis 2026-09-28 15:33/15:35, contract sha 326480dce080, rules L1-L8). Replaces every
 # "UNCONFIRMED ladder default". L2 rung by stage; L3 lost keeps the last reached rung (max 3, never deeper);
@@ -328,6 +335,7 @@ class Decision:
     lost_capped: bool | None = None             # LQ6, only on a lost_quarterly plan (None otherwise)
     trigger_order_nr: str | None = None         # PP1: the order the 244 asks about (writer: ANKETA_URL / ORDER_NR)
     xsell_valid_until: dt.date | None = None    # XS2: send + 13, only on a 235 plan
+    has_price: bool | None = None               # a price row exists for this letter's rung today (None = not a price letter)
 
 
 def _month(d: dt.date) -> str:
@@ -428,10 +436,12 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
     ovu = (s.last_sent_on + dt.timedelta(days=13) if nxt in E2_TYPES else offer_valid_until(nxt, due)) if rung else None
     capped = lost_capped(s, due) if nxt == LOST else None
     has = has_rung_price(f, rung, due, ovu, today, capped=bool(capped))
+    hp = has if rung else None
     if nxt in PRICE_GATED_TYPES and not has:
-        return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, None, capped)
-    # OFFER_VALID_UNTIL only when the letter carries a rung price (OFFER_RUNG > 0 AND a price exists)
-    return Decision(s, nxt, due, rung, reason, None, changes, ovu if has else None, capped)
+        return Decision(s, nxt, due, rung, reason + " no rung price", HOLD_NO_OFFER, changes, ovu, capped,
+                        has_price=hp)
+    # DW1: the date is carried by EVERY planned priced letter; whether a price exists is has_price / the gates
+    return Decision(s, nxt, due, rung, reason, None, changes, ovu, capped, has_price=hp)
 
 
 def cadence_floor(s: State, f: Facts):

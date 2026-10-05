@@ -56,6 +56,11 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     out.append(_row("244_deliverable_without_order_nr", "hard", not bad, len(bad), bad[:20]))
     bad = [r["master_key"] for r in wd if r["email_type"] == S.XSELL and not r.get("xsell_valid_until")]
     out.append(_row("235_deliverable_without_xsell_valid_until", "hard", not bad, len(bad), bad[:20]))
+    # DW1 (contract 9d7c6584cc16): every planned priced letter carries its date - held rows included
+    bad = count_by([r for r in plan_rows if r.get("planned_send_date") and (
+        (r.get("email_type") in S.LADDER_TYPES and not r.get("offer_valid_until"))
+        or (r.get("email_type") == S.XSELL and not r.get("xsell_valid_until")))], ("email_type",))
+    out.append(_row("planned_priced_row_without_date", "hard", not bad, sum(bad.values()), bad))
     seen, dup = set(), 0
     for r in plan_rows:
         dup += r["master_key"] in seen

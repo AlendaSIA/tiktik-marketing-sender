@@ -16,6 +16,7 @@ Gates (each a named reason):
   TEMPLATE_NOT_APPROVED  no approved row in mkt_control.template_approval for (template id, email type)
   PRICE_SOURCE_STALE     a price letter / 235 and the price table is older than 26 h (v2.8.2 A7) - no price today
   NO_OFFER_VALID_UNTIL   a price letter (E1 / E2 of any rung, lost_quarterly) without OFFER_VALID_UNTIL
+  NO_PRICE_ROW           a price letter with a date but no price row at its rung in a fresh price table
   NO_SLOT_ROW            G15.1: a price letter with no goods row, or a row built for another rung
   NO_PRICED_SLOTS        G15: a price letter whose goods carry 0 priced slots
   XS4_NO_INTRO_PRICE     235 without R1_REF_PRICE, or without XSELL_VALID_UNTIL (XS4)
@@ -35,6 +36,7 @@ T_PROVISIONAL = "TEMPLATE_PROVISIONAL"
 T_NOT_APPROVED = "TEMPLATE_NOT_APPROVED"
 PRICE_STALE = "PRICE_SOURCE_STALE"
 NO_OVU = "NO_OFFER_VALID_UNTIL"
+NO_PRICE = "NO_PRICE_ROW"
 NO_SLOT_ROW = S.HOLD_NO_SLOT_ROW
 NO_PRICED = S.HOLD_NO_PRICED
 XS4 = "XS4_NO_INTRO_PRICE"
@@ -42,7 +44,7 @@ XS_NOTHING_NEW = "XSELL_NOTHING_NEW"
 XS_REPEAT = "XSELL_REPEAT"
 NO_ANKETA = "NO_ANKETA_URL"
 RCAB = "RCAB_MISMATCH"
-ALL = (T_PROVISIONAL, T_NOT_APPROVED, PRICE_STALE, NO_OVU, NO_SLOT_ROW, NO_PRICED, XS4, XS_NOTHING_NEW, XS_REPEAT,
+ALL = (T_PROVISIONAL, T_NOT_APPROVED, PRICE_STALE, NO_OVU, NO_PRICE, NO_SLOT_ROW, NO_PRICED, XS4, XS_NOTHING_NEW, XS_REPEAT,
        NO_ANKETA, RCAB)
 
 # Templates that print R1..R4 (grep "R1_NAME" over templates/ on feat/v2.8-price-fields @ 48dac94, 2026-10-05):
@@ -58,6 +60,7 @@ class Ctx:
     offer_valid_until: dt.date | str | None = None      # engine-owned (A6); the writer copies it
     goods: tuple | None = None                          # (rung, zero_priced) from the goods run, or None
     price_stale: bool = False                           # A7 on the table this letter's price comes from
+    has_price: bool | None = None                       # engine: a price row exists at the rung (None = unknown)
     r_handles: tuple = ()                               # the letter's R goods (handles, slot order)
     r_cabinet: tuple = ()                               # what the cabinet shows for this contact (handles)
     r1_ref_price: str | None = None                     # XS5 R1_REF_PRICE ("" / None = no intro price)
@@ -78,7 +81,9 @@ def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
         out.append(T_NOT_APPROVED)
     if S.is_price_letter(email_type, offer_rung):
         if not c.offer_valid_until:
-            out.append(PRICE_STALE if c.price_stale else NO_OVU)
+            out.append(NO_OVU)
+        elif c.has_price is False:                          # DW1: the date no longer says a price exists
+            out.append(PRICE_STALE if c.price_stale else NO_PRICE)
         g = S.goods_hold(email_type, offer_rung, None, c.goods)             # G15 / G15.1
         if g:
             out.append(g)
