@@ -282,3 +282,23 @@ class L8L9PreSend(unittest.TestCase):
         for name in ("presend_ctx", "person_blocks"):
             with self.assertRaises(SP.SendLocked):
                 getattr(SP._ProductionLookupsNotWired(), name)(1, 2, 3)
+
+
+class L10DatesAndWindow(L8L9PreSend):
+    """DW3 / DW4 through dispatch(): refused before the audience is read and before Brevo."""
+
+    def test_writer_missing_or_on_an_older_plan_refuses(self):
+        for lf, word in ((None, "letter_fields_log is not OK"),
+                         ({"status": "OK", "plan_run_id": "plan-0", "run_id": "lf-0"}, "rebuilt after the letter writer")):
+            lk = self._lk()
+            lk.lf = lf
+            _, err, brevo, _ = self._run(CAMP, lk)
+            self.assertEqual([k for k, _ in err.closed], ["L10"])
+            self.assertIn(word, str(err))
+            self.assertEqual(brevo.calls, [])
+            self.assertNotIn("aud", lk.touched)
+
+    def test_passes_with_the_writer_on_the_latest_plan(self):
+        out, err, brevo, _ = self._run(CAMP, self._lk())
+        self.assertIsNone(err)
+        self.assertEqual(len(brevo.calls), 1)
