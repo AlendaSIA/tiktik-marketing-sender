@@ -179,3 +179,19 @@ class WriterOutputV1(unittest.TestCase):
         self.assertIn('w["ORDER_NR"] == d.trigger_order_nr', src)
         self.assertNotIn("(mintable)", src)
         self.assertNotIn("(xs_intro)", src)
+
+
+class LetterParams(unittest.TestCase):
+    def test_params_are_the_uppercase_columns_untouched(self):
+        row = {"plan_date": "2026-10-05", "email": "a@x.lv", "n_priced": 2, "p1_sku": "S", "GREETING": "Sveiki",
+               "P1_PRICE": "5,49 €", "P1_FRESH": True, "OFFER_RUNG": 1, "R1_NAME": None, "ANKETA_URL": ""}
+        self.assertEqual(SP.letter_params(row), {"GREETING": "Sveiki", "P1_PRICE": "5,49 €", "P1_FRESH": True,
+                                                 "OFFER_RUNG": 1, "R1_NAME": None, "ANKETA_URL": ""})
+
+    def test_pd_note_lines_come_from_the_same_row(self):
+        import sequence_job as J
+        row = {f"P{i}_{k}": None for i in range(1, 9) for k in ("NAME", "PRICE", "REF_PRICE")}
+        row.update(P1_NAME="Cimdi", P1_PRICE="5,49 €", P1_REF_PRICE="6,99 €")
+        self.assertEqual(J.lf_slots(row)[0], {"name": "Cimdi", "price": "5,49 €", "ref": "6,99 €"})
+        self.assertEqual(len(J.lf_slots(row)), 8)
+        self.assertEqual(J.lf_slots(None), [])

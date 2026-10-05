@@ -135,6 +135,12 @@ def riga(now: dt.datetime) -> dt.datetime:
     return now.astimezone(zoneinfo.ZoneInfo("Europe/Riga"))
 
 
+def letter_params(row) -> dict:
+    """WO1 (contract 7ca13f671703): what a letter carries = the Brevo-named (UPPERCASE) columns of the contact's
+    mkt_control.letter_fields row of the send date, value for value. Nothing is added, renamed or recomputed."""
+    return {k: v for k, v in dict(row).items() if k.isupper()}
+
+
 def window_lock(*, send_date, now, letter_fields, plan_run) -> list:
     """L10. letter_fields(send_date) -> {'status', 'plan_run_id', 'run_id'} | None (latest writer run of the date);
     plan_run(send_date) -> run_id of the latest plan run of the date | None."""

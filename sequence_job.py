@@ -291,14 +291,17 @@ APPROVAL_SQL = f"SELECT template_id, email_type FROM `{P}.mkt_control.template_a
 # TODAY's plan_date only. No row for today = the letter is held (presend gate NO_LETTER_FIELDS_ROW); there is no
 # fallback to an older plan_date and no other table. The scheduled plan (08:05) runs BEFORE the writer (08:40), so in
 # the 08:05 plan every would_send row carries that gate; send_path L8 evaluates the same gate again at send time.
-LF_SLOTS = ", ".join(f"STRUCT(P{i}_NAME AS name, P{i}_PRICE AS price, P{i}_REF_PRICE AS ref)" for i in range(1, 9))
 LF_SQL = f"""
-SELECT email, email_type, template_id, plan_run_id, run_id, OFFER_VALID_UNTIL, XSELL_VALID_UNTIL, R1_REF_PRICE,
-       ANKETA_URL, ORDER_NR, [{LF_SLOTS}] AS slots
-FROM `{P}.mkt_control.letter_fields`
+SELECT * FROM `{P}.mkt_control.letter_fields`
 WHERE plan_date = CURRENT_DATE('Europe/Riga')
 QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1
 """
+
+
+def lf_slots(row) -> list:
+    """P1..P8 of a letter_fields row as [{name, price, ref}] - the texts the letter carries."""
+    return [{"name": row[f"P{i}_NAME"], "price": row[f"P{i}_PRICE"], "ref": row[f"P{i}_REF_PRICE"]}
+            for i in range(1, 9)] if row else []
 
 
 def letter_row(rows: dict, email, email_type):
@@ -510,7 +513,7 @@ def main():
     r_goods = {r["email"]: (tuple(r["r"]), tuple(r["r_cab"])) for r in bq.query(R_SQL).result()}
     offered = {r["master_key"]: frozenset(r["handles"]) for r in bq.query(OFFERED_SQL).result()}
     approved = {(r["template_id"], r["email_type"]) for r in bq.query(APPROVAL_SQL).result()}
-    lf_rows = {r["email"]: {**dict(r), "slots": [dict(x) for x in r["slots"]]} for r in bq.query(LF_SQL).result()}
+    lf_rows = {r["email"]: dict(r) for r in bq.query(LF_SQL).result()}
     no_lf = {}
     age_h = lambda t: None if t is None else round(  # noqa: E731
         (dt.datetime.now(dt.timezone.utc) - t).total_seconds() / 3600, 1)
@@ -662,8 +665,7 @@ def main():
                                    "hold_reason": hold_pd, "pd_class": tg.cls, "template_id": tid,
                                    "send_date": d.next_due_on.isoformat(), "offer_rung": d.offer_rung,
                                    "reason": d.reason})
-            lfr = letter_row(lf_rows, f["send_email"], d.next_email_type)
-            tail, lines = W.offer_summary(lfr["slots"] if lfr else [])
+            tail, lines = W.offer_summary(lf_slots(letter_row(lf_rows, f["send_email"], d.next_email_type)))
             pid = wb["person_ref"] if isinstance(wb["person_ref"], int) else tg.person_id
             oid = wb["org_ref"] if isinstance(wb["org_ref"], int) else tg.org_id
             rec = pd_record.render(person_id=pid, org_id=oid, master_key=mk,
