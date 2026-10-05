@@ -45,7 +45,15 @@ T_PEND = f"{P}.mkt_control.pd_write_pending{SFX}"
 T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
 T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
 T_OFFERED = f"{P}.mkt_control.xsell_offered"
-BUNDLE = os.environ.get("ENGINE_BUNDLE", "unknown")
+def _bundle_id():
+    """The commit the running bundle was built from: file BUNDLE next to the code (written at bundle build)."""
+    try:
+        return open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "BUNDLE")).read().strip()
+    except OSError:
+        return "unknown"
+
+
+BUNDLE = os.environ.get("ENGINE_BUNDLE") or _bundle_id()
 # INTERFACE email_type v2: template per letter. The map row (Vēstuļu šabloni's table) wins where it has an id;
 # where it has none the engine config speaks, so the shadow plan is complete before the map is filled.
 # ENGINE_TEMPLATES_JSON='{"winback_1_e2": 251}' replaces a provisional id the day MAIN names the real one.
