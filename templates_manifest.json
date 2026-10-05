@@ -197,5 +197,19 @@
    "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_SHORT | default : 'tava biežāk pirktā prece' }} — {{ contact.P1_PRICE }}, tikai tev",
    "name": "money:winback_3_e2 v2 — no 233 v5 (2026-10-01)"
   }
+ ],
+ "post_purchase_about": "POST-PURCHASE v1.1 (MAIN 2026-10-05 12:00, contract sha 0d7136d27d6b): PP1 satisfaction letter, ONE letter for every order, email_type post_purchase_feedback, Brevo template 244 (isActive=false). Text = Raivis' old review letter of 07.2026; body gendered male/female/neutral on GREETING (PP1.2). Reads ANKETA_URL (complete survey link, nothing appended by template or engine) and ORDER_NR (PP4.2). Approved by Raivis 2026-10-05 12:34 EEST (v4 text). Copied from Brevo into the repo 2026-10-05 as v5: elif -> nested if/else (same rendering), placeholder KABINETS_URL#anketa -> ANKETA_URL, ORDER_NR added. Brevo copy of 244 is still v4 (placeholder link) - NOT put. Not read by template_put.py (ALLOWED 229-236).",
+ "post_purchase": [
+  {
+   "variant": "post_purchase_feedback",
+   "id": 244,
+   "file": "templates/post_purchase_feedback.html",
+   "git_blob": "beb92a1a23361c56248fab835395438a564f0a3f",
+   "sha256": "166d8a4150d18c478d6cfc8fd13e335b2906e2ddb325a46721fcc77283bb8766",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, lūdzam tavu atsauksmi par pasūtījumu",
+   "preheader": "Gribējām no sirds pateikties par tavu pasūtījumu.",
+   "name": "money:pp1_satisfaction v5 — ANKETA_URL + ORDER_NR, vīr./siev./neitrāls pēc GREETING (2026-10-05)",
+   "purpose": "PP1: 3 days after hand-over to the courier / pick-up, at most once per 30 days per contact; thanks, PP0 guarantee, one button to the per-order survey."
+  }
  ]
 }

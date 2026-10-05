@@ -74,7 +74,10 @@ CONTRACT_FIELDS = frozenset(
     # XSELL INTRO PRICE (Raivis 2026-10-01 17:53, PROPOSED names - pending MAIN contract, 60 -> 65): 235 recommended
     # goods R1..R4 at shop -10 % ("iepazīšanās cena"), Rn_REF_PRICE = shop price ("" = no intro price),
     # XSELL_VALID_UNTIL = last day of the intro price ("" = none). Own P goods stay at shop price.
-    + [f"R{i}_REF_PRICE" for i in range(1, 5)] + ["XSELL_VALID_UNTIL"])
+    + [f"R{i}_REF_PRICE" for i in range(1, 5)] + ["XSELL_VALID_UNTIL"]
+    # POST-PURCHASE v1.1 PP4.2 (MAIN 2026-10-05 12:00, contract sha 0d7136d27d6b): template 244 reads ANKETA_URL (the
+    # complete per-order survey link - writer builds it incl. utm, template and engine append NOTHING) and ORDER_NR.
+    + ["ANKETA_URL", "ORDER_NR"])
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
 # Rule 6: an R row with spread reads "no <price>".

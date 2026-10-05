@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lūdzam tavu atsauksmi par pasūtījumu</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Gribējām no sirds pateikties par tavu pasūtījumu.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Manrope','Segoe UI',Arial,sans-serif;color:#23303a;">
+
+<tr><td align="center" style="padding:26px 34px 6px;">
+<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+</td></tr>
+
+<tr><td style="padding:18px 34px 0;">
+<div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
+</td></tr>
+<tr><td style="padding:14px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
+<p style="margin:0 0 12px;">Šeit tiktik.lv komanda – gribējām no sirds pateikties par tavu pasūtījumu un ceram, ka tas tevi sasniedza ātri un iepakojums bija atbilstošs. {% if "Sveika," in contact.GREETING %}Zinām, ka produktus, visticamāk, vēl neesi paspējusi notestēt{% else %}{% if "Sveiks," in contact.GREETING %}Zinām, ka produktus, visticamāk, vēl neesi paspējis notestēt{% else %}Zinām, ka produktus, visticamāk, vēl nav sanācis notestēt{% endif %}{% endif %}, īpaši, ja tos pasūtīji pirmo reizi, tādēļ atsauksmi par produktiem lūgsim nedaudz vēlāk un publicēsim to mūsu veikalā.</p>
+<p style="margin:0 0 12px;">Atgādinām, ka tiktik.lv galvenā prioritāte ir klienta apmierinātība ar produktiem. {% if "Sveika," in contact.GREETING %}Ja jebkādu iemeslu dēļ neesi apmierināta ar produktu kvalitāti{% else %}{% if "Sveiks," in contact.GREETING %}Ja jebkādu iemeslu dēļ neesi apmierināts ar produktu kvalitāti{% else %}Ja jebkādu iemeslu dēļ tevi neapmierina produktu kvalitāte{% endif %}{% endif %} vai kāda produkta izmērs neatbilst tam, ko gaidīji, mēs ar prieku pieņemsim produktus atpakaļ, arī atvērtus iepakojumus, lai nodrošinātu tev tikai labāko pieredzi ar tiktik.lv iegādātajiem produktiem. Produktu atgriešanas izmaksas sedz tiktik.lv.</p>
+<p style="margin:0 0 4px;">Šodien būsim neizsakāmi pateicīgi par tavu atsauksmi par šo pasūtījumu{% if contact.ORDER_NR %} {{ contact.ORDER_NR }}{% endif %} – piegādi, iepakojumu, ātrumu un to, kā preces bija sapakotas.</p>
+</td></tr>
+
+<tr><td align="center" style="padding:18px 34px 0;">
+<a href="{{ contact.ANKETA_URL }}" style="display:inline-block;background:#1f6fb2;color:#ffffff;text-decoration:none;font-weight:800;padding:16px 40px;border-radius:11px;font-size:16px;">Atstāt atsauksmi &rarr;</a>
+</td></tr>
+
+<tr><td style="padding:22px 34px 0;">
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">Vēlreiz paldies par uzticību,<br>tiktik.lv komanda<br>info@tiktik.lv<br>+371 22811277</p>
+</td></tr>
+
+<tr><td style="padding:22px 34px 28px;">
+<div style="border-top:1px solid #e6eaf2;padding-top:16px;font-size:12px;line-height:1.6;color:#9aa4b2;text-align:center;">
+SIA Alenda &middot; tiktik.lv &middot; info@tiktik.lv<br>
+Šo e-pastu saņem, jo esi iepircies tiktik.lv veikalā.<br>
+<a href="{{ unsubscribe }}" style="color:#9aa4b2;">Atteikties no šiem e-pastiem</a>
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
