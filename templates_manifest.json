@@ -6,11 +6,11 @@
    "variant": "welcome_1",
    "id": 229,
    "file": "templates/welcome_1.html",
-   "git_blob": "bf0d7499e583ea80f58e8d33998253139a7d0b5a",
-   "sha256": "a5dc00e9d25d5871518e13da61ce09c8d37aecb6ae3f751da544a3029ba48e24",
+   "git_blob": "523d8f24ca18325e2a2bdc60caf2c9c9b2175807",
+   "sha256": "0c99bfbc357dbc8477bbc8a47b43c3978053d0249c6bc49bbb69957bb0065173",
    "subject": "Tavs kabinets ir gatavs",
-   "preheader": "Tur jau ir tavas pasūtītās preces.",
-   "name": "money:welcome_1 v5 — PP2: der arī esošam klientam, bez \"pirmā pasūtījuma\" (2026-10-05)",
+   "preheader": "Tur jau ir preces no tava pirmā pasūtījuma.",
+   "name": "money:welcome_1 v4 — stils no kampaņām 126 + 222 kartītes (2026-09-28)",
    "purpose": "First letter after a customer's first tiktik.lv order: their goods already sit in their kabinets, so the second order is one step; one affinity item (R1 only) and the free-shipping line; no discount, no deadline, normal price."
   },
   {
