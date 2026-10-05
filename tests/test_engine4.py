@@ -201,6 +201,8 @@ class OrderAfterLastPurchase(unittest.TestCase):
 
     def test_same_or_older_order_and_post_purchase_letters_are_untouched(self):
         self.assertIsNone(S.recent_order_hold("reorder_1", None, D(2026, 6, 1), D(2026, 6, 1)))
+        self.assertIsNone(S.recent_order_hold("reorder_1", None, D(2026, 6, 4), D(2026, 6, 1)))   # same order, deal 3 d later
+        self.assertEqual(S.recent_order_hold("reorder_1", None, D(2026, 6, 5), D(2026, 6, 1)), S.HOLD_ORDER_AFTER)
         self.assertIsNone(S.recent_order_hold("reorder_1", None, D(2026, 5, 1), D(2026, 6, 1)))
         self.assertIsNone(S.recent_order_hold("reorder_1", None, None, D(2026, 6, 1)))
         for et in (S.PP1, S.XSELL):

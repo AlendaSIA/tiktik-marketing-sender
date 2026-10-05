@@ -134,12 +134,15 @@ def goods_hold(email_type, offer_rung, hold, goods):
 # stage sees the order, every SALES letter of the old cycle is held. Blocks only; never plans a letter.
 HOLD_ORDER_AFTER = "ORDER_AFTER_LAST_PURCHASE"
 ORDER_AFTER_OVERRIDES = {None, "no_offer_valid_until"}
+ORDER_AFTER_TOLERANCE_DAYS = 3     # a deal created a few days after its own booked document is the SAME order
 
 
 def recent_order_hold(email_type, hold, shop_order_on, last_order_on):
     """shop_order_on = date of the contact's latest live shop order (P6 deal, not lost)."""
     if email_type in SALES_TYPES and email_type != XSELL and hold in ORDER_AFTER_OVERRIDES \
-            and shop_order_on is not None and (last_order_on is None or shop_order_on > last_order_on):
+            and shop_order_on is not None and (
+                last_order_on is None
+                or shop_order_on > last_order_on + dt.timedelta(days=ORDER_AFTER_TOLERANCE_DAYS)):
         return HOLD_ORDER_AFTER
     return hold
 
