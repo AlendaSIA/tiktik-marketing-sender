@@ -55,6 +55,7 @@ LF = [
     lf("h@x.lv", S.PP1, letter="STD", url="https://plani.tiktik.lv/atsauksme.php?o=M-9&t=x", order="M-9"),
     lf("j@x.lv", "winback_1", rung=1, ovu="19.10.2026"),
     lf("k@x.lv", "reorder_1", letter="STD"),
+    lf("i@x.lv", "reorder_1", letter="STD"),
 ]
 
 
