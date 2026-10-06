@@ -7,6 +7,11 @@ mkt_control.shadow_selfcheck of today:
   - no run report row today            -> KĻŪDA "ēnas plāns šodien nav izpildīts"
   - any level='hard' check with ok=false -> KĻŪDA + the check names and values
   - otherwise                          -> nothing (no row, no noise)
+SEND-TIME GATES (MAIN 2026-10-06, Sūtīšanas dzinējs 5): the 08:05 plan cannot know what the 08:40 writer writes, so
+this job - scheduled 08:55, after the writer - first runs the engine's own send-time evaluation (send_lookups.py from
+the live bundle: send_path locks L10 + L8 + L9 on the real tables, as if at 09:00) and records it as sendtime_* rows
+in mkt_control.shadow_selfcheck. A hard sendtime_* failure (writer not OK on the latest plan; a B2B / LEAD / EN person
+among today's due letters) posts the dash row like any other hard check; so does an evaluation that could not run.
 Never twice a day: the posted row is remembered in mkt_control.shadow_selfcheck (check_name '_dash_row_posted').
 It sends nothing to anyone and touches nothing but that marker row and the dash file. DRY=1 prints the row only.
 """
@@ -20,6 +25,20 @@ import zoneinfo
 P = "jaunais-za-aizv04022026"
 DASH = "Company-Alenda-SIA/shared-platforms/_agent-sessions.md"
 AGENT = "tiktik.lv › Marketing · Sūtīšanas dzinējs (ēnas plāna paškontrole)"
+BUNDLE = "gs://jaunais-za-aizv04022026-brevo-history/_code/send_engine.tgz"
+
+
+def sendtime(dry):
+    """Run the send-time evaluation of the live bundle. -> None when it ran, else why it could not (short text)."""
+    try:
+        subprocess.run(["bash", "-c", f"rm -rf /tmp/eng && mkdir -p /tmp/eng && gsutil -q cp {BUNDLE} /tmp/eng/b.tgz "
+                        "&& tar xzf /tmp/eng/b.tgz -C /tmp/eng"], check=True, capture_output=True, timeout=120)
+        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + ([] if dry else ["--record"]),
+                           capture_output=True, text=True, timeout=420)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print(r.stdout[-2500:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
 
 
 def bq(sql):
@@ -34,6 +53,7 @@ def main():
     if bq(f"SELECT 1 FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
           f"AND check_name = '_dash_row_posted' LIMIT 1"):
         print("already posted today"); return 0
+    st_err = sendtime(os.environ.get("DRY") == "1") if runs else None
     if not runs:
         what, run_id = "Ēnas plāns šodien nav izpildīts (nav shadow_run_report rindas) — nekas nav sūtīts", "none"
     else:
@@ -48,6 +68,9 @@ def main():
             what = (f"Ēnas plāna paškontrole: {len(bad)} neizturētas — "
                     + "; ".join(f"{b['check_name']}={b['value']}" for b in bad)[:300]
                     + " — nekas nav sūtīts; detaļas mkt_control.shadow_selfcheck")
+        elif st_err:
+            what = ("Sūtīšanas brīža vārtu pārbaude (L8/L9/L10) neizdevās — " + st_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
         else:
             print("self-check clean - no dash row"); return 0
     now = dt.datetime.now(zoneinfo.ZoneInfo("Europe/Riga")).strftime("%Y-%m-%d %H:%M")
