@@ -25,8 +25,7 @@ ROW = {"email_type": "winback_1", "letter": "RUNG", "run_id": "lf-1", "email": "
 BREVO = {"VARDS": "Anna", "KABINETS_URL": "https://plani.tiktik.lv/kabinets.php?t=abc", "P1_PRICE": "9,99 €",
          "P2_NAME": "Vecā prece"}
 PICK = {"email_type": "winback_1", "template_id": 180, "master_key": "cid:1", "email": "a@x.lv", "skip_reason": None}
-REAL_APPROVED = dict(X.APPROVED_SHA256)
-X.APPROVED_SHA256[180] = hashlib.sha256(TPL["htmlContent"].encode()).hexdigest()      # the test file IS the approved one
+OK_HASH = hashlib.sha256(TPL["htmlContent"].encode()).hexdigest()               # "the approved file" of these tests
 
 
 def res(rows, camps):
@@ -77,7 +76,7 @@ class Pick(unittest.TestCase):
 
 class Letter(unittest.TestCase):
     def test_row_wins_over_brevo_and_the_letter_goes_only_to_raivis(self):
-        b = X.build(DAY, PICK, ROW, TPL, BREVO)
+        b = X.build(DAY, PICK, ROW, TPL, BREVO, OK_HASH)
         self.assertEqual(b["problems"], [])
         p = b["payload"]
         self.assertEqual(p["to"], [{"email": "raivis@alenda.lv"}])
@@ -95,24 +94,27 @@ class Letter(unittest.TestCase):
         self.assertFalse({"cc", "bcc", "templateId"} & set(p))
 
     def test_fail_closed(self):
-        self.assertIn("no letter_fields row", X.build(DAY, PICK, None, TPL, BREVO)["problems"][0])
-        self.assertIn("EXCLUDED", X.build(DAY, PICK, {**ROW, "letter": "EXCLUDED"}, TPL, BREVO)["problems"][0])
-        self.assertIn("not winback_1", X.build(DAY, PICK, {**ROW, "email_type": "reorder_1"}, TPL, BREVO)["problems"][0])
-        b = X.build(DAY, PICK, ROW, TPL, {"VARDS": "Anna"})                        # no KABINETS_URL anywhere
+        self.assertIn("no letter_fields row", X.build(DAY, PICK, None, TPL, BREVO, OK_HASH)["problems"][0])
+        self.assertIn("EXCLUDED", X.build(DAY, PICK, {**ROW, "letter": "EXCLUDED"}, TPL, BREVO, OK_HASH)["problems"][0])
+        self.assertIn("not winback_1", X.build(DAY, PICK, {**ROW, "email_type": "reorder_1"}, TPL, BREVO, OK_HASH)["problems"][0])
+        b = X.build(DAY, PICK, ROW, TPL, {"VARDS": "Anna"}, OK_HASH)                        # no KABINETS_URL anywhere
         self.assertIsNone(b["payload"])
         self.assertIn("contact.KABINETS_URL", b["problems"][0])
         t = {**TPL, "htmlContent": TPL["htmlContent"].replace("</body>", "⟦CENA⟧{% for x in y %}</body>")}
-        self.assertIn("Brevo holds another file than the approved one", X.build(DAY, PICK, ROW, t, BREVO)["problems"][0])
-        self.assertIn("no approved content hash", X.build(DAY, {**PICK, "template_id": 999}, ROW, TPL, BREVO)["problems"][0])
-        self.assertEqual(sorted(REAL_APPROVED), [179, 180, 234, 235])
-        self.assertTrue(all(len(v) == 64 for v in REAL_APPROVED.values()))
-        with mock.patch.dict(X.APPROVED_SHA256, {180: hashlib.sha256(t["htmlContent"].encode()).hexdigest()}):
-            pr = " | ".join(X.build(DAY, PICK, ROW, t, BREVO)["problems"])
+        # TC4: NULL = not approved; another content = not approved; the hash is of the UTF-8 bytes, nothing normalised
+        self.assertIn("approved_sha256 is NULL", X.build(DAY, PICK, ROW, TPL, BREVO, None)["problems"][0])
+        self.assertIn("Brevo holds another file", X.build(DAY, PICK, ROW, t, BREVO, OK_HASH)["problems"][0])
+        self.assertIn("Brevo holds another file", X.build(DAY, PICK, ROW, {**TPL, "htmlContent": TPL["htmlContent"] + "\n"}, BREVO, OK_HASH)["problems"][0])
+        self.assertEqual(X.build(DAY, PICK, ROW, TPL, BREVO, "  " + OK_HASH.upper() + " ")["problems"], [])
+        self.assertEqual(X.content_hash("ā"), hashlib.sha256("ā".encode("utf-8")).hexdigest())
+        self.assertFalse(hasattr(X, "APPROVED_SHA256"))                           # no hash lives in code
+        if True:
+            pr = " | ".join(X.build(DAY, PICK, ROW, t, BREVO, X.content_hash(t["htmlContent"]))["problems"])
         self.assertIn("unresolved block", pr)
         self.assertIn("visible placeholder", pr)
 
     def test_send_guards(self):
-        b = X.build(DAY, PICK, ROW, TPL, BREVO)
+        b = X.build(DAY, PICK, ROW, TPL, BREVO, OK_HASH)
         with mock.patch.object(X.C, "_call", return_value={"messageId": "<m1>"}) as call:
             self.assertEqual(X.send(b["payload"]), {"messageId": "<m1>"})
             call.assert_called_once()
@@ -126,10 +128,13 @@ class Letter(unittest.TestCase):
     def test_module_calls_nothing_that_writes_state(self):
         src = open(os.path.join(ROOT, "shadow_sample.py")).read()
         code = src.split('"""', 2)[2]
+        self.assertEqual(code.count("load_table_from_json("), 1)                  # only the hash mirror is written
+        self.assertIn("load_table_from_json(rows, T_BREVO_HASH", code)
         for word in ("send_log", "contact_sequence", "pd_record", "pd_writeback", "INSERT", "UPDATE", "DELETE",
                      '"PUT"', '"PATCH"', "/contacts\"", "sendNow"):
             self.assertNotIn(word, code, word)
-        self.assertEqual(code.count("C._call("), 1)                                # the one POST /smtp/email
+        self.assertEqual(code.count("C._call("), 1)
+        self.assertEqual(code.count("C.template("), 2)                             # GET in the sample and in hash mode                                # the one POST /smtp/email
 
 
 if __name__ == "__main__":

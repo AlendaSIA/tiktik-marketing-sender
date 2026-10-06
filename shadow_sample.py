@@ -34,17 +34,11 @@ P = "jaunais-za-aizv04022026"
 T_QUEUE = f"{P}.mkt_control.shadow_sample"
 T_LF = f"{P}.mkt_control.letter_fields"
 RECIPIENT = DT.TEST_RECIPIENT                    # raivis@alenda.lv - a constant of draft_test, not a parameter
-# FOUND 2026-10-06, before the first sample was mailed: Brevo holds the 25.09 files of 179 / 180 / 234 / 235, not the
-# files Raivis approved on 30.09 - 01.10 (234 in Brevo still shows price placeholders). mkt_control.template_approval
-# approves an id, not a content. A sample is mailed ONLY when Brevo's htmlContent is byte-equal to the approved file:
-# sha256 of templates/<type>.html at the approved commit on feat/v2.8-price-fields. An id that is not listed here is
-# never mailed. INTERIM home of these hashes - MAIN decides where the approved hash lives.
-APPROVED_SHA256 = {
-    179: "035071516cb38839431bbca294349535e016133eca5e0269c9bb34589b89bd53",   # commit faaec26 (mkt_control.template_approval note)
-    180: "010b3a30bf3136c5312ce6cabfcbcc98f760085c3b407945150a84923470149b",   # commit aa0ce78 (mkt_control.template_approval note)
-    234: "0e5d9ddd04bf9fb8dab0e0f03cad480664817af9bbc8bc586fe2d3911a5949aa",   # commit d4ed418 (mkt_control.template_approval note)
-    235: "de294f09076ad824281824508ab6f44bc66dc47a7fd07ef5c018fc03c3ae0011",   # commit 9bde7f6 (mkt_control.template_approval note)
-}
+# TEMPLATE CONTENT v1 (contract bce3bccbc46b, TC4): a sample is mailed ONLY when the sha256 of Brevo's htmlContent,
+# read at this moment, equals mkt_control.template_approval.approved_sha256 of that (template id, email type). NULL or
+# a mismatch = not approved = not mailed. The hashes live in the table (TC2: written by the templates conversation).
+T_APPROVAL = f"{P}.mkt_control.template_approval"
+T_BREVO_HASH = f"{P}.mkt_control.brevo_template_content"
 _LEFT_FIELD = re.compile(r"\{\{\s*contact\.[A-Za-z0-9_]+[^}]*\}\}")
 _LEFT_BLOCK = re.compile(r"\{%[^%]*%\}")
 
@@ -65,12 +59,17 @@ def banner(day, email_type, master_key) -> str:
             "pasūtījums vai izmaiņas tur būtu īstas.</div>")
 
 
-def build(day, pick, row, tpl, brevo_attrs) -> dict:
+def content_hash(html: str) -> str:
+    """TC1: sha256, full lowercase hex, of the UTF-8 bytes of htmlContent exactly as Brevo returns it."""
+    return hashlib.sha256((html or "").encode("utf-8")).hexdigest()
+
+
+def build(day, pick, row, tpl, brevo_attrs, approved_sha256=None) -> dict:
     """Pure. -> {problems: [...], payload: {...} | None, template_sha256, template_modified}."""
     et, problems = pick["email_type"], []
     html_t, subj_t = tpl.get("htmlContent") or "", tpl.get("subject") or ""
-    full = hashlib.sha256(html_t.encode()).hexdigest()
-    want = APPROVED_SHA256.get(int(pick["template_id"]))
+    full = content_hash(html_t)
+    want = (approved_sha256 or "").strip().lower() or None
     info = {"template_sha256": full[:12], "approved_sha256": want and want[:12],
             "template_modified": tpl.get("modifiedAt"), "template_active": tpl.get("isActive")}
     if row is None:
@@ -82,9 +81,10 @@ def build(day, pick, row, tpl, brevo_attrs) -> dict:
     if not html_t:
         problems.append("Brevo template has no htmlContent")
     elif want is None:
-        problems.append(f"no approved content hash for template {pick['template_id']}")
+        problems.append(f"TEMPLATE_NOT_APPROVED: approved_sha256 is NULL for template {pick['template_id']} (TC4)")
     elif full != want:
-        problems.append(f"Brevo holds another file than the approved one (Brevo {full[:12]}, approved {want[:12]})")
+        problems.append(f"TEMPLATE_NOT_APPROVED: Brevo holds another file than the approved one "
+                        f"(Brevo {full[:12]}, approved {want[:12]})")
     if C.UTM_WEEK_MARKER in html_t:
         problems.append("template carries the campaign week marker - not an engine template")
     if problems:
@@ -113,7 +113,40 @@ def send(payload) -> dict:
     return C._call("POST", "/smtp/email", payload)
 
 
+def hash_main() -> int:
+    """Hash mode (TC4): rewrite the mirror mkt_control.brevo_template_content from what Brevo holds now. GET only."""
+    from google.cloud import bigquery
+    bq = bigquery.Client(project=P)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    ids = [r["template_id"] for r in bq.query(
+        f"SELECT DISTINCT template_id FROM `{T_APPROVAL}` WHERE template_id < 9000 ORDER BY 1").result()]
+    rows = []
+    for tid in ids:
+        base = {"template_id": tid, "html_sha256": None, "html_bytes": None, "modified_at": None, "is_active": None,
+                "error": None, "checked_at": now}
+        try:
+            t = C.template(int(tid))
+            html = t.get("htmlContent") or ""
+            rows.append({**base, "html_sha256": content_hash(html) if html else None,
+                         "html_bytes": len(html.encode("utf-8")), "modified_at": t.get("modifiedAt"),
+                         "is_active": t.get("isActive"), "error": None if html else "no htmlContent"})
+        except Exception as e:  # noqa: BLE001 - an unreadable template is a row with an error: the gate stays closed
+            rows.append({**base, "error": f"{type(e).__name__}: {e}"[:300]})
+    if not rows:
+        print("HASH_DONE " + json.dumps({"templates": 0, "written": False}))
+        return 1
+    bq.load_table_from_json(rows, T_BREVO_HASH, job_config=bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE", schema=bq.get_table(T_BREVO_HASH).schema)).result()
+    for r in rows:
+        print("HASH " + json.dumps({k: (v[:12] if k == "html_sha256" and v else v) for k, v in r.items()}))
+    print("HASH_DONE " + json.dumps({"templates": len(rows), "written": True,
+                                     "errors": sum(bool(r["error"]) for r in rows)}))
+    return 0
+
+
 def main() -> int:
+    if os.environ.get("SAMPLE_MODE") == "hash":
+        return hash_main()
     import zoneinfo
     from google.cloud import bigquery
     bq = bigquery.Client(project=P)
@@ -133,8 +166,13 @@ def main() -> int:
             row = next(iter(bq.query(
                 f"SELECT * FROM `{T_LF}` WHERE plan_date = @d AND LOWER(TRIM(email)) = @e "
                 f"ORDER BY built_at DESC LIMIT 1", job_config=par(d=day, e=p["email"])).result()), None)
+            ap = [r["approved_sha256"] for r in bq.query(
+                f"SELECT approved_sha256 FROM `{T_APPROVAL}` WHERE approved AND template_id = @t AND email_type = @e",
+                job_config=bigquery.QueryJobConfig(query_parameters=[
+                    bigquery.ScalarQueryParameter("t", "INT64", int(p["template_id"])),
+                    bigquery.ScalarQueryParameter("e", "STRING", p["email_type"])])).result()]
             b = build(day, p, None if row is None else dict(row), C.template(int(p["template_id"])),
-                      C.contact_attributes(p["email"]))
+                      C.contact_attributes(p["email"]), ap[0] if len(ap) == 1 else None)
             res.update({k: b[k] for k in ("template_sha256", "approved_sha256", "template_modified", "template_active")})
             if b["problems"]:
                 out.append({**res, "sent": False, "why": "; ".join(b["problems"])})

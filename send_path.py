@@ -251,7 +251,8 @@ class ProductionLookups(_ProductionLookupsNotWired):
     """WIRED 2026-10-06 (Sūtīšanas dzinējs 5, MAIN order): the four READ-ONLY lookups of L10 / L8 / L9 answer from
     the real tables (send_lookups.Warehouse - the planner's own builder and SQL texts, on the data of that moment).
     No lock opens by this: L1 / L2 / L6 fire before any lookup; audience, track_enabled, template_approved,
-    suppressed, the L7 goods lookups and every send-side writer stay unwired and refuse.
+    suppressed, the L7 goods lookups and every send-side writer stay unwired and refuse. L4 template_approved IS
+    wired (TC4, 2026-10-06): it can only refuse more than before - an approval is of a content, not of an id.
     FAIL CLOSED: a lookup that cannot answer (no warehouse, a query error, an empty guard source) is a refusal."""
     _wh = None
 
@@ -269,6 +270,10 @@ class ProductionLookups(_ProductionLookupsNotWired):
     def presend_ctx(self, campaign, send_date, master_keys):
         return self._ask("presend_ctx", campaign, send_date, master_keys)
 
+    def template_approved(self, template_id):
+        """L4 by TEMPLATE CONTENT v1 (TC4): approved_sha256 against the hash of what Brevo holds at this moment."""
+        return bool(self._ask("template_approved", template_id, _brevo_live_hash))
+
     def person_blocks(self, send_date, master_keys):
         return self._ask("person_blocks", send_date, master_keys)
 
@@ -277,6 +282,13 @@ class ProductionLookups(_ProductionLookupsNotWired):
 
     def plan_run(self, send_date):
         return self._ask("plan_run", send_date)
+
+
+def _brevo_live_hash(template_id) -> str:
+    """sha256 (full lowercase hex) of the UTF-8 bytes of Brevo's htmlContent, read now. No normalisation (TC1)."""
+    import hashlib
+    import campaign
+    return hashlib.sha256((campaign.template(int(template_id)).get("htmlContent") or "").encode("utf-8")).hexdigest()
 
 
 def _unwired(*a, **k):

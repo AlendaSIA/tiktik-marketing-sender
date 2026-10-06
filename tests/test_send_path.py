@@ -147,7 +147,15 @@ class CampaignLayerStillRefuses(unittest.TestCase):
                 with self.assertRaises(SP.SendLocked) as e:
                     getattr(lk, name)(*args)
                 self.assertEqual(e.exception.closed[0][0], "WIRE")
-        for name in ("track_enabled", "template_approved", "audience", "suppressed", "goods_run", "goods"):
+        with mock.patch.object(send_lookups, "warehouse", side_effect=RuntimeError("no warehouse here")):
+            with self.assertRaises(SP.SendLocked) as e:                            # L4 wired by TC4: fails closed too
+                lk.template_approved(180)
+            self.assertEqual(e.exception.closed[0][0], "WIRE")
+        wh = mock.Mock(); wh.template_approved.return_value = False
+        with mock.patch.object(send_lookups, "warehouse", return_value=wh):
+            self.assertIs(SP.ProductionLookups().template_approved(180), False)
+            self.assertIs(wh.template_approved.call_args[0][1], SP._brevo_live_hash)   # hashed live, where the key is
+        for name in ("track_enabled", "audience", "suppressed", "goods_run", "goods"):
             with self.assertRaises(SP.SendLocked) as e:
                 getattr(lk, name)(1)
             self.assertIn("not wired", str(e.exception))

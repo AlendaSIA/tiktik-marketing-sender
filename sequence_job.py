@@ -282,7 +282,22 @@ LEFT JOIN (SELECT handle FROM `{P}.business_marts.shop_sellable_product` GROUP B
 WHERE a.kind = 'R' AND a.handle IS NOT NULL GROUP BY 1
 """
 OFFERED_SQL = f"SELECT master_key, ARRAY_AGG(DISTINCT handle) AS handles FROM `{T_OFFERED}` GROUP BY 1"
-APPROVAL_SQL = f"SELECT template_id, email_type FROM `{P}.mkt_control.template_approval` WHERE approved"
+# TEMPLATE CONTENT v1 (contract bce3bccbc46b, TC1-TC5): an approval is of a CONTENT. A (template id, email type) counts
+# as approved only when mkt_control.template_approval.approved_sha256 (written by the templates conversation, TC2)
+# equals the sha256 of what Brevo holds NOW. The planner and the 08:55 job cannot read Brevo (the key belongs to
+# tiktik-campaign-sa), so Brevo's hash comes from the mirror mkt_control.brevo_template_content, refreshed by job
+# tiktik-shadow-sample in hash mode before the send-time evaluation. NULL hash, a mismatch, a missing or stale mirror
+# row = NOT approved (gate TEMPLATE_NOT_APPROVED). The live send path L4 and the daily sample hash Brevo directly.
+T_APPROVAL = f"{P}.mkt_control.template_approval"
+T_BREVO_HASH = f"{P}.mkt_control.brevo_template_content"
+TEMPLATE_HASH_MAX_AGE_H = int(os.environ.get("TEMPLATE_HASH_MAX_AGE_H", "26"))
+APPROVAL_SQL = f"""
+SELECT a.template_id, a.email_type FROM `{T_APPROVAL}` a
+JOIN `{T_BREVO_HASH}` b ON b.template_id = a.template_id
+WHERE a.approved AND a.approved_sha256 IS NOT NULL AND b.html_sha256 IS NOT NULL
+  AND LOWER(TRIM(a.approved_sha256)) = b.html_sha256 AND LENGTH(b.html_sha256) = 64
+  AND b.checked_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {TEMPLATE_HASH_MAX_AGE_H} HOUR)
+"""
 
 # WRITER OUTPUT v1 (contract 7ca13f671703, WO1 / WO2): the ONLY per-letter field source is mkt_control.letter_fields,
 # TODAY's plan_date only. No row for today = the letter is held (presend gate NO_LETTER_FIELDS_ROW); there is no

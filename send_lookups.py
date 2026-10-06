@@ -224,6 +224,38 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
             row=row if row and row["email_type"] == et else None, trigger_order_nr=p.get("trigger_order_nr"),
             r_handles=r, r_cabinet=r_cab, xsell_offered=sh["offered"].get(mk, frozenset()), xs_price_holds=xs_holds)
 
+    # ---- L4 (TC4)
+    def template_content(self, now=None) -> list:
+        """Per approved, non-provisional template: the approved hash, Brevo's hash from the mirror and its age."""
+        J, now = _job(), now or dt.datetime.now(dt.timezone.utc)
+        rows = self._rows("tc", f"""
+SELECT a.template_id, a.email_type, a.approved, LOWER(TRIM(a.approved_sha256)) AS approved_sha256, a.approved_commit,
+  b.html_sha256, b.error, b.checked_at
+FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.template_id ORDER BY 1, 2""")
+        out = []
+        for r in rows:
+            tid, t = _i(r["template_id"]), _ts(r.get("checked_at"))
+            age = None if t is None else round((now - t).total_seconds() / 3600, 2)
+            out.append({"template_id": tid, "email_type": r["email_type"], "approved_sha256": r.get("approved_sha256"),
+                        "approved_commit": r.get("approved_commit"), "brevo_sha256": r.get("html_sha256"),
+                        "mirror_age_h": age, "mirror_error": r.get("error"),
+                        "provisional": tid in S.PROVISIONAL_TEMPLATE_IDS,
+                        "content_approved": bool(_b(r.get("approved")) and r.get("approved_sha256")
+                                                 and r.get("html_sha256") and r["approved_sha256"] == r["html_sha256"]
+                                                 and age is not None and age <= J.TEMPLATE_HASH_MAX_AGE_H)})
+        return out
+
+    def template_approved(self, template_id, live_hash=None) -> bool:
+        """L4. True only when EVERY approval row of this template id carries one and the same approved_sha256 and it
+        equals Brevo's hash - read live (live_hash(template_id) -> hex) where the Brevo key is, else from the mirror."""
+        rows = [r for r in self.template_content() if r["template_id"] == _i(template_id)]
+        want = {r["approved_sha256"] for r in rows}
+        if not rows or len(want) != 1 or None in want or "" in want:
+            return False
+        if live_hash is not None:
+            return live_hash(_i(template_id)) == want.pop()
+        return all(r["content_approved"] for r in rows)
+
     # ---- L9
     def person_blocks(self, send_date, master_keys, now=None) -> dict:
         sh, out = self._shared(now or dt.datetime.now(dt.timezone.utc)), {}
@@ -434,6 +466,18 @@ def sample_trigger() -> str:
     return r.stdout.strip().splitlines()[-1]
 
 
+def refresh_hashes():
+    """Run job tiktik-shadow-sample in hash mode and wait: it rewrites mkt_control.brevo_template_content from Brevo.
+    -> None when it ran, else why not (short text). A failure is not fatal here: the mirror ages and closes the gate."""
+    try:
+        r = subprocess.run(["gcloud", "run", "jobs", "execute", SAMPLE_JOB, "--region", "europe-west1", "--project", P,
+                            "--update-env-vars", "SAMPLE_MODE=hash", "--wait"], capture_output=True, text=True,
+                           timeout=300)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
 def checks(res) -> list:
     """The send-time answer as shadow_selfcheck rows. Hard = nothing could be sent today / the plan and the send
     path disagree about a person; info = the counts MAIN reads instead of the 08:05 gate columns."""
@@ -452,8 +496,29 @@ def checks(res) -> list:
         SC._row("sendtime_blocked_by_gate", "info", True, len(gated), SC.count_by(gated, ("email_type", "gate"))),
         SC._row("sendtime_planned_for_later_by_type", "info", True, sum(res["planned_later"].values()),
                 res["planned_later"]),
-    ] + ([SC._row("sendtime_akcija_audience", "info", True, res["akcija"]["in_audience"],
+    ] + _tc_checks(res) + ([SC._row("sendtime_akcija_audience", "info", True, res["akcija"]["in_audience"],
                   {k: v for k, v in res["akcija"].items() if k != "exclude"})] if res.get("akcija") else [])
+
+
+MIRROR_FRESH_H = 2          # at the send-time evaluation the mirror must have been rewritten just before
+
+
+def _tc_checks(res) -> list:
+    tc = res.get("template_content")
+    if tc is None:
+        return []
+    real = [t for t in tc["rows"] if not t["provisional"]]
+    stale = [t["template_id"] for t in real if t["mirror_age_h"] is None or t["mirror_age_h"] > MIRROR_FRESH_H
+             or t["mirror_error"]]
+    short = lambda h: h and h[:12]  # noqa: E731
+    return [
+        SC._row("sendtime_template_hash_mirror_fresh", "hard", not stale and not tc["refresh_error"], len(set(stale)),
+                {"stale_or_failed_template_ids": sorted(set(stale)), "refresh_error": tc["refresh_error"],
+                 "limit_h": MIRROR_FRESH_H}),
+        SC._row("sendtime_template_content", "info", True, sum(t["content_approved"] for t in real),
+                [{"template_id": t["template_id"], "email_type": t["email_type"], "approved": short(t["approved_sha256"]),
+                  "brevo": short(t["brevo_sha256"]), "ok": t["content_approved"]} for t in real]),
+    ]
 
 
 def _sql_text(v) -> str:
@@ -486,15 +551,19 @@ def main(argv) -> int:
     ap.add_argument("--sample", action="store_true", help="with --record: queue the daily shadow sample (once a "
                     "day) and start job " + SAMPLE_JOB)
     ap.add_argument("--sample-force", action="store_true", help="replace today's queue and mail again")
+    ap.add_argument("--refresh-hashes", action="store_true", help="first rewrite the Brevo hash mirror (TC4)")
     ap.add_argument("--now", help="evaluate as if at this UTC ISO time (proofs)")
     ap.add_argument("--rows", type=int, default=0, help="print the first N evaluated rows per letter type")
     a = ap.parse_args(argv)
     now = dt.datetime.fromisoformat(a.now).replace(tzinfo=dt.timezone.utc) if a.now \
         else window_open(dt.datetime.now(dt.timezone.utc))
     q = cli_query if os.environ.get("BQ_TRANSPORT") == "cli" else rest_query
+    refresh_error = refresh_hashes() if a.refresh_hashes else None
     wh = Warehouse(q)
     day = SP.riga(now).date()
     res = evaluate(wh, day, now)
+    res["template_content"] = {"refresh_error": refresh_error, "refreshed": bool(a.refresh_hashes),
+                               "rows": wh.template_content(dt.datetime.now(dt.timezone.utc))}
     res["akcija"] = akcija_plan(wh, day, personal_this_week(wh, day, now))          # SG7
     cs = checks(res)
     if a.record:

@@ -13,7 +13,8 @@ Why two layers (contract G15.2): the planner must not change would_send because 
 
 Gates (each a named reason):
   TEMPLATE_PROVISIONAL   the letter's template id is a provisional one (9180 / 9232 / 9233) - no Brevo template yet
-  TEMPLATE_NOT_APPROVED  no approved row in mkt_control.template_approval for (template id, email type)
+  TEMPLATE_NOT_APPROVED  TC4: no approved row for (template id, email type), or its approved_sha256 is NULL, or it is
+                         not the sha256 of the htmlContent Brevo holds now (an approval is of a content, not an id)
   PRICE_SOURCE_STALE     a price letter / 235 and the price table is older than 26 h (v2.8.2 A7) - no price today
   NO_OFFER_VALID_UNTIL   a price letter (E1 / E2 of any rung, lost_quarterly) without OFFER_VALID_UNTIL
   NO_PRICE_ROW           a price letter with a date but no price row at its rung in a fresh price table

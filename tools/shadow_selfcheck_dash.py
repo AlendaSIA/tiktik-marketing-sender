@@ -36,7 +36,7 @@ def sendtime(dry):
     try:
         subprocess.run(["bash", "-c", f"rm -rf /tmp/eng && mkdir -p /tmp/eng && gsutil -q cp {BUNDLE} /tmp/eng/b.tgz "
                         "&& tar xzf /tmp/eng/b.tgz -C /tmp/eng"], check=True, capture_output=True, timeout=120)
-        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + ([] if dry else ["--record", "--sample"]),
+        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + (["--refresh-hashes"] if dry else ["--refresh-hashes", "--record", "--sample"]),
                            capture_output=True, text=True, timeout=420)
     except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"[:200]

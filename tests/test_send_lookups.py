@@ -65,6 +65,16 @@ AKCIJA = [{"master_key": m, "in_audience": "true", "excluded_reason": None} for 
     {"master_key": "m14", "in_audience": "false", "excluded_reason": "PERSONAL_LETTER_THIS_WEEK"}]
 
 
+H1, H2 = "a" * 64, "b" * 64
+_T = (NOW - dt.timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+TC = [{"template_id": "180", "email_type": "winback_1", "approved": "true", "approved_sha256": H1, "approved_commit": "c1", "html_sha256": H1, "error": None, "checked_at": _T},
+      {"template_id": "234", "email_type": "lost_quarterly", "approved": "true", "approved_sha256": H1, "approved_commit": "c2", "html_sha256": H2, "error": None, "checked_at": _T},
+      {"template_id": "179", "email_type": "reorder_1", "approved": "true", "approved_sha256": None, "approved_commit": None, "html_sha256": H2, "error": None, "checked_at": _T},
+      {"template_id": "235", "email_type": S.XSELL, "approved": "true", "approved_sha256": H1, "approved_commit": "c3", "html_sha256": H1, "error": None,
+       "checked_at": (NOW - dt.timedelta(hours=30)).strftime("%Y-%m-%d %H:%M:%S")},
+      {"template_id": "9180", "email_type": "winback_1_e2", "approved": "true", "approved_sha256": None, "approved_commit": None, "html_sha256": None, "error": None, "checked_at": None}]
+
+
 class Fake:
     """query(sql) -> rows, matched on the SQL TEXT the engine really sends."""
 
@@ -82,6 +92,8 @@ class Fake:
             return [dict(r) for r in PLAN]
         if f"FROM `{L.T_AKCIJA}`" in sql and sql.startswith("SELECT"):
             return [dict(r) for r in o.get("akcija", AKCIJA)]
+        if f"FROM `{J.T_APPROVAL}` a LEFT JOIN" in sql:
+            return [dict(r) for r in o.get("tc", TC)]
         if f"FROM `{L.T_LF}`" in sql:
             return [dict(r) for r in o.get("lf", LF)]
         fresh = (NOW - dt.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
@@ -94,8 +106,8 @@ class Fake:
                           "vu_xs": "2026-10-20"}],
             J.R_SQL: [{"email": p["email"], "r": ["h1", "h2"], "r_cab": ["h1", "h2"]} for p in PLAN],
             J.OFFERED_SQL: [],
-            J.APPROVAL_SQL: [{"template_id": "180", "email_type": "winback_1"}, {"template_id": "235", "email_type": S.XSELL},
-                             {"template_id": "244", "email_type": S.PP1}, {"template_id": "179", "email_type": "reorder_1"}],
+            J.APPROVAL_SQL: o.get("approved", [{"template_id": "180", "email_type": "winback_1"}, {"template_id": "235", "email_type": S.XSELL},
+                             {"template_id": "244", "email_type": S.PP1}, {"template_id": "179", "email_type": "reorder_1"}]),
             J.FLOW_SQL: o.get("flows", [{"master_key": "m10", "flow": "B2B", "src": "pd_field_309"}]),
             J.EN_SQL: [{"master_key": "m11"}],
         }
@@ -142,6 +154,48 @@ class L8OnTables(unittest.TestCase):
         self.assertNotIn("G.Ctx(", job)
         self.assertIn("G.build_ctx(", look)
         self.assertNotIn("G.Ctx(\n", look)
+
+
+class TemplateContentTC4(unittest.TestCase):
+    def test_sql_is_closed_on_null_mismatch_and_stale_mirror(self):
+        sql = J.APPROVAL_SQL
+        for must in ("a.approved_sha256 IS NOT NULL", "LOWER(TRIM(a.approved_sha256)) = b.html_sha256",
+                     "JOIN `" + J.T_BREVO_HASH + "` b ON b.template_id = a.template_id", "b.checked_at >= TIMESTAMP_SUB",
+                     "LENGTH(b.html_sha256) = 64"):
+            self.assertIn(must, sql)
+        self.assertNotIn("LEFT JOIN", sql)
+
+    def test_l4_from_the_mirror_and_live(self):
+        wh = L.Warehouse(Fake())
+        tc = {t["template_id"]: t for t in wh.template_content(NOW)}
+        self.assertEqual({k: v["content_approved"] for k, v in tc.items()},
+                         {180: True, 234: False, 179: False, 235: False, 9180: False})   # mismatch, NULL, stale mirror
+        self.assertTrue(wh.template_approved(180))
+        for tid in (234, 179, 235, 9180, 999):
+            self.assertFalse(wh.template_approved(tid), tid)
+        self.assertTrue(wh.template_approved(180, live_hash=lambda i: H1))            # live Brevo read wins over the mirror
+        self.assertFalse(wh.template_approved(180, live_hash=lambda i: H2))
+        self.assertTrue(wh.template_approved(235, live_hash=lambda i: H1))            # live: the stale mirror does not matter
+        self.assertFalse(wh.template_approved(179, live_hash=lambda i: H2))           # NULL stays closed
+
+    def test_nothing_approved_closes_every_letter_first(self):
+        wh = L.Warehouse(Fake(approved=[]))
+        self.assertEqual(gates_of(wh, "m1", "winback_1", 1), [G.T_NOT_APPROVED])
+        self.assertEqual(gates_of(wh, "m3", "winback_1", 1), [G.T_NOT_APPROVED, G.NO_LF])
+        res = L.evaluate(wh, D, NOW)
+        self.assertEqual(sum(r["deliverable"] for r in res["rows"]), 0)
+
+    def test_mirror_checks(self):
+        res = L.evaluate(L.Warehouse(Fake()), D, NOW)
+        res["template_content"] = {"refresh_error": None, "refreshed": True, "rows": L.Warehouse(Fake()).template_content(NOW)}
+        cs = {c["check_name"]: c for c in L.checks(res)}
+        self.assertFalse(cs["sendtime_template_hash_mirror_fresh"]["ok"])              # 235's mirror row is 30 h old
+        self.assertEqual(cs["sendtime_template_content"]["value"], "1")
+        fresh = [t for t in res["template_content"]["rows"] if t["template_id"] != 235]
+        res["template_content"] = {"refresh_error": None, "refreshed": True, "rows": fresh}
+        self.assertTrue({c["check_name"]: c for c in L.checks(res)}["sendtime_template_hash_mirror_fresh"]["ok"])
+        res["template_content"]["refresh_error"] = "job failed"
+        self.assertFalse({c["check_name"]: c for c in L.checks(res)}["sendtime_template_hash_mirror_fresh"]["ok"])
 
 
 class L9OnTables(unittest.TestCase):
