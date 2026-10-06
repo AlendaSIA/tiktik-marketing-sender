@@ -43,13 +43,13 @@ class DW1Dates(unittest.TestCase):
         d = S.advance(st, WF("winback"), D(2026, 10, 6))
         self.assertEqual((d.next_email_type, d.offer_valid_until - d.next_due_on), ("winback_3", TD(days=13)))
 
-    def test_234_send_plus_14(self):
+    def test_234_send_plus_13_dw7(self):
         for rungs in (None, {4: D(2099, 1, 1)}):
             d = S.advance(S.State("l"), WF("lost", D(2025, 1, 1), rungs), D(2026, 10, 6))
-            self.assertEqual((d.next_email_type, d.offer_valid_until), ("lost_quarterly", D(2026, 10, 20)))
+            self.assertEqual((d.next_email_type, d.offer_valid_until), ("lost_quarterly", D(2026, 10, 19)))
         later = S.advance(S.record_sent(S.State("l2", "lost_wave", D(2026, 9, 1)), "lost_quarterly", D(2026, 9, 1), 4),
                           WF("lost", D(2025, 1, 1)), D(2026, 10, 6))          # planned for a later day
-        self.assertEqual(later.offer_valid_until, later.next_due_on + TD(days=14))
+        self.assertEqual(later.offer_valid_until, later.next_due_on + TD(days=13))
 
     def test_235_xsell_valid_until_send_plus_13_in_its_own_column(self):
         d = S.advance(S.State("x"), PF(nr=None, order_on=None, ship=None), D(2026, 10, 5))

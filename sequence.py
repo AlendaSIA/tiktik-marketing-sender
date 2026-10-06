@@ -243,11 +243,11 @@ RUNG_CAP = 3
 # DATES AND SEND WINDOW v1 (MAIN 2026-10-05 18:30, contract sha 9d7c6584cc16) DW1 - the ENGINE owns every validity
 # date and EVERY planned priced letter's plan row carries it, whether or not a price exists yet (the writer needs
 # the date to price the slots; the old "date only when a price exists" was a circle that left every date NULL):
-#   E1 180 / 232 / 233 = planned send date + 13 · E2 = the date of its E1 · 234 = planned send date + 14 ·
+#   E1 180 / 232 / 233 = planned send date + 13 · E2 = the date of its E1 · 234 = planned send date + 13 (DW7) ·
 #   235 xsell_valid_until = planned send date + 13.
-# NOTE 234: DW1 says + 14; LQ4 and A6 of the same contract say + 13. DW1 is the newer wording and is applied;
-# reported to MAIN.
-OFFER_VALID_DAYS = {**{t: 14 for t in E1_TYPES}, **{t: 7 for t in E2_TYPES}, "lost_quarterly": 15}
+# DW7 (MAIN 2026-10-05 19:35, contract 1634b7f07054): 234 = planned send date + 13, as A6 / L4 / LQ4 always said; the
+# "+ 14" of DW1 / PS4 was a writing error and is void. Every priced letter is send + 13 (E2 = its E1 date).
+OFFER_VALID_DAYS = {**{t: 14 for t in E1_TYPES}, **{t: 7 for t in E2_TYPES}, "lost_quarterly": 14}
 
 # LADDER POLICY v1 (Raivis 2026-09-28 15:33/15:35, contract sha 326480dce080, rules L1-L8). Replaces every
 # "UNCONFIRMED ladder default". L2 rung by stage; L3 lost keeps the last reached rung (max 3, never deeper);

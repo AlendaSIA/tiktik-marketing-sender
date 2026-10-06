@@ -74,7 +74,7 @@ class L3Lost(unittest.TestCase):
 class L4Window(unittest.TestCase):
     def test_window_plus_6_and_plus_13(self):
         self.assertEqual(S.advance(S.State("w"), F("winback"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 14))  # K3
-        self.assertEqual(S.advance(S.State("w2"), F("lost"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 15))   # DW1: 234 = send + 14
+        self.assertEqual(S.advance(S.State("w2"), F("lost"), D(2026, 10, 1)).offer_valid_until, D(2026, 10, 14))   # DW7: 234 = send + 13
 
 
 class L5PurchaseEnds(unittest.TestCase):

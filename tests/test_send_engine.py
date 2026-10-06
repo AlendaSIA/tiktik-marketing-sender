@@ -172,7 +172,7 @@ class OfferDeadline(unittest.TestCase):
         d = S.advance(S.State("o1"), facts("winback", D(2026, 3, 1), rungs=far), D(2026, 10, 6))
         self.assertEqual(d.offer_valid_until, D(2026, 10, 19))                 # CADENCE v1 K3: E1 + 13
         d = S.advance(S.State("o2"), facts("lost", D(2025, 3, 1), rungs={4: D(2026, 12, 31)}), D(2026, 10, 6))
-        self.assertEqual(d.offer_valid_until, D(2026, 10, 20))                 # DW1: 234 = send + 14
+        self.assertEqual(d.offer_valid_until, D(2026, 10, 19))                 # DW7: 234 = send + 13
         d = S.advance(S.State("o3"), facts("reorder_due", D(2026, 6, 1)), D(2026, 10, 6))
         self.assertIsNone(d.offer_valid_until)
 
@@ -343,7 +343,7 @@ class A6OneOfferValidUntil(unittest.TestCase):
         self.assertEqual(S.offer_valid_until("winback_1", D(2026, 10, 1)), D(2026, 10, 14))
         self.assertEqual(S.offer_valid_until("winback_3", D(2026, 10, 1)), D(2026, 10, 14))
         self.assertEqual(S.offer_valid_until("winback_3_e2", D(2026, 10, 8)), D(2026, 10, 14))
-        self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 15))   # DW1: + 14
+        self.assertEqual(S.offer_valid_until("lost_quarterly", D(2026, 10, 1)), D(2026, 10, 14))   # DW7: + 13
         for et in ("reorder_1", "welcome_1", "active_xsell"):
             self.assertIsNone(S.offer_valid_until(et, D(2026, 10, 1)))
 
