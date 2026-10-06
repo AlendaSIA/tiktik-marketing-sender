@@ -23,6 +23,7 @@ import datetime as dt
 import hashlib
 import html as _html
 import json
+import os
 import re
 import sys
 
@@ -120,6 +121,10 @@ def main() -> int:
             res.update({k: b[k] for k in ("template_sha256", "template_modified", "template_active")})
             if b["problems"]:
                 out.append({**res, "sent": False, "why": "; ".join(b["problems"])})
+                continue
+            if os.environ.get("SAMPLE_DRY") == "1":            # render and check only; nothing is mailed
+                out.append({**res, "sent": False, "why": "SAMPLE_DRY", "subject": b["payload"]["subject"][:160],
+                            "html_bytes": len(b["payload"]["htmlContent"].encode()), "lf_run": row["run_id"]})
                 continue
             r = send(b["payload"])
             out.append({**res, "sent": True, "messageId": r.get("messageId"), "subject": b["payload"]["subject"][:120],
