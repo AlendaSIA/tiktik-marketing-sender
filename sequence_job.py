@@ -155,12 +155,9 @@ ORGS_SQL = f"SELECT id, name, reg_number FROM `{P}.channel_raw.pipedrive_orgs`"
 # G15.2 (MAIN 2026-10-01 16:55, contract sha 73e8f700b2e2): the daily planner only REPORTS G15, from the LATEST
 # AVAILABLE goods run (any plan_date - at 08:05 today's run does not exist yet); it never changes would_send or a hold.
 # The hard gate (G15.1: latest run of the SEND date) is send_path L7. Writer = Nakts sinhronizācija.
-T_GOODS = f"{P}.mkt_control.shadow_rung_goods_slots"
-GOODS_LATEST = f"""(SELECT ARRAY_AGG(run_id ORDER BY built_at DESC LIMIT 1)[SAFE_OFFSET(0)] FROM `{T_GOODS}`)"""
-GOODS_SQL = f"""SELECT master_key, ANY_VALUE(rung) AS rung, LOGICAL_OR(g15_zero_priced) AS zero
-FROM `{T_GOODS}` WHERE run_id = {GOODS_LATEST} AND master_key IS NOT NULL GROUP BY 1"""
-GOODS_RUN_SQL = f"""SELECT run_id, plan_date, built_at FROM `{T_GOODS}` WHERE run_id = {GOODS_LATEST}
-ORDER BY built_at DESC LIMIT 1"""
+# G15 source (Sūtīšanas dzinējs 5, 2026-10-06): TODAY's mkt_control.letter_fields row of the letter (rung +
+# g15_zero_priced), read through presend.row_goods. The old "latest run" of the goods table had no plan_date
+# filter and read YESTERDAY's rows at 08:05 - a fallback WO2 forbids. That table is not read any more.
 
 
 # G-EN (Raivis 2026-09-30 17:47): EN contacts get no LV engine letter until EN exists. EN = Brevo list 46
@@ -502,7 +499,6 @@ def main():
     org_by_address = {r["email"]: set(r["org_ids"]) for r in bq.query(ORG_ADDR_SQL).result()}
     master_addr = {r["master_key"]: list(r["emails"]) for r in bq.query(MASTER_ADDR_SQL).result()}
     overrides = {r["email"]: (r["person_id"], r["org_id"]) for r in bq.query(OVERRIDE_SQL).result()}
-    goods = {r["master_key"]: (r["rung"], bool(r["zero"])) for r in bq.query(GOODS_SQL).result()}
     flows = {r["master_key"]: (r["flow"], r["src"]) for r in bq.query(FLOW_SQL).result()}
     flow_src = dict(next(iter(bq.query(FLOW_SRC_SQL).result())))
     if not flow_src["classification_b2b"]:
@@ -520,14 +516,16 @@ def main():
     rung_stale = age_h(rung_built_at) is None or age_h(rung_built_at) > PRICE_MAX_AGE_H
     lqxs_stale = age_h(lqxs_built_at) is None or age_h(lqxs_built_at) > PRICE_MAX_AGE_H
     week = akcija_week(today)
-    goods_run = next(iter(bq.query(GOODS_RUN_SQL).result()), {"run_id": None, "plan_date": None, "built_at": None})
+    lf_run = next((r["run_id"] for r in lf_rows.values()), None)      # None before the 08:40 writer
+    goods_run = {"run_id": lf_run, "plan_date": today if lf_run else None, "built_at": None}
     en_masters = {r["master_key"] for r in bq.query(EN_SQL).result()}
     en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
     if not en_masters or not en_src["en_addresses"]:
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
 
     states, log_rows, plan_rows, pd_rows, held_today, akcija_rows = [], [], [], [], [], []
-    g15_report, basis = {}, {"xs4": "letter_fields", "anketa": "letter_fields", "fields": "letter_fields today only"}
+    g15_report, basis = {}, {"xs4": "letter_fields", "anketa": "letter_fields", "fields": "letter_fields today only",
+                         "g15": "letter_fields today only", "counts_at": "send time (send_lookups)"}
 
     def resolve_now(email, mk):
         return pd_target.resolve(email, by_address=by_address, master_other_addresses=master_addr.get(mk, ()),
@@ -576,7 +574,8 @@ def main():
                                   pp_nr, pp_on, pp_ship, last_sent(hist, S.PP1), last_sent(hist, S.XSELL)), today)
         tid, hold, tsrc = plan_template(d, tmap, TEMPLATES)
         # G15.2 (contract 73e8f700b2e2): the planner only REPORTS G15; the hard gate is send_path L7 (pre-send).
-        g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, goods.get(mk))
+        w0 = letter_row(lf_rows, f["send_email"], d.next_email_type)
+        g15 = S.goods_hold(d.next_email_type, d.offer_rung, hold, G.row_goods(w0)) if G.row_goods(w0) else hold
         if g15 in (S.HOLD_NO_PRICED, S.HOLD_NO_SLOT_ROW) and g15 != hold:
             g15_report[g15] = g15_report.get(g15, 0) + 1
         shop_order = pp_orders.get(mk)
@@ -615,21 +614,17 @@ def main():
             w = letter_row(lf_rows, f["send_email"], et)             # WO1 / WO2: today's row or the letter is held
             if w is None:
                 no_lf[et] = no_lf.get(et, 0) + 1
-            r1_ref = w and w["R1_REF_PRICE"]
             xvu = d.xsell_valid_until
-            if et == S.XSELL and lx is not None and d.next_due_on <= today and (
-                    lx["vu_xs"] is None or _d(lx["vu_xs"]) < xvu):
-                xvu = None                                               # K12 / XS2: price must hold to send + 13
-            # 244: the writer's link counts only when it was minted for THIS plan row's order (WO3)
-            same_order = bool(w) and bool(d.trigger_order_nr) and w["ORDER_NR"] == d.trigger_order_nr
-            anketa = w["ANKETA_URL"] if same_order else None
-            gate_list = G.gates(et, d.offer_rung, G.Ctx(
-                template_id=tid, template_approved=(tid, et) in approved,
-                offer_valid_until=d.offer_valid_until, goods=goods.get(mk), has_price=d.has_price,
-                price_stale=lqxs_stale if et in (S.LOST, S.XSELL) else rung_stale,
-                r_handles=r, r_cabinet=r_cab, r1_ref_price=r1_ref, xsell_valid_until=xvu,
-                xsell_offered=offered.get(mk, frozenset()), anketa_url=anketa,
-                order_nr=d.trigger_order_nr if same_order or et != S.PP1 else None, letter_fields=w is not None))
+            # K12 / XS2: the intro price must hold to send + 13
+            xs_holds = not (et == S.XSELL and lx is not None and d.next_due_on <= today and (
+                lx["vu_xs"] is None or _d(lx["vu_xs"]) < xvu))
+            # ONE builder for the planner and the send path (presend.build_ctx); WO3 order match is inside it
+            gate_list = G.gates(et, d.offer_rung, G.build_ctx(
+                email_type=et, template_id=tid, template_approved=(tid, et) in approved,
+                offer_valid_until=d.offer_valid_until, xsell_valid_until=xvu, has_price=d.has_price,
+                price_stale=lqxs_stale if et in (S.LOST, S.XSELL) else rung_stale, row=w,
+                trigger_order_nr=d.trigger_order_nr, r_handles=r, r_cabinet=r_cab,
+                xsell_offered=offered.get(mk, frozenset()), xs_price_holds=xs_holds))
         lp = last_plan.get(mk)
         key = (d.next_email_type, due_token(d.next_due_on, today), would, d.offer_rung)
         prev_key = lp and (lp["email_type"], due_token(_d(lp["planned_send_date"]), _d(lp["plan_date"])),

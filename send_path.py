@@ -19,7 +19,8 @@ Raivis himself says so. Today every lock is closed by design:
       stores as presend_gate - is evaluated again for every audience member on that moment's data
       (OFFER_VALID_UNTIL, XS4 R1_REF_PRICE + XSELL_VALID_UNTIL, ANKETA_URL, R-CAB, PP3 no-repeat, template
       approval / provisional id). Any member with a gate -> the campaign is refused (a frozen audience is clean
-      or nothing goes, as L5).
+      or nothing goes, as L5). MAIN 2026-10-06: THIS evaluation is the one that counts, not the 08:05 plan
+      column. Wired to the real tables: send_lookups.Warehouse.presend_ctx (same builder as the planner).
   L9  PERSON RE-CHECK at send time: B2B_FLOW / LEAD_FLOW (Pipedrive field 309 or the flow classification) and
       G-EN (EN_PENDING). Any member blocked -> refuse.
 
@@ -243,7 +244,29 @@ class _ProductionLookupsNotWired:
     def _no(self, *a):
         raise SendLocked([("L3-L5", "production lookups are not wired - the unlock change wires them")])
     track_enabled = template_approved = audience = suppressed = goods_run = goods = _no
-    presend_ctx = person_blocks = letter_fields = plan_run = _no
+
+    # WIRED 2026-10-06 (Sūtīšanas dzinējs 5, MAIN order): the four read-only lookups of L10 / L8 / L9 answer from the
+    # real tables (send_lookups.Warehouse). No lock opens by this: L1 / L2 fire before any lookup, and audience,
+    # track_enabled, template_approved, suppressed and the send-side writers stay unwired.
+    _wh = None
+
+    def _warehouse(self):
+        if self._wh is None:
+            import send_lookups
+            self._wh = send_lookups.warehouse()
+        return self._wh
+
+    def presend_ctx(self, campaign, send_date, master_keys):
+        return self._warehouse().presend_ctx(campaign, send_date, master_keys)
+
+    def person_blocks(self, send_date, master_keys):
+        return self._warehouse().person_blocks(send_date, master_keys)
+
+    def letter_fields(self, send_date):
+        return self._warehouse().letter_fields(send_date)
+
+    def plan_run(self, send_date):
+        return self._warehouse().plan_run(send_date)
 
 
 def _unwired(*a, **k):

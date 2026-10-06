@@ -80,7 +80,8 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
         out.append(_row(f"fresh_{k}", "warn", v is not None and v <= limit, v, f"limit {limit} h"))
     v = ages_h.get("goods_run_days")
     out.append(_row("goods_run_not_older_than_1_day", "warn", v is not None and v <= 1, v,
-                    "writer run of mkt_control.shadow_rung_goods_slots (G15); the hard gate is at send time"))
+                    "today's mkt_control.letter_fields run = the G15 source; open at 08:05 until the 08:40 writer ran; "
+                    "the gate that counts is at send time (sendtime_* rows)"))
     out.append(_row("letter_fields_row_today_for_every_would_send", "warn", not no_letter_fields,
                     sum(no_letter_fields.values()), no_letter_fields))   # always open at 08:05: the writer runs 08:40
     out.append(_row("template_map_agrees_with_interface_v2", "warn", not map_disagreements, len(map_disagreements),

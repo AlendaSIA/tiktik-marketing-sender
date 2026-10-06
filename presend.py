@@ -24,9 +24,17 @@ Gates (each a named reason):
   XSELL_REPEAT           235 with at least one R product already offered in an earlier 235 (PP3 "never repeat")
   NO_ANKETA_URL          244 with an empty ANKETA_URL (FS8) or without the triggering order number
   RCAB_MISMATCH          a letter with R slots whose R goods are not what the cabinet shows (R-CAB C4)
+  LETTER_DATE_NOT_PLAN_DATE  DW2: the writer's OFFER_VALID_UNTIL / XSELL_VALID_UNTIL is not the plan's date
+  WRITER_EXCLUDED        today's letter_fields row of this contact is an EXCLUDED row (the writer's own B2B / suppression
+                         view refused the contact): there is no field set to send
   NO_LETTER_FIELDS_ROW   WO1 / WO2 (contract 7ca13f671703): no mkt_control.letter_fields row of this contact and this
-                         letter for TODAY's plan_date. Never an older plan_date, never another table. Reported LAST,
-                         so presend_gate still names the data reason when there is one.
+                         letter for TODAY's plan_date. Never an older plan_date, never another table.
+
+Sūtīšanas dzinējs 5 (MAIN 2026-10-06, contract 1634b7f07054): the gates that only READ the writer's row - G15
+(NO_SLOT_ROW / NO_PRICED_SLOTS), XS4, NO_ANKETA_URL, LETTER_DATE_NOT_PLAN_DATE - are NOT named while the row does not
+exist. Before the 08:40 writer the only true statement is NO_LETTER_FIELDS_ROW; naming XS4 for 898 letters at 08:05
+was an artefact, and reading G15 from yesterday's goods run was a fallback WO2 forbids. G15 = the row's own
+rung + g15_zero_priced. The gate that counts is evaluated at SEND time (send_path L8, send_lookups.py).
 """
 from __future__ import annotations
 
@@ -48,8 +56,10 @@ XS_REPEAT = "XSELL_REPEAT"
 NO_ANKETA = "NO_ANKETA_URL"
 RCAB = "RCAB_MISMATCH"
 NO_LF = "NO_LETTER_FIELDS_ROW"
+DATE_MISMATCH = "LETTER_DATE_NOT_PLAN_DATE"
+EXCLUDED = "WRITER_EXCLUDED"
 ALL = (T_PROVISIONAL, T_NOT_APPROVED, PRICE_STALE, NO_OVU, NO_PRICE, NO_SLOT_ROW, NO_PRICED, XS4, XS_NOTHING_NEW, XS_REPEAT,
-       NO_ANKETA, RCAB, NO_LF)
+       NO_ANKETA, RCAB, DATE_MISMATCH, EXCLUDED, NO_LF)
 
 # Templates that print R1..R4 (grep "R1_NAME" over templates/ on feat/v2.8-price-fields @ 48dac94, 2026-10-05):
 # every lifecycle letter except 244. R-CAB applies to all of them.
@@ -73,6 +83,46 @@ class Ctx:
     anketa_url: str | None = None                       # PP4.2 / FS8
     order_nr: str | None = None                         # the order that triggers 244
     letter_fields: bool = False                         # today's letter_fields row of this letter exists (WO2)
+    writer_excluded: bool = False                       # ... and it is an EXCLUDED row: no field set
+    row_offer_valid_until: str | None = None            # the writer's OFFER_VALID_UNTIL text (DD.MM.YYYY, "" = none)
+    row_xsell_valid_until: str | None = None            # the writer's XSELL_VALID_UNTIL text
+
+
+def _dmy(v) -> str | None:
+    """A plan date as the letter prints it (DD.MM.YYYY)."""
+    if not v:
+        return None
+    if isinstance(v, str):
+        v = dt.date.fromisoformat(v[:10])
+    return v.strftime("%d.%m.%Y")
+
+
+def row_goods(row):
+    """G15 from the writer's row: (rung the goods were built for, zero priced slots) - None when there is no
+    usable row (absent or EXCLUDED)."""
+    if not row or row.get("letter") == "EXCLUDED":
+        return None
+    return (row.get("rung"), bool(row.get("g15_zero_priced")))
+
+
+def build_ctx(*, email_type, template_id, template_approved, offer_valid_until, xsell_valid_until, has_price,
+              price_stale, row, trigger_order_nr, r_handles=(), r_cabinet=(), xsell_offered=frozenset(),
+              xs_price_holds=True) -> Ctx:
+    """THE way a Ctx is made from a plan row + today's letter_fields row of the same letter (or None). The 08:05
+    planner (sequence_job) and the send path (send_lookups) both call this - one builder, two moments."""
+    excluded = bool(row) and row.get("letter") == "EXCLUDED"
+    use = row if row and not excluded else None
+    same_order = bool(use) and bool(trigger_order_nr) and use.get("ORDER_NR") == trigger_order_nr   # WO3
+    return Ctx(
+        template_id=template_id, template_approved=template_approved, offer_valid_until=offer_valid_until,
+        goods=row_goods(use), price_stale=price_stale, has_price=has_price, r_handles=tuple(r_handles),
+        r_cabinet=tuple(r_cabinet), r1_ref_price=use.get("R1_REF_PRICE") if use else None,
+        xsell_valid_until=xsell_valid_until if xs_price_holds else None, xsell_offered=xsell_offered,
+        anketa_url=use.get("ANKETA_URL") if same_order else None,
+        order_nr=trigger_order_nr if email_type == S.PP1 else None,
+        letter_fields=row is not None, writer_excluded=excluded,
+        row_offer_valid_until=use.get("OFFER_VALID_UNTIL") if use else None,
+        row_xsell_valid_until=use.get("XSELL_VALID_UNTIL") if use else None)
 
 
 def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
@@ -84,27 +134,37 @@ def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
         out.append(T_PROVISIONAL)
     elif not c.template_approved:
         out.append(T_NOT_APPROVED)
+    row = c.letter_fields and not c.writer_excluded          # the writer's field set of this letter exists
     if S.is_price_letter(email_type, offer_rung):
         if not c.offer_valid_until:
             out.append(NO_OVU)
         elif c.has_price is False:                          # DW1: the date no longer says a price exists
             out.append(PRICE_STALE if c.price_stale else NO_PRICE)
-        g = S.goods_hold(email_type, offer_rung, None, c.goods)             # G15 / G15.1
-        if g:
-            out.append(g)
+        if row:
+            g = S.goods_hold(email_type, offer_rung, None, c.goods)             # G15 / G15.1, from the row
+            if g:
+                out.append(g)
+            if c.row_offer_valid_until and c.offer_valid_until \
+                    and c.row_offer_valid_until != _dmy(c.offer_valid_until):
+                out.append(DATE_MISMATCH)                                       # DW2: the writer copies the date
     if email_type == S.XSELL:
-        if not (c.r1_ref_price and c.xsell_valid_until):
+        if row and not (c.r1_ref_price and c.xsell_valid_until):
             out.append(PRICE_STALE if c.price_stale else XS4)
+        if row and c.row_xsell_valid_until and c.xsell_valid_until \
+                and c.row_xsell_valid_until != _dmy(c.xsell_valid_until):
+            out.append(DATE_MISMATCH)
         if c.r_handles and c.xsell_offered:
             again = [h for h in c.r_handles if h in c.xsell_offered]
             if len(again) == len(c.r_handles):
                 out.append(XS_NOTHING_NEW)
             elif again:
                 out.append(XS_REPEAT)
-    if email_type == S.PP1 and not (c.anketa_url and c.order_nr):
-        out.append(NO_ANKETA)
+    if email_type == S.PP1 and (not c.order_nr or (row and not c.anketa_url)):
+        out.append(NO_ANKETA)                               # no order on the plan row, or the row has no link for it
     if email_type in R_SLOT_TYPES and set(c.r_handles) != set(c.r_cabinet):
         out.append(RCAB)
-    if not c.letter_fields:
+    if c.writer_excluded:
+        out.append(EXCLUDED)
+    elif not c.letter_fields:
         out.append(NO_LF)
     return out
