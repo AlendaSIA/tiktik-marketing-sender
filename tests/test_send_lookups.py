@@ -58,6 +58,12 @@ LF = [
 ]
 
 
+AKCIJA = [{"master_key": m, "in_audience": "true", "excluded_reason": None} for m in ("m1", "m2", "m6", "m7", "m9", "m13")] + [
+    {"master_key": "m10", "in_audience": "false", "excluded_reason": "B2B_FLOW"},
+    {"master_key": "m11", "in_audience": "false", "excluded_reason": "EN_PENDING"},
+    {"master_key": "m14", "in_audience": "false", "excluded_reason": "PERSONAL_LETTER_THIS_WEEK"}]
+
+
 class Fake:
     """query(sql) -> rows, matched on the SQL TEXT the engine really sends."""
 
@@ -73,6 +79,8 @@ class Fake:
             return o.get("log", [{"run_id": "lf-1", "status": "OK", "plan_run_id": "plan-1"}])
         if f"FROM `{L.T_PLAN}`" in sql:
             return [dict(r) for r in PLAN]
+        if f"FROM `{L.T_AKCIJA}`" in sql and sql.startswith("SELECT"):
+            return [dict(r) for r in o.get("akcija", AKCIJA)]
         if f"FROM `{L.T_LF}`" in sql:
             return [dict(r) for r in o.get("lf", LF)]
         fresh = (NOW - dt.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
@@ -92,7 +100,7 @@ class Fake:
         }
         if sql in answers:
             return answers[sql]
-        if sql.startswith(("DELETE", "INSERT")):
+        if sql.startswith(("DELETE", "INSERT", "UPDATE")):
             return []
         raise AssertionError("unexpected query: " + sql[:120])
 
@@ -208,6 +216,28 @@ class EvaluateAndRecord(unittest.TestCase):
         self.assertTrue(q.calls[0].startswith(f"DELETE FROM `{L.T_CHECK}` WHERE plan_date = DATE '{D}' AND check_name LIKE 'sendtime"))
         self.assertTrue(q.calls[1].startswith(f"INSERT INTO `{L.T_CHECK}` "))
         self.assertEqual(q.calls[1].count("'sendtime_"), 6)
+
+    def test_sg7_akcija_excludes_by_the_send_time_answer(self):
+        # week of Tue 06.10 = Mon 05.10 .. Sun 11.10. m1 (180) and m6 (235) are deliverable sales letters; m7 is a 244
+        # (not a sales letter); m2 is gated; m9 (179, due 07.10) is deliverable later this week; m10 / m11 keep the
+        # planner's own reason; m14 was PERSONAL by an older evaluation and has no deliverable letter now -> back in.
+        q = Fake()
+        wh = L.Warehouse(q)
+        personal = L.personal_this_week(wh, D, NOW)
+        self.assertEqual(personal, {"m1": ("winback_1", "2026-10-06"), "m6": (S.XSELL, "2026-10-06"),
+                                    "m9": ("reorder_1", "2026-10-07")})
+        plan = L.akcija_plan(wh, D, personal)
+        self.assertEqual((plan["rows"], plan["before_in_audience"], plan["before_personal"], plan["in_audience"],
+                          plan["personal"]), (9, 6, 1, 4, 3))
+        q.calls.clear()
+        L.akcija_record(q, D, plan)
+        self.assertEqual(len(q.calls), 2)
+        self.assertIn("SET in_audience = TRUE, excluded_reason = NULL", q.calls[0])
+        self.assertIn("excluded_reason = 'PERSONAL_LETTER_THIS_WEEK'", q.calls[0])
+        self.assertIn("STRUCT('m1' AS mk, 'winback_1' AS et, DATE '2026-10-06' AS sd)", q.calls[1])
+        self.assertIn("AND t.in_audience", q.calls[1])                    # never overrides another exclusion
+        self.assertNotIn("'m10'", q.calls[1])
+        self.assertNotIn("'m7'", q.calls[1])
 
     def test_reads_only(self):
         q = Fake()

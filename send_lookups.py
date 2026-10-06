@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import sys
@@ -33,7 +34,11 @@ P = "jaunais-za-aizv04022026"
 T_PLAN = f"{P}.mkt_control.shadow_send_plan"
 T_LF = f"{P}.mkt_control.letter_fields"
 T_LFLOG = f"{P}.mkt_control.letter_fields_log"
-T_CHECK = f"{P}.mkt_control.shadow_selfcheck"
+# Temp-then-swap: SHADOW_TABLE_SUFFIX moves the two tables this module WRITES (never the ones it reads to decide).
+SFX = os.environ.get("SHADOW_TABLE_SUFFIX", "")
+T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
+T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
+PERSONAL = "PERSONAL_LETTER_THIS_WEEK"
 
 
 def _job():
@@ -185,9 +190,10 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
                 pr[S.LOST_OFFER_RUNG] = _date(lx["vu_lost"])
             if lx.get("vu_lost_capped") is not None:
                 pr["4c"] = _date(lx["vu_lost_capped"])
-        has = S.has_rung_price(types.SimpleNamespace(rung_price_valid_until=pr or None), rung, d, ovu, d,
+        due = _date(p.get("planned_send_date")) or d
+        has = S.has_rung_price(types.SimpleNamespace(rung_price_valid_until=pr or None), rung, due, ovu, d,
                                capped=_b(p.get("lost_capped"))) if rung else None
-        xs_holds = not (et == S.XSELL and lx is not None and xvu is not None
+        xs_holds = not (et == S.XSELL and lx is not None and xvu is not None and due <= d
                         and (lx.get("vu_xs") is None or _date(lx["vu_xs"]) < xvu))       # K12 / XS2
         row = lf.get(p["email"])
         tid = _i(p["template_id"])
@@ -259,6 +265,53 @@ def evaluate(wh, send_date, now) -> dict:
             "planned_later": SC.count_by(later, ("email_type",)), "campaigns": per, "rows": rows}
 
 
+def personal_this_week(wh, send_date, now) -> dict:
+    """SG7 (contract 15e761dce94e): who has a PERSONAL sales letter this akcija week that is deliverable on the data
+    of this moment (after the writer). -> {master_key: (email_type, planned_send_date ISO)}. The week and the letter
+    set are the planner's (sequence_job.akcija_week, sequence.SALES_TYPES); the gates are L8 + L9 as at send."""
+    d = _date(send_date)
+    _tue, _label, mon, sun = _job().akcija_week(d)
+    sh, lf = wh._shared(now), wh.lf_rows(d)
+    rows = [p for p in wh.plan_rows(d).values() if _b(p["would_send"]) and p["email_type"] in S.SALES_TYPES
+            and p.get("planned_send_date") and mon <= _date(p["planned_send_date"]) <= sun]
+    blocks = wh.person_blocks(d, [p["master_key"] for p in rows], now)
+    out = {}
+    for p in rows:
+        if blocks.get(p["master_key"]):
+            continue
+        if not G.gates(p["email_type"], _i(p["offer_rung"]) or 0, wh._ctx(p, d, sh, lf)):
+            out[p["master_key"]] = (p["email_type"], _date(p["planned_send_date"]).isoformat())
+    return out
+
+
+def akcija_plan(wh, send_date, personal) -> dict:
+    """Today's akcija audience rows after SG7. Only the PERSONAL_LETTER_THIS_WEEK reason moves; every other
+    exclusion of the planner (SUPPRESSED, B2B_FLOW, LEAD_FLOW, EN_PENDING, BLOCKED_OR_UNKNOWN) stays as it is."""
+    d = _day(send_date)
+    rows = wh._rows(("akcija", d), f"SELECT master_key, in_audience, excluded_reason FROM `{T_AKCIJA}` "
+                                   f"WHERE plan_date = DATE '{d}'")
+    free = [r["master_key"] for r in rows if r.get("excluded_reason") in (None, "", PERSONAL)]
+    excl = [(mk,) + personal[mk] for mk in free if mk in personal]
+    return {"rows": len(rows), "before_in_audience": sum(_b(r["in_audience"]) for r in rows),
+            "before_personal": sum(r.get("excluded_reason") == PERSONAL for r in rows),
+            "in_audience": len(free) - len(excl), "personal": len(excl),
+            "personal_by_type": SC.count_by([{"t": e[1]} for e in excl], ("t",)), "exclude": excl}
+
+
+def akcija_record(query, send_date, plan, chunk=400):
+    """Write SG7 into today's rows of mkt_control.shadow_akcija_audience: reset the reason, then set it."""
+    d = _day(send_date)
+    query(f"UPDATE `{T_AKCIJA}` SET in_audience = TRUE, excluded_reason = NULL, personal_email_type = NULL, "
+          f"personal_send_date = NULL WHERE plan_date = DATE '{d}' AND excluded_reason = '{PERSONAL}'")
+    ex = plan["exclude"]
+    for i in range(0, len(ex), chunk):
+        vals = ", ".join(f"STRUCT({_sql_text(mk)} AS mk, {_sql_text(et)} AS et, DATE '{_day(sd)}' AS sd)"
+                         for mk, et, sd in ex[i:i + chunk])
+        query(f"UPDATE `{T_AKCIJA}` t SET in_audience = FALSE, excluded_reason = '{PERSONAL}', "
+              f"personal_email_type = x.et, personal_send_date = x.sd FROM UNNEST([{vals}]) x "
+              f"WHERE t.plan_date = DATE '{d}' AND t.master_key = x.mk AND t.in_audience")
+
+
 def checks(res) -> list:
     """The send-time answer as shadow_selfcheck rows. Hard = nothing could be sent today / the plan and the send
     path disagree about a person; info = the counts MAIN reads instead of the 08:05 gate columns."""
@@ -277,7 +330,8 @@ def checks(res) -> list:
         SC._row("sendtime_blocked_by_gate", "info", True, len(gated), SC.count_by(gated, ("email_type", "gate"))),
         SC._row("sendtime_planned_for_later_by_type", "info", True, sum(res["planned_later"].values()),
                 res["planned_later"]),
-    ]
+    ] + ([SC._row("sendtime_akcija_audience", "info", True, res["akcija"]["in_audience"],
+                  {k: v for k, v in res["akcija"].items() if k != "exclude"})] if res.get("akcija") else [])
 
 
 def _sql_text(v) -> str:
@@ -313,10 +367,14 @@ def main(argv) -> int:
     now = dt.datetime.fromisoformat(a.now).replace(tzinfo=dt.timezone.utc) if a.now \
         else window_open(dt.datetime.now(dt.timezone.utc))
     wh = Warehouse(cli_query)
-    res = evaluate(wh, SP.riga(now).date(), now)
+    day = SP.riga(now).date()
+    res = evaluate(wh, day, now)
+    res["akcija"] = akcija_plan(wh, day, personal_this_week(wh, day, now))          # SG7
     cs = checks(res)
     if a.record:
+        akcija_record(cli_query, day, res["akcija"])
         record(cli_query, res, cs)
+    res["akcija"] = {k: v for k, v in res["akcija"].items() if k != "exclude"}
     seen, sample = {}, []
     for r in res["rows"]:
         if seen.setdefault(r["email_type"], 0) < a.rows:
