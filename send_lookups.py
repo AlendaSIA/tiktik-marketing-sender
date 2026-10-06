@@ -227,7 +227,7 @@ def warehouse():
 def cli_query(sql):
     """Ops-shell transport: the bq CLI."""
     out = subprocess.run(["bq", "--project_id", P, "query", "--quiet", "--nouse_legacy_sql", "--format=json",
-                          "--max_rows=1000000", sql], capture_output=True, text=True, timeout=300)
+                          "--max_rows=1000000"], input=sql, capture_output=True, text=True, timeout=300)  # SQL on stdin: no argv limit
     if out.returncode:
         raise RuntimeError("bq failed: " + (out.stderr or out.stdout)[:600])
     s = out.stdout.strip()
@@ -298,7 +298,7 @@ def akcija_plan(wh, send_date, personal) -> dict:
             "personal_by_type": SC.count_by([{"t": e[1]} for e in excl], ("t",)), "exclude": excl}
 
 
-def akcija_record(query, send_date, plan, chunk=400):
+def akcija_record(query, send_date, plan, chunk=5000):
     """Write SG7 into today's rows of mkt_control.shadow_akcija_audience: reset the reason, then set it."""
     d = _day(send_date)
     query(f"UPDATE `{T_AKCIJA}` SET in_audience = TRUE, excluded_reason = NULL, personal_email_type = NULL, "
