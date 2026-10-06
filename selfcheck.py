@@ -94,10 +94,10 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     if assignment is not None:
         day = today.isoformat() if hasattr(today, "isoformat") else str(today)
         due = [r for r in ws if r.get("email_type") in S.PA3_TYPES and r.get("planned_send_date") == day]
-        diff = [{"plan": r["email_type"], "assignment": assignment.get(r["master_key"], "(not in assignment)")}
+        differ = [{"plan": r["email_type"], "assignment": assignment.get(r["master_key"], "(not in assignment)")}
                 for r in due if assignment.get(r["master_key"]) != r["email_type"]]
-        out.append(_row("plan_equals_assignment_due_179_180_234", "warn", not diff, len(diff),
-                        {"due": len(due), "differences": count_by(diff, ("plan", "assignment"))}))
+        out.append(_row("plan_equals_assignment_due_179_180_234", "warn", not differ, len(differ),
+                        {"due": len(due), "differences": count_by(differ, ("plan", "assignment"))}))
         if priced_type is not None:                                           # PA4: the known one-day lag, counted
             lag = [{"plan": r["email_type"], "priced_as": priced_type[r["master_key"]]} for r in due
                    if r["master_key"] in priced_type and priced_type[r["master_key"]] != r["email_type"]]
