@@ -12,6 +12,8 @@ import send_lookups as L  # noqa: E402
 import sequence as S  # noqa: E402
 import shadow_sample as X  # noqa: E402
 
+import hashlib  # noqa: E402
+
 DAY = dt.date(2026, 10, 6)
 TPL = {"subject": "{{ contact.GREETING }}, tava cena līdz {{ contact.OFFER_VALID_UNTIL }}", "isActive": False,
        "modifiedAt": "2026-10-01", "htmlContent": "<html><body><p>{{ contact.VARDS | default: \"Sveiki\" }}</p>"
@@ -23,6 +25,8 @@ ROW = {"email_type": "winback_1", "letter": "RUNG", "run_id": "lf-1", "email": "
 BREVO = {"VARDS": "Anna", "KABINETS_URL": "https://plani.tiktik.lv/kabinets.php?t=abc", "P1_PRICE": "9,99 €",
          "P2_NAME": "Vecā prece"}
 PICK = {"email_type": "winback_1", "template_id": 180, "master_key": "cid:1", "email": "a@x.lv", "skip_reason": None}
+REAL_APPROVED = dict(X.APPROVED_SHA256)
+X.APPROVED_SHA256[180] = hashlib.sha256(TPL["htmlContent"].encode()).hexdigest()      # the test file IS the approved one
 
 
 def res(rows, camps):
@@ -98,7 +102,12 @@ class Letter(unittest.TestCase):
         self.assertIsNone(b["payload"])
         self.assertIn("contact.KABINETS_URL", b["problems"][0])
         t = {**TPL, "htmlContent": TPL["htmlContent"].replace("</body>", "⟦CENA⟧{% for x in y %}</body>")}
-        pr = " | ".join(X.build(DAY, PICK, ROW, t, BREVO)["problems"])
+        self.assertIn("Brevo holds another file than the approved one", X.build(DAY, PICK, ROW, t, BREVO)["problems"][0])
+        self.assertIn("no approved content hash", X.build(DAY, {**PICK, "template_id": 999}, ROW, TPL, BREVO)["problems"][0])
+        self.assertEqual(sorted(REAL_APPROVED), [179, 180, 234, 235])
+        self.assertTrue(all(len(v) == 64 for v in REAL_APPROVED.values()))
+        with mock.patch.dict(X.APPROVED_SHA256, {180: hashlib.sha256(t["htmlContent"].encode()).hexdigest()}):
+            pr = " | ".join(X.build(DAY, PICK, ROW, t, BREVO)["problems"])
         self.assertIn("unresolved block", pr)
         self.assertIn("visible placeholder", pr)
 

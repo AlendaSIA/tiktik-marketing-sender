@@ -34,6 +34,17 @@ P = "jaunais-za-aizv04022026"
 T_QUEUE = f"{P}.mkt_control.shadow_sample"
 T_LF = f"{P}.mkt_control.letter_fields"
 RECIPIENT = DT.TEST_RECIPIENT                    # raivis@alenda.lv - a constant of draft_test, not a parameter
+# FOUND 2026-10-06, before the first sample was mailed: Brevo holds the 25.09 files of 179 / 180 / 234 / 235, not the
+# files Raivis approved on 30.09 - 01.10 (234 in Brevo still shows price placeholders). mkt_control.template_approval
+# approves an id, not a content. A sample is mailed ONLY when Brevo's htmlContent is byte-equal to the approved file:
+# sha256 of templates/<type>.html at the approved commit on feat/v2.8-price-fields. An id that is not listed here is
+# never mailed. INTERIM home of these hashes - MAIN decides where the approved hash lives.
+APPROVED_SHA256 = {
+    179: "035071516cb38839431bbca294349535e016133eca5e0269c9bb34589b89bd53",   # commit faaec26 (mkt_control.template_approval note)
+    180: "010b3a30bf3136c5312ce6cabfcbcc98f760085c3b407945150a84923470149b",   # commit aa0ce78 (mkt_control.template_approval note)
+    234: "0e5d9ddd04bf9fb8dab0e0f03cad480664817af9bbc8bc586fe2d3911a5949aa",   # commit d4ed418 (mkt_control.template_approval note)
+    235: "de294f09076ad824281824508ab6f44bc66dc47a7fd07ef5c018fc03c3ae0011",   # commit 9bde7f6 (mkt_control.template_approval note)
+}
 _LEFT_FIELD = re.compile(r"\{\{\s*contact\.[A-Za-z0-9_]+[^}]*\}\}")
 _LEFT_BLOCK = re.compile(r"\{%[^%]*%\}")
 
@@ -58,7 +69,9 @@ def build(day, pick, row, tpl, brevo_attrs) -> dict:
     """Pure. -> {problems: [...], payload: {...} | None, template_sha256, template_modified}."""
     et, problems = pick["email_type"], []
     html_t, subj_t = tpl.get("htmlContent") or "", tpl.get("subject") or ""
-    info = {"template_sha256": hashlib.sha256(html_t.encode()).hexdigest()[:12],
+    full = hashlib.sha256(html_t.encode()).hexdigest()
+    want = APPROVED_SHA256.get(int(pick["template_id"]))
+    info = {"template_sha256": full[:12], "approved_sha256": want and want[:12],
             "template_modified": tpl.get("modifiedAt"), "template_active": tpl.get("isActive")}
     if row is None:
         problems.append("no letter_fields row today")
@@ -68,6 +81,10 @@ def build(day, pick, row, tpl, brevo_attrs) -> dict:
         problems.append("letter_fields row is EXCLUDED (SG5)")
     if not html_t:
         problems.append("Brevo template has no htmlContent")
+    elif want is None:
+        problems.append(f"no approved content hash for template {pick['template_id']}")
+    elif full != want:
+        problems.append(f"Brevo holds another file than the approved one (Brevo {full[:12]}, approved {want[:12]})")
     if C.UTM_WEEK_MARKER in html_t:
         problems.append("template carries the campaign week marker - not an engine template")
     if problems:
@@ -118,7 +135,7 @@ def main() -> int:
                 f"ORDER BY built_at DESC LIMIT 1", job_config=par(d=day, e=p["email"])).result()), None)
             b = build(day, p, None if row is None else dict(row), C.template(int(p["template_id"])),
                       C.contact_attributes(p["email"]))
-            res.update({k: b[k] for k in ("template_sha256", "template_modified", "template_active")})
+            res.update({k: b[k] for k in ("template_sha256", "approved_sha256", "template_modified", "template_active")})
             if b["problems"]:
                 out.append({**res, "sent": False, "why": "; ".join(b["problems"])})
                 continue
