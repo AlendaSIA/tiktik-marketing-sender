@@ -176,7 +176,9 @@ class WriterOutputV1(unittest.TestCase):
         import inspect
         import sequence_job as J
         src = inspect.getsource(J)
-        self.assertIn('w["ORDER_NR"] == d.trigger_order_nr', src)
+        import presend
+        self.assertIn('use.get("ORDER_NR") == trigger_order_nr', inspect.getsource(presend.build_ctx))
+        self.assertIn("trigger_order_nr=d.trigger_order_nr", src)
         self.assertNotIn("(mintable)", src)
         self.assertNotIn("(xs_intro)", src)
 

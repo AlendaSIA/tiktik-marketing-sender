@@ -273,11 +273,20 @@ class PreSendGates(unittest.TestCase):
         self.assertEqual(G.gates("reorder_1", 0, ctx(template_id=179, template_approved=False)), [G.T_NOT_APPROVED])
 
     def test_empty_ctx_refuses_and_gates_are_named_and_ordered(self):
-        self.assertEqual(G.gates("winback_1", 1, G.Ctx()), [G.T_NOT_APPROVED, G.NO_OVU, G.NO_SLOT_ROW, G.NO_LF])
-        self.assertEqual(G.gates(S.XSELL, 0, G.Ctx()), [G.T_NOT_APPROVED, G.XS4, G.NO_LF])
-        self.assertEqual(G.gates(S.PP1, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_ANKETA, G.NO_LF])
+        # no writer row: the gates that only READ the row are silent, NO_LETTER_FIELDS_ROW says it (2026-10-06)
+        self.assertEqual(G.gates("winback_1", 1, G.Ctx()), [G.T_NOT_APPROVED, G.NO_OVU, G.NO_LF])
+        self.assertEqual(G.gates(S.XSELL, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_LF])
+        self.assertEqual(G.gates(S.PP1, 0, G.Ctx()), [G.T_NOT_APPROVED, G.NO_ANKETA, G.NO_LF])   # no order on the plan row
+        self.assertEqual(G.gates(S.PP1, 0, G.Ctx(order_nr="M-1")), [G.T_NOT_APPROVED, G.NO_LF])
+        # the row exists and is empty: every row gate speaks
+        row = G.Ctx(letter_fields=True)
+        self.assertEqual(G.gates("winback_1", 1, row), [G.T_NOT_APPROVED, G.NO_OVU, G.NO_SLOT_ROW])
+        self.assertEqual(G.gates(S.XSELL, 0, row), [G.T_NOT_APPROVED, G.XS4])
+        self.assertEqual(G.gates(S.PP1, 0, G.Ctx(letter_fields=True, order_nr="M-1")), [G.T_NOT_APPROVED, G.NO_ANKETA])
+        self.assertEqual(G.gates("reorder_1", 0, G.Ctx(letter_fields=True, writer_excluded=True)),
+                         [G.T_NOT_APPROVED, G.EXCLUDED])
         self.assertEqual(G.gates(None, 0, G.Ctx()), [])
-        self.assertEqual(len(set(G.ALL)), 13)
+        self.assertEqual(len(set(G.ALL)), 15)
 
     def test_job_stores_the_gate_next_to_the_plan_and_never_changes_would_send(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()

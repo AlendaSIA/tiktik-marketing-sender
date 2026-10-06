@@ -233,7 +233,7 @@ def production_dispatch(campaign_id, send_date, batch_id, build_id):
     import config as C
     dispatch({"campaign_id": campaign_id, "track": None, "template_id": None, "email_type": None},
              send_date=send_date, batch_id=batch_id, build_id=build_id, config=C,
-             lookups=_ProductionLookupsNotWired(), brevo_send=_unwired, log_sink=_unwired,
+             lookups=ProductionLookups(), brevo_send=_unwired, log_sink=_unwired,
              pd_writer=_unwired, state_advance=_unwired)
 
 
@@ -244,29 +244,39 @@ class _ProductionLookupsNotWired:
     def _no(self, *a):
         raise SendLocked([("L3-L5", "production lookups are not wired - the unlock change wires them")])
     track_enabled = template_approved = audience = suppressed = goods_run = goods = _no
+    presend_ctx = person_blocks = letter_fields = plan_run = _no
 
-    # WIRED 2026-10-06 (Sūtīšanas dzinējs 5, MAIN order): the four read-only lookups of L10 / L8 / L9 answer from the
-    # real tables (send_lookups.Warehouse). No lock opens by this: L1 / L2 fire before any lookup, and audience,
-    # track_enabled, template_approved, suppressed and the send-side writers stay unwired.
+
+class ProductionLookups(_ProductionLookupsNotWired):
+    """WIRED 2026-10-06 (Sūtīšanas dzinējs 5, MAIN order): the four READ-ONLY lookups of L10 / L8 / L9 answer from
+    the real tables (send_lookups.Warehouse - the planner's own builder and SQL texts, on the data of that moment).
+    No lock opens by this: L1 / L2 / L6 fire before any lookup; audience, track_enabled, template_approved,
+    suppressed, the L7 goods lookups and every send-side writer stay unwired and refuse.
+    FAIL CLOSED: a lookup that cannot answer (no warehouse, a query error, an empty guard source) is a refusal."""
     _wh = None
 
-    def _warehouse(self):
-        if self._wh is None:
-            import send_lookups
-            self._wh = send_lookups.warehouse()
-        return self._wh
+    def _ask(self, name, *args):
+        try:
+            if self._wh is None:
+                import send_lookups
+                self._wh = send_lookups.warehouse()
+            return getattr(self._wh, name)(*args)
+        except SendLocked:
+            raise
+        except Exception as e:  # noqa: BLE001 - whatever went wrong, nothing is sent
+            raise SendLocked([("WIRE", f"lookup {name} could not answer ({type(e).__name__}: {e}) - refused")])
 
     def presend_ctx(self, campaign, send_date, master_keys):
-        return self._warehouse().presend_ctx(campaign, send_date, master_keys)
+        return self._ask("presend_ctx", campaign, send_date, master_keys)
 
     def person_blocks(self, send_date, master_keys):
-        return self._warehouse().person_blocks(send_date, master_keys)
+        return self._ask("person_blocks", send_date, master_keys)
 
     def letter_fields(self, send_date):
-        return self._warehouse().letter_fields(send_date)
+        return self._ask("letter_fields", send_date)
 
     def plan_run(self, send_date):
-        return self._warehouse().plan_run(send_date)
+        return self._ask("plan_run", send_date)
 
 
 def _unwired(*a, **k):

@@ -136,7 +136,24 @@ class CampaignLayerStillRefuses(unittest.TestCase):
             with mock.patch.object(C, "ALLOW_SEND", True), mock.patch.object(C, "DRY_RUN", False):
                 with self.assertRaises(SP.SendLocked) as e:
                     SP.production_dispatch(1, "2026-10-06", "B", "b")
-        self.assertIn("not wired", str(e.exception))
+        self.assertTrue("not wired" in str(e.exception) or "refused" in str(e.exception))
+
+    def test_production_lookups_fail_closed_and_only_four_are_wired(self):
+        import send_lookups
+        lk = SP.ProductionLookups()
+        with mock.patch.object(send_lookups, "warehouse", side_effect=RuntimeError("no warehouse here")):
+            for name, args in (("letter_fields", ("2026-10-06",)), ("plan_run", ("2026-10-06",)),
+                               ("person_blocks", ("2026-10-06", ["m"])), ("presend_ctx", ({}, "2026-10-06", ["m"]))):
+                with self.assertRaises(SP.SendLocked) as e:
+                    getattr(lk, name)(*args)
+                self.assertEqual(e.exception.closed[0][0], "WIRE")
+        for name in ("track_enabled", "template_approved", "audience", "suppressed", "goods_run", "goods"):
+            with self.assertRaises(SP.SendLocked) as e:
+                getattr(lk, name)(1)
+            self.assertIn("not wired", str(e.exception))
+        fake = mock.Mock(); fake.plan_run.return_value = "plan-1"
+        with mock.patch.object(send_lookups, "warehouse", return_value=fake):
+            self.assertEqual(SP.ProductionLookups().plan_run("2026-10-06"), "plan-1")
 
     def test_production_dispatch_with_real_config_is_L1(self):
         import config as C
