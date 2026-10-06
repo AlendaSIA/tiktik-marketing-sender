@@ -64,7 +64,7 @@ def test_refuses_file_not_matching_manifest(monkeypatch):
 
 
 def test_refuses_id_outside_allowed(monkeypatch):
-    row = dict(ROW, id=179)
+    row = dict(ROW, id=181)
     res, rc = T.put_one(row, COMMIT, apply=True)
     assert rc == 2 and "not in" in res["refused"]
 

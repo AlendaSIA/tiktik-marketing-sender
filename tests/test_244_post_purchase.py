@@ -107,8 +107,13 @@ def test_utm_theme_and_put_allowlist():
     import utm
     assert utm.THEMES["post_purchase_feedback"] == "atsauksme"
     assert utm.slug("2026-10-05", "post_purchase_feedback", "lv") == "2026-w41-atsauksme"
-    assert 244 in T.ALLOWED and T.ALLOWED == frozenset(range(229, 237)) | {244}
-    assert T.SECTIONS == ("templates", "post_purchase") and ROW["id"] in T.ALLOWED
+    assert 244 in T.ALLOWED and T.ALLOWED == frozenset(range(229, 237)) | {244, 179, 180}
+    assert T.SECTIONS == ("templates", "post_purchase", "live_mapped") and ROW["id"] in T.ALLOWED
+    # TC3 (MAIN 2026-10-06 17:28): 179 / 180 are reachable only through their own section, with the file the manifest names
+    live = {r["id"]: r for r in json.load(open(os.path.join(ROOT, "templates_manifest.json"), encoding="utf-8"))["live_mapped"]}
+    for tid in (179, 180):
+        raw = open(os.path.join(ROOT, live[tid]["file"]), "rb").read()
+        assert hashlib.sha256(raw).hexdigest() == live[tid]["sha256"] and "!" not in live[tid]["subject"]
 
 
 def test_az_overlay_is_read_from_letter_fields_and_never_the_retired_table():

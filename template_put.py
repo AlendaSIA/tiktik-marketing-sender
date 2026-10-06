@@ -31,10 +31,12 @@ import urllib.request
 import campaign as C
 
 REPO_RAW = "https://raw.githubusercontent.com/AlendaSIA/tiktik-marketing-sender/{commit}/{path}"
-ALLOWED = frozenset(range(229, 237)) | {244}   # + 244 post_purchase_feedback (MAIN 2026-10-06)
+# + 244 post_purchase_feedback (MAIN 2026-10-06 11:06); + 179 reorder_1, 180 winback_1 (MAIN 2026-10-06 17:28, TC3:
+# Brevo held the 24-25.09 files for the approved templates - the approved file is put, isActive stays false).
+ALLOWED = frozenset(range(229, 237)) | {244} | {179, 180}
 # Manifest sections this script may read. "templates" stays the default, so a bare run never reaches 244:
-# it is put only by naming its section (--section post_purchase).
-SECTIONS = ("templates", "post_purchase")
+# it is put only by naming its section (--section post_purchase); 179 / 180 only with --section live_mapped.
+SECTIONS = ("templates", "post_purchase", "live_mapped")
 
 
 def blob_sha(b: bytes) -> str:
