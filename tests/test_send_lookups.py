@@ -167,8 +167,12 @@ class L10OnTables(unittest.TestCase):
         self.assertEqual(L.window_open(NOW), NOW)
 
     def test_a_date_that_is_not_a_date_never_reaches_sql(self):
+        q = Fake()
+        L.Warehouse(q).plan_run("2026-10-06' OR 1=1 --")              # only the ISO date part is ever used
+        self.assertIn("plan_date = DATE '2026-10-06' GROUP BY", q.calls[0])
+        self.assertNotIn("1=1", q.calls[0])
         with self.assertRaises(ValueError):
-            L.Warehouse(Fake()).plan_run("2026-10-06' OR 1=1 --")
+            L.Warehouse(Fake()).plan_run("tomorrow")
 
 
 class EvaluateAndRecord(unittest.TestCase):
