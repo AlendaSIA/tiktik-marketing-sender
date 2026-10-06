@@ -12,6 +12,9 @@ this job - scheduled 08:55, after the writer - first runs the engine's own send-
 the live bundle: send_path locks L10 + L8 + L9 on the real tables, as if at 09:00) and records it as sendtime_* rows
 in mkt_control.shadow_selfcheck. A hard sendtime_* failure (writer not OK on the latest plan; a B2B / LEAD / EN person
 among today's due letters) posts the dash row like any other hard check; so does an evaluation that could not run.
+DAILY SHADOW SAMPLE (CF5, MAIN 2026-10-06): the same step queues one deliverable letter per type in
+mkt_control.shadow_sample (once a day) and starts Cloud Run job tiktik-shadow-sample, which mails them to
+raivis@alenda.lv only. Nothing is marked sent.
 Never twice a day: the posted row is remembered in mkt_control.shadow_selfcheck (check_name '_dash_row_posted').
 It sends nothing to anyone and touches nothing but that marker row and the dash file. DRY=1 prints the row only.
 """
@@ -33,7 +36,7 @@ def sendtime(dry):
     try:
         subprocess.run(["bash", "-c", f"rm -rf /tmp/eng && mkdir -p /tmp/eng && gsutil -q cp {BUNDLE} /tmp/eng/b.tgz "
                         "&& tar xzf /tmp/eng/b.tgz -C /tmp/eng"], check=True, capture_output=True, timeout=120)
-        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + ([] if dry else ["--record"]),
+        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + ([] if dry else ["--record", "--sample"]),
                            capture_output=True, text=True, timeout=420)
     except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"[:200]

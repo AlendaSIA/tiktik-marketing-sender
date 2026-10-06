@@ -18,6 +18,7 @@ returns every scalar as text, so values are normalised here.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,16 @@ SFX = os.environ.get("SHADOW_TABLE_SUFFIX", "")
 T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
 T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
 PERSONAL = "PERSONAL_LETTER_THIS_WEEK"
+# Daily shadow sample (CF5, MAIN 2026-10-06): the picks. Mailed by job tiktik-shadow-sample (shadow_sample.py).
+T_SAMPLE = f"{P}.mkt_control.shadow_sample{SFX}"
+SAMPLE_JOB = "tiktik-shadow-sample"
+# Types that are NOT sampled although planned / known, with the reason MAIN gave (2026-10-06). Remove a line only on
+# MAIN's word; nothing here puts or activates a template.
+SAMPLE_SKIP = {
+    S.PP1: "Brevo template 244 still holds text v4; the approved text is v5 and is not put (MAIN 2026-10-06)",
+    "akcija_weekly": "template 236 is not approved; the weekly akcija is not an engine letter (MAIN 2026-10-06)",
+}
+SAMPLE_SKIP_TEMPLATE = {"akcija_weekly": 236}
 
 
 def _job():
@@ -376,6 +387,53 @@ def akcija_record(query, send_date, plan, chunk=5000):
               f"WHERE t.plan_date = DATE '{d}' AND t.master_key = x.mk AND t.in_audience")
 
 
+def sample_pick(res, send_date) -> list:
+    """One deliverable letter per type of today's send-time evaluation, or the reason there is none. The contact
+    rotates by day (hash of date + master key), so the same client is not shown every morning."""
+    d = _day(send_date)
+    out = []
+    for c in res["campaigns"]:
+        et, base = c["email_type"], {"email_type": c["email_type"], "template_id": c["template_id"],
+                                     "master_key": None, "email": None, "skip_reason": None}
+        ok = [r for r in res["rows"] if r["email_type"] == et and r["offer_rung"] == c["rung"] and r["deliverable"]]
+        if et in SAMPLE_SKIP:
+            out.append({**base, "skip_reason": SAMPLE_SKIP[et]})
+        elif not ok:
+            out.append({**base, "skip_reason": "no deliverable letter of this type today: "
+                        + (c["L8"][0][1] if c["L8"] else c["L9"][0][1] if c["L9"] else "none planned")})
+        else:
+            r = min(ok, key=lambda r: hashlib.sha256((d + r["master_key"]).encode()).hexdigest())
+            out.append({**base, "master_key": r["master_key"], "email": r["email"]})
+    have = {o["email_type"] for o in out}
+    out += [{"email_type": et, "template_id": SAMPLE_SKIP_TEMPLATE.get(et), "master_key": None, "email": None,
+             "skip_reason": why} for et, why in SAMPLE_SKIP.items() if et not in have]
+    return sorted(out, key=lambda o: o["email_type"])
+
+
+def sample_record(query, res, picks, force=False) -> bool:
+    """Queue today's picks ONCE per day (a re-run of the job mails nothing twice). -> True when rows were written."""
+    d, run = _day(res["send_date"]), res["plan_run"] or "none"
+    if int(query(f"SELECT COUNT(*) AS n FROM `{T_SAMPLE}` WHERE plan_date = DATE '{d}'")[0]["n"]):
+        if not force:
+            return False
+        query(f"DELETE FROM `{T_SAMPLE}` WHERE plan_date = DATE '{d}'")
+    vals = ", ".join(f"(DATE '{d}', CURRENT_TIMESTAMP(), {_sql_text(run)}, {_sql_text(p['email_type'])}, "
+                     f"{'NULL' if p['template_id'] is None else int(p['template_id'])}, {_sql_text(p['master_key'])}, "
+                     f"{_sql_text(p['email'])}, {_sql_text(p['skip_reason'])})" for p in picks)
+    query(f"INSERT INTO `{T_SAMPLE}` (plan_date, picked_at, plan_run_id, email_type, template_id, master_key, email, "
+          f"skip_reason) VALUES {vals}")
+    return True
+
+
+def sample_trigger() -> str:
+    """Start the mailing half (Cloud Run job on the campaign account). The job reads today's queue itself."""
+    r = subprocess.run(["gcloud", "run", "jobs", "execute", SAMPLE_JOB, "--region", "europe-west1", "--project", P,
+                        "--async", "--format=value(metadata.name)"], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        raise RuntimeError("could not start " + SAMPLE_JOB + ": " + (r.stderr or r.stdout)[-300:])
+    return r.stdout.strip().splitlines()[-1]
+
+
 def checks(res) -> list:
     """The send-time answer as shadow_selfcheck rows. Hard = nothing could be sent today / the plan and the send
     path disagree about a person; info = the counts MAIN reads instead of the 08:05 gate columns."""
@@ -425,6 +483,9 @@ def main(argv) -> int:
     import argparse
     ap = argparse.ArgumentParser(description="send-time gates L10 / L8 / L9 on the real tables (read-only)")
     ap.add_argument("--record", action="store_true", help="write the sendtime_* rows to shadow_selfcheck")
+    ap.add_argument("--sample", action="store_true", help="with --record: queue the daily shadow sample (once a "
+                    "day) and start job " + SAMPLE_JOB)
+    ap.add_argument("--sample-force", action="store_true", help="replace today's queue and mail again")
     ap.add_argument("--now", help="evaluate as if at this UTC ISO time (proofs)")
     ap.add_argument("--rows", type=int, default=0, help="print the first N evaluated rows per letter type")
     a = ap.parse_args(argv)
@@ -439,13 +500,24 @@ def main(argv) -> int:
     if a.record:
         akcija_record(q, day, res["akcija"])
         record(q, res, cs)
+    sample = None
+    if a.sample or a.sample_force:
+        picks = sample_pick(res, day)
+        sample = {"picks": [{k: p[k] for k in ("email_type", "template_id", "master_key", "skip_reason")} for p in picks],
+                  "queued": False, "execution": None}
+        # only inside the window check: a sample is a letter that could go today
+        if a.record and not res["L10"] and any(p["skip_reason"] is None for p in picks):
+            sample["queued"] = sample_record(q, res, picks, force=a.sample_force)
+            if sample["queued"]:
+                sample["execution"] = sample_trigger()
     res["akcija"] = {k: v for k, v in res["akcija"].items() if k != "exclude"}
-    seen, sample = {}, []
+    seen, rows_sample = {}, []
     for r in res["rows"]:
         if seen.setdefault(r["email_type"], 0) < a.rows:
             seen[r["email_type"]] += 1
-            sample.append({k: r[k] for k in ("email_type", "master_key", "gates", "person_block", "deliverable")})
-    print(json.dumps({**{k: v for k, v in res.items() if k != "rows"}, "checks": cs, "sample": sample,
+            rows_sample.append({k: r[k] for k in ("email_type", "master_key", "gates", "person_block", "deliverable")})
+    print(json.dumps({**{k: v for k, v in res.items() if k != "rows"}, "checks": cs, "sample": rows_sample,
+                      "shadow_sample": sample,
                       "recorded": bool(a.record)}, ensure_ascii=False, indent=1, default=str))
     return 0
 
