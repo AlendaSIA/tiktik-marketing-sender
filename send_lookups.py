@@ -180,7 +180,11 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
             "approved": {(_i(r["template_id"]), r["email_type"]) for r in rows(J.APPROVAL_SQL)},
             "flows": {r["master_key"]: r["flow"] for r in rows(J.FLOW_SQL)},
             "en": {r["master_key"] for r in rows(J.EN_SQL)},
+            "buyers": {r["master_key"] for r in rows(J.BUYER_SQL)},          # PA1
+            "kab": {r["email"] for r in rows(J.KAB_SQL)},                    # PA2
         }
+        if not sh["buyers"] or not sh["kab"]:
+            raise RuntimeError("PA1 / PA2 source is empty - refusing to answer the person re-check")
         if not sh["flows"] or not sh["en"]:      # as the planner: no guard source = no answer, never "nobody blocked"
             raise RuntimeError("B2B / LEAD or G-EN guard source is empty - refusing to answer the person re-check")
         self._c["shared"] = sh
@@ -258,13 +262,20 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
 
     # ---- L9
     def person_blocks(self, send_date, master_keys, now=None) -> dict:
+        """B2B / LEAD, G-EN, PA1 NOT_TIKTIK_BUYER (person-level) and PA2 RULE8A_NO_CABINET_PRODUCTS (for the letter the
+        plan holds for that person), in the planner's order and from the planner's sources."""
         sh, out = self._shared(now or dt.datetime.now(dt.timezone.utc)), {}
+        plan = self.plan_rows(send_date)
         for mk in master_keys:
-            flow = sh["flows"].get(mk)
+            flow, p = sh["flows"].get(mk), plan.get(mk)
             if flow in S.FLOW_HOLD:
                 out[mk] = S.FLOW_HOLD[flow]
             elif mk in sh["en"]:
                 out[mk] = S.HOLD_EN
+            elif mk not in sh["buyers"]:
+                out[mk] = S.HOLD_NOT_BUYER
+            elif p and p["email_type"] in S.RULE8A_TYPES and p["email"] not in sh["kab"]:
+                out[mk] = S.HOLD_RULE8A
         return out
 
 

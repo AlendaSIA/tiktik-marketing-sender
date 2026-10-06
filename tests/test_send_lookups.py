@@ -111,6 +111,8 @@ class Fake:
                              {"template_id": "244", "email_type": S.PP1}, {"template_id": "179", "email_type": "reorder_1"}]),
             J.FLOW_SQL: o.get("flows", [{"master_key": "m10", "flow": "B2B", "src": "pd_field_309"}]),
             J.EN_SQL: [{"master_key": "m11"}],
+            J.BUYER_SQL: o.get("buyers", [{"master_key": p["master_key"]} for p in PLAN]),
+            J.KAB_SQL: o.get("kab", [{"email": p["email"]} for p in PLAN]),
         }
         if sql in answers:
             return answers[sql]
@@ -206,6 +208,20 @@ class L9OnTables(unittest.TestCase):
         closed = SP.person_lock(send_date=D, audience=[{"master_key": "m10"}],
                                 person_blocks=lambda *a: wh.person_blocks(*a, NOW))
         self.assertEqual(closed, [("L9", "person re-check: B2B_FLOW 1")])
+
+    def test_pa1_pa2_rechecked_at_send(self):
+        # m1 is not a tiktik buyer; m5 (winback_1) and m6 (235) have no cabinet products; m10 stays B2B, m11 stays EN
+        wh = L.Warehouse(Fake(buyers=[{"master_key": p["master_key"]} for p in PLAN if p["master_key"] != "m1"],
+                              kab=[{"email": p["email"]} for p in PLAN if p["master_key"] not in ("m5", "m6")]))
+        self.assertEqual(wh.person_blocks(D, ["m1", "m2", "m5", "m6", "m10", "m11"], NOW),
+                         {"m1": S.HOLD_NOT_BUYER, "m5": S.HOLD_RULE8A, "m10": S.HOLD_B2B, "m11": S.HOLD_EN})   # 235 has no rule 8a
+        res = L.evaluate(wh, D, NOW)
+        by = {r["master_key"]: r for r in res["rows"]}
+        self.assertFalse(by["m1"]["deliverable"])
+        self.assertFalse(by["m5"]["deliverable"])
+        self.assertTrue(by["m6"]["deliverable"])
+        with self.assertRaises(RuntimeError):
+            L.Warehouse(Fake(buyers=[])).person_blocks(D, ["m1"], NOW)
 
     def test_empty_guard_source_is_no_answer(self):
         with self.assertRaises(RuntimeError):

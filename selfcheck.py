@@ -31,7 +31,7 @@ def _row(name, level, ok, value, detail=None):
 
 
 def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_send_address, suppressed_any_address,
-        today, ages_h, no_letter_fields, map_disagreements) -> list:
+        today, ages_h, no_letter_fields, map_disagreements, buyers=None, assignment=None, priced_type=None) -> list:
     ws = [r for r in plan_rows if r["would_send"]]
     wd = [r for r in plan_rows if r.get("would_deliver")]
     out = []
@@ -43,6 +43,9 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     out.append(_row("b2b_lead_among_would_send", "hard", not bad, len(bad), bad[:20]))
     bad = [r["master_key"] for r in ws if r["master_key"] in en_masters]
     out.append(_row("en_among_would_send", "hard", not bad, len(bad), bad[:20]))
+    if buyers is not None:                                                     # PA1
+        bad = [r["master_key"] for r in ws if r["master_key"] not in buyers]
+        out.append(_row("not_tiktik_buyer_among_would_send", "hard", not bad, len(bad), bad[:20]))
     bad = count_by([r for r in plan_rows if r.get("email_type") in S.NEVER_PLANNED], ("email_type",))
     out.append(_row("retired_letters_planned", "hard", not bad, sum(bad.values()), bad))
     bad = [r["master_key"] for r in ws if r.get("template_id") is None or r.get("planned_send_date") is None]
@@ -86,6 +89,19 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
                     sum(no_letter_fields.values()), no_letter_fields))   # always open at 08:05: the writer runs 08:40
     out.append(_row("template_map_agrees_with_interface_v2", "warn", not map_disagreements, len(map_disagreements),
                     [{"email_type": e, "engine": t, "map": m} for e, t, m in map_disagreements]))
+    # PA3 (contract 61e3f7f95f3a): the plan and the weekly assignment must agree on every due 179 / 180 / 234 contact.
+    # warn, not hard: a difference means "no price row" for that contact and the gates already hold the letter.
+    if assignment is not None:
+        day = today.isoformat() if hasattr(today, "isoformat") else str(today)
+        due = [r for r in ws if r.get("email_type") in S.PA3_TYPES and r.get("planned_send_date") == day]
+        diff = [{"plan": r["email_type"], "assignment": assignment.get(r["master_key"], "(not in assignment)")}
+                for r in due if assignment.get(r["master_key"]) != r["email_type"]]
+        out.append(_row("plan_equals_assignment_due_179_180_234", "warn", not diff, len(diff),
+                        {"due": len(due), "differences": count_by(diff, ("plan", "assignment"))}))
+        if priced_type is not None:                                           # PA4: the known one-day lag, counted
+            lag = [{"plan": r["email_type"], "priced_as": priced_type[r["master_key"]]} for r in due
+                   if r["master_key"] in priced_type and priced_type[r["master_key"]] != r["email_type"]]
+            out.append(_row("pa4_price_lag_due_today", "info", True, len(lag), count_by(lag, ("plan", "priced_as"))))
     # ---- info: the counts and the difference to yesterday
     out.append(_row("count_would_send_by_type", "info", True, len(ws), count_by(ws, ("email_type",))))
     out.append(_row("count_would_deliver_by_type", "info", True, len(wd), count_by(wd, ("email_type",))))

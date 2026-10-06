@@ -281,6 +281,18 @@ LEFT JOIN (SELECT handle FROM `{P}.business_marts.shop_sellable_product` GROUP B
   USING (handle)
 WHERE a.kind = 'R' AND a.handle IS NOT NULL GROUP BY 1
 """
+# PLAN = ASSIGNMENT v1 (PA1 / PA2): the SAME two sources mkt_control.sp_build_contact_weekly_assignment reads, read the
+# same way - a master is a buyer when it is in tiktik_buyer_master WHERE is_tiktik_buyer (no row = not a buyer); the
+# cabinet has products when marketing_brevo_attrs.KABINETS_HAS_PRODUCTS IS TRUE for the address (false, NULL, no row
+# = not). The address is the one the ENGINE sends to.
+BUYER_SQL = f"SELECT DISTINCT master_key FROM `{P}.business_marts.tiktik_buyer_master` WHERE is_tiktik_buyer"
+KAB_SQL = f"""SELECT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.marketing_brevo_attrs`
+WHERE KABINETS_HAS_PRODUCTS IS TRUE AND email IS NOT NULL GROUP BY 1"""
+# PA3: what the weekly assignment says per person (commercial layer) - compared with the plan in the self-check.
+ASSIGN_SQL = f"""SELECT master_key, ANY_VALUE(email_type) AS email_type, CAST(MAX(built_at) AS STRING) AS built_at
+FROM `{P}.business_marts.contact_weekly_assignment` WHERE layer = 'commercial' GROUP BY 1"""
+# PA4 (known one-day lag, counted only): the letter type the price chain priced each person for.
+PRICED_TYPE_SQL = f"SELECT master_key, ANY_VALUE(email_type) AS email_type FROM `{RUNG_PRICE_SOURCE}` GROUP BY 1"
 OFFERED_SQL = f"SELECT master_key, ARRAY_AGG(DISTINCT handle) AS handles FROM `{T_OFFERED}` GROUP BY 1"
 # TEMPLATE CONTENT v1 (contract bce3bccbc46b, TC1-TC5): an approval is of a CONTENT. A (template id, email type) counts
 # as approved only when mkt_control.template_approval.approved_sha256 (written by the templates conversation, TC2)
@@ -377,7 +389,7 @@ def akcija_week(today):
     return tue, f"{iso[0]}-W{iso[1]:02d}", tue - dt.timedelta(days=1), tue + dt.timedelta(days=5)
 
 
-def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week):
+def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week, is_buyer=True):
     """'Personal letter OR akcija, never both' (one sales letter per week). plan = that contact's plan row."""
     tue, label, mon, sun = week
     reason = None
@@ -389,6 +401,8 @@ def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week):
         reason = S.FLOW_HOLD[flow]
     elif is_en:
         reason = S.HOLD_EN                       # G-EN: no LV letter, the LV akcija included
+    elif not is_buyer:
+        reason = S.HOLD_NOT_BUYER                # PA1: campaigns go to tiktik buyers only
     elif plan and plan.get("would_deliver") and plan["email_type"] in S.SALES_TYPES and plan["planned_send_date"] \
             and mon.isoformat() <= plan["planned_send_date"] <= sun.isoformat():
         reason = "PERSONAL_LETTER_THIS_WEEK"
@@ -534,6 +548,10 @@ def main():
     lf_run = next((r["run_id"] for r in lf_rows.values()), None)      # None before the 08:40 writer
     goods_run = {"run_id": lf_run, "plan_date": today if lf_run else None, "built_at": None}
     en_masters = {r["master_key"] for r in bq.query(EN_SQL).result()}
+    buyers = {r["master_key"] for r in bq.query(BUYER_SQL).result()}
+    kab_ok = {r["email"] for r in bq.query(KAB_SQL).result()}
+    if not buyers or not kab_ok:        # as the assignment's RULE_8A_SOURCE_EMPTY guard: loud, never "hold everybody"
+        raise RuntimeError("PA1 / PA2 source empty (tiktik_buyer_master or marketing_brevo_attrs) - refusing to plan")
     en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
     if not en_masters or not en_src["en_addresses"]:
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
@@ -599,6 +617,9 @@ def main():
         flow, flow_from = flows.get(mk, (None, None))
         hold = S.flow_hold(d.next_email_type, hold, flow)                            # B2B / LEAD guard
         hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN
+        hold = S.buyer_hold(d.next_email_type, hold, mk in buyers)                   # PA1
+        hold = S.rule8a_hold(d.next_email_type, hold,
+                             (f["send_email"] or "").strip().lower() in kab_ok)       # PA2
         s = d.state
         states.append({
             "master_key": mk, "send_email": f["send_email"], "lifecycle_stage": f["lifecycle_stage"],
@@ -664,7 +685,7 @@ def main():
             "planned_at": now})
         akcija_rows.append({"plan_date": today.isoformat(), "run_id": RUN_ID, "planned_at": now, **akcija_row(
             mk=mk, email=f["send_email"], stage=f["lifecycle_stage"], suppressed=bool(f["suppressed"]), flow=flow,
-            is_en=mk in en_masters, plan=plan_rows[-1], week=week)})
+            is_en=mk in en_masters, plan=plan_rows[-1], week=week, is_buyer=mk in buyers)})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
             tg = resolve_now(f["send_email"], mk)
             wb = W.plan(tg, email=f["send_email"], person_name=f["full_name"], org_name=f["client_name"],
@@ -769,7 +790,9 @@ def main():
                             "pd_orgs_mirror": age_h(flow_src["pd_orgs_ingested_at"]),
                             "goods_run_days": None if goods_run["plan_date"] is None
                             else (today - _d(goods_run["plan_date"])).days},
-                    no_letter_fields=no_lf, map_disagreements=disagree)
+                    no_letter_fields=no_lf, map_disagreements=disagree, buyers=buyers,
+                    assignment={r["master_key"]: r["email_type"] for r in bq.query(ASSIGN_SQL).result()},
+                    priced_type={r["master_key"]: r["email_type"] for r in bq.query(PRICED_TYPE_SQL).result()})
     bq.load_table_from_json([{"plan_date": today.isoformat(), "run_id": RUN_ID, "checked_at": now, **c}
                              for c in checks], T_CHECK, job_config=J(write_disposition="WRITE_APPEND")).result()
     failed = [c["check_name"] for c in checks if c["level"] == "hard" and not c["ok"]]

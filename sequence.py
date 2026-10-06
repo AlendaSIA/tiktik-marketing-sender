@@ -92,7 +92,31 @@ EN_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", "LADDER_NO_RESTART", "SEQUENCE_D
 HOLD_B2B, HOLD_LEAD = "B2B_FLOW", "LEAD_FLOW"
 FLOW_HOLD = {"B2B": HOLD_B2B, "LEAD": HOLD_LEAD}
 FLOW_KEEPS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN"}
-PERSON_HOLDS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", HOLD_B2B, HOLD_LEAD, HOLD_EN}   # the person gets nothing at all
+# PLAN = ASSIGNMENT v1 (contract 61e3f7f95f3a, PA1-PA4; found 2026-10-06: 54 due contacts had no price row because the
+# plan and business_marts.contact_weekly_assignment - which the price chain prices - disagreed).
+# PA1 NOT_TIKTIK_BUYER: a person who is not a tiktik buyer (business_marts.tiktik_buyer_master, TIKTIK PIRCĒJS v1) gets
+#     no personal letter and is not in the akcija audience. Person-level, like B2B; checked AFTER B2B / LEAD / G-EN so
+#     those keep their own reason. Re-checked at send (L9).
+# PA2 RULE8A_NO_CABINET_PRODUCTS: 179 / 180-233 / 234 are built around the client's cabinet; when
+#     business_marts.marketing_brevo_attrs.KABINETS_HAS_PRODUCTS is not TRUE for the send address the letter is held
+#     and the person STAYS in the akcija audience (not a person-level hold). Re-checked at send (L9).
+HOLD_NOT_BUYER = "NOT_TIKTIK_BUYER"
+HOLD_RULE8A = "RULE8A_NO_CABINET_PRODUCTS"
+PERSON_HOLDS = {"SUPPRESSED", "BLOCKED_OR_UNKNOWN", HOLD_B2B, HOLD_LEAD, HOLD_EN, HOLD_NOT_BUYER}   # the person gets nothing at all
+
+
+def buyer_hold(email_type, hold, is_buyer: bool):
+    """PA1: the hold reason after the tiktik-buyer check. Every other person-level reason stays as it is."""
+    if not is_buyer and hold not in PERSON_HOLDS:
+        return HOLD_NOT_BUYER
+    return hold
+
+
+def rule8a_hold(email_type, hold, kab_has_products: bool):
+    """PA2: a reorder / winback / lost letter that would go (hold None) is held when the cabinet has no products."""
+    if hold is None and email_type in RULE8A_TYPES and not kab_has_products:
+        return HOLD_RULE8A
+    return hold
 
 
 def flow_hold(email_type, hold, flow):
@@ -233,6 +257,8 @@ LADDER_TYPES = E1_TYPES | E2_TYPES | {"lost_quarterly"}
 # SALES letters; 244 asks about an order and sells nothing, so it does not take the week's akcija away
 # (interpretation of Sūtīšanas dzinējs 4, reported).
 SALES_TYPES = {"reorder_1", XSELL} | LADDER_TYPES
+RULE8A_TYPES = {"reorder_1"} | LADDER_TYPES          # PA2: 179 / 180-233 (E1 and E2) / 234; never 235 or 244
+PA3_TYPES = ("reorder_1", "winback_1", "lost_quarterly")   # the stage audiences the weekly assignment names
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}
 RUNG_CAP = 3
 
