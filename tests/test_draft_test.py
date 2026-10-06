@@ -272,7 +272,7 @@ AKCIJA = open(os.path.join(ROOT, "templates", "akcija_weekly.html"), encoding="u
 # still the checker's rules for any letter that links to KABINETS_URL, so they run on the frame + the old box.
 AKCIJA_CAB = AKCIJA.replace("</body>", '{% if contact.KABINETS_HAS_PRODUCTS %}<p>Tavas ierastās preces — tavā kabinetā '
                             '<a href="{{ contact.KABINETS_URL }}">Atvērt savu kabinetu &rarr;</a></p>{% endif %}</body>')
-FEATURED = "https://www.tiktik.lv/veikals/params/category/featured/"
+FEATURED = "https://www.tiktik.lv/"   # 236 v3.3 (Raivis 2026-10-06): the main button leads to the front page
 FEATURED_W39 = FEATURED + "?utm_source=brevo&utm_medium=email&utm_campaign=2026-w39-akcija"
 
 
@@ -432,4 +432,4 @@ def test_password_title_on_a_shop_page_is_not_a_pass(monkeypatch):
 
 def test_akcija_weekly_does_not_advertise_the_cabinet():
     assert "KABINETS" not in AKCIJA and "kabinet" not in AKCIJA.lower()
-    assert "https://www.tiktik.lv/veikals/" in AKCIJA
+    assert 'href="https://www.tiktik.lv/?utm_source' in AKCIJA

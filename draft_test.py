@@ -126,6 +126,11 @@ MARKERS = [
      ('itemprop="price"',), ("<title>Tiktik - Veikals</title>",), 0),
     # Also the shop's featured page (rule 14 fallback; akcija_weekly's no-cabinet box, F6). Measured
     # 2026-09-25 with the week's utm query: 200, 180 565 B, 61 distinct /veikals/item/ links - passes as is.
+    # The shop's FRONT page - where the week's akcija goods are shown in LV (Raivis 2026-10-06 16:39: "visas nedēļas
+    # akcijas ir šeit: https://www.tiktik.lv/", not the shop page that only lists categories). Measured that day with
+    # the week's utm query: 200, 340 313 B, <title>Tiktik - SUPERIZPĀRDOŠANA</title>, 60 distinct /veikals/item/ links.
+    (re.compile(r"^https://www\.tiktik\.lv/(\?|$)"),
+     ("/veikals/item/",), ("<title>Tiktik - Veikals</title>",), 1),
     (re.compile(r"^https://www\.tiktik\.lv/veikals/(category|params/category)/"),
      ("/veikals/item/",), ("<title>Tiktik - Veikals</title>",), 1),
 ]
