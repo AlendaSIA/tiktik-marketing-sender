@@ -23,7 +23,11 @@ import os
 import re
 import subprocess
 import sys
+import time
 import types
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import presend as G
 import selfcheck as SC
@@ -77,6 +81,10 @@ def _ts(v):
     if v in (None, ""):
         return None
     if not isinstance(v, dt.datetime):
+        try:                                  # the REST API returns a TIMESTAMP as epoch seconds
+            return dt.datetime.fromtimestamp(float(v), dt.timezone.utc)
+        except (TypeError, ValueError):
+            pass
         s = str(v).strip().replace(" UTC", "").replace("Z", "").replace("T", " ")
         try:
             v = dt.datetime.fromisoformat(s)
@@ -234,6 +242,62 @@ def cli_query(sql):
     return json.loads(s[s.index("["):]) if "[" in s else []
 
 
+_TOK = {}
+
+
+def _token() -> str:
+    if _TOK.get("exp", 0) < time.time() + 60:
+        try:
+            req = urllib.request.Request("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/"
+                                         "default/token", headers={"Metadata-Flavor": "Google"})
+            j = json.loads(urllib.request.urlopen(req, timeout=5).read())
+            _TOK.update(t=j["access_token"], exp=time.time() + int(j.get("expires_in", 300)))
+        except Exception:  # noqa: BLE001 - not on GCE metadata: the gcloud identity of the shell
+            _TOK.update(t=subprocess.check_output(["gcloud", "auth", "print-access-token"]).decode().strip(),
+                        exp=time.time() + 600)
+    return _TOK["t"]
+
+
+def _cell(field, v):
+    if v is None:
+        return None
+    if field.get("mode") == "REPEATED":
+        return [_cell({**field, "mode": "NULLABLE"}, x["v"]) for x in v]
+    if field["type"] in ("RECORD", "STRUCT"):
+        return {f["name"]: _cell(f, c["v"]) for f, c in zip(field["fields"], v["f"])}
+    return v
+
+
+def rest_query(sql):
+    """Ops-shell transport without the CLI start-up cost (5 s per bq call): BigQuery REST jobs.query. Scalars come
+    back as text, like the CLI. Read or DML; the caller decides what it sends."""
+    base = f"https://bigquery.googleapis.com/bigquery/v2/projects/{P}/queries"
+
+    def call(url, body=None):
+        req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Authorization": "Bearer " + _token(),
+                                              "Content-Type": "application/json"})
+        try:
+            return json.loads(urllib.request.urlopen(req, timeout=120).read())
+        except urllib.error.HTTPError as e:
+            raise RuntimeError("BigQuery refused: " + e.read().decode()[:600]) from None
+    r = call(base, {"query": sql, "useLegacySql": False, "timeoutMs": 60000, "maxResults": 20000})
+    ref = r["jobReference"]
+    more = f"{base}/{ref['jobId']}?" + urllib.parse.urlencode({"location": ref.get("location", ""), "timeoutMs": 60000,
+                                                              "maxResults": 20000})
+    deadline = time.time() + 300
+    while not r.get("jobComplete"):
+        if time.time() > deadline:
+            raise RuntimeError("BigQuery job did not finish in 300 s")
+        r = call(more)
+    fields, out = (r.get("schema") or {}).get("fields") or [], []
+    while True:
+        out += [{f["name"]: _cell(f, c["v"]) for f, c in zip(fields, row["f"])} for row in r.get("rows") or []]
+        if not r.get("pageToken"):
+            return out
+        r = call(more + "&" + urllib.parse.urlencode({"pageToken": r["pageToken"]}))
+
+
 def evaluate(wh, send_date, now) -> dict:
     """L10 + L8 + L9 on the real tables for every letter of the latest plan that is due on send_date.
     The locks are send_path's own functions; one 'campaign' = one (email type, rung, template)."""
@@ -366,14 +430,15 @@ def main(argv) -> int:
     a = ap.parse_args(argv)
     now = dt.datetime.fromisoformat(a.now).replace(tzinfo=dt.timezone.utc) if a.now \
         else window_open(dt.datetime.now(dt.timezone.utc))
-    wh = Warehouse(cli_query)
+    q = cli_query if os.environ.get("BQ_TRANSPORT") == "cli" else rest_query
+    wh = Warehouse(q)
     day = SP.riga(now).date()
     res = evaluate(wh, day, now)
     res["akcija"] = akcija_plan(wh, day, personal_this_week(wh, day, now))          # SG7
     cs = checks(res)
     if a.record:
-        akcija_record(cli_query, day, res["akcija"])
-        record(cli_query, res, cs)
+        akcija_record(q, day, res["akcija"])
+        record(q, res, cs)
     res["akcija"] = {k: v for k, v in res["akcija"].items() if k != "exclude"}
     seen, sample = {}, []
     for r in res["rows"]:
