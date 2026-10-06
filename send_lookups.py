@@ -373,9 +373,12 @@ def evaluate(wh, send_date, now) -> dict:
 
 
 def personal_this_week(wh, send_date, now) -> dict:
-    """SG7 (contract 15e761dce94e): who has a PERSONAL sales letter this akcija week that is deliverable on the data
-    of this moment (after the writer). -> {master_key: (email_type, planned_send_date ISO)}. The week and the letter
-    set are the planner's (sequence_job.akcija_week, sequence.SALES_TYPES); the gates are L8 + L9 as at send."""
+    """SG7 + SG7a (contract bce3bccbc46b): who is excluded from this week's akcija because of a PERSONAL sales letter.
+      SG7   due TODAY and deliverable on the data of this moment (L8 + L9, as at send);
+      SG7a  PLANNED (would_send) for a LATER day of the same akcija week - excluded although it cannot be judged
+            deliverable yet (the writer prices only today's letters). One person never gets both in one week.
+    A letter planned outside the akcija week does not exclude. -> {master_key: (email_type, planned date ISO, why)}.
+    The week and the letter set are the planner's (sequence_job.akcija_week, sequence.SALES_TYPES)."""
     d = _date(send_date)
     _tue, _label, mon, sun = _job().akcija_week(d)
     sh, lf = wh._shared(now), wh.lf_rows(d)
@@ -384,10 +387,13 @@ def personal_this_week(wh, send_date, now) -> dict:
     blocks = wh.person_blocks(d, [p["master_key"] for p in rows], now)
     out = {}
     for p in rows:
+        due = _date(p["planned_send_date"])
         if blocks.get(p["master_key"]):
             continue
-        if not G.gates(p["email_type"], _i(p["offer_rung"]) or 0, wh._ctx(p, d, sh, lf)):
-            out[p["master_key"]] = (p["email_type"], _date(p["planned_send_date"]).isoformat())
+        if due > d:
+            out[p["master_key"]] = (p["email_type"], due.isoformat(), "planned_later_this_week")           # SG7a
+        elif due == d and not G.gates(p["email_type"], _i(p["offer_rung"]) or 0, wh._ctx(p, d, sh, lf)):
+            out[p["master_key"]] = (p["email_type"], due.isoformat(), "deliverable_today")                 # SG7
     return out
 
 
@@ -398,10 +404,11 @@ def akcija_plan(wh, send_date, personal) -> dict:
     rows = wh._rows(("akcija", d), f"SELECT master_key, in_audience, excluded_reason FROM `{T_AKCIJA}` "
                                    f"WHERE plan_date = DATE '{d}'")
     free = [r["master_key"] for r in rows if r.get("excluded_reason") in (None, "", PERSONAL)]
-    excl = [(mk,) + personal[mk] for mk in free if mk in personal]
+    excl = [(mk,) + tuple(personal[mk][:2]) for mk in free if mk in personal]
+    why = SC.count_by([{"w": personal[mk][2]} for mk in free if mk in personal], ("w",))
     return {"rows": len(rows), "before_in_audience": sum(_b(r["in_audience"]) for r in rows),
             "before_personal": sum(r.get("excluded_reason") == PERSONAL for r in rows),
-            "in_audience": len(free) - len(excl), "personal": len(excl),
+            "in_audience": len(free) - len(excl), "personal": len(excl), "personal_by_rule": why,
             "personal_by_type": SC.count_by([{"t": e[1]} for e in excl], ("t",)), "exclude": excl}
 
 

@@ -5,6 +5,7 @@ import datetime as dt
 import os
 import sys
 import unittest
+import unittest.mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -274,16 +275,31 @@ class EvaluateAndRecord(unittest.TestCase):
 
     def test_sg7_akcija_excludes_by_the_send_time_answer(self):
         # week of Tue 06.10 = Mon 05.10 .. Sun 11.10. m1 (180) and m6 (235) are deliverable sales letters; m7 is a 244
-        # (not a sales letter); m2 is gated; m9 (179, due 07.10) is deliverable later this week; m10 / m11 keep the
+        # (not a sales letter); m2 is gated; m9 (179, due 07.10) is PLANNED later this week (SG7a); m10 / m11 keep the
         # planner's own reason; m14 was PERSONAL by an older evaluation and has no deliverable letter now -> back in.
         q = Fake()
         wh = L.Warehouse(q)
         personal = L.personal_this_week(wh, D, NOW)
-        self.assertEqual(personal, {"m1": ("winback_1", "2026-10-06"), "m6": (S.XSELL, "2026-10-06"),
-                                    "m9": ("reorder_1", "2026-10-07")})
+        self.assertEqual(personal, {"m1": ("winback_1", "2026-10-06", "deliverable_today"),
+                                    "m6": (S.XSELL, "2026-10-06", "deliverable_today"),
+                                    "m9": ("reorder_1", "2026-10-07", "planned_later_this_week")})
         plan = L.akcija_plan(wh, D, personal)
         self.assertEqual((plan["rows"], plan["before_in_audience"], plan["before_personal"], plan["in_audience"],
                           plan["personal"]), (9, 6, 1, 4, 3))
+        self.assertEqual(plan["personal_by_rule"], {"deliverable_today": 2, "planned_later_this_week": 1})
+        # SG7a: a later letter of the week excludes even when it could not pass a gate today (no writer row, template
+        # not approved); a letter planned OUTSIDE the week (12.10) does not; a held (would_send false) one does not
+        later = [dict(p) for p in PLAN]
+        for p in later:
+            if p["master_key"] == "m9":
+                p["planned_send_date"] = "2026-10-11"
+            if p["master_key"] == "m2":
+                p["planned_send_date"] = "2026-10-12"
+            if p["master_key"] == "m12":
+                p["planned_send_date"] = "2026-10-08"
+        with unittest.mock.patch(__name__ + ".PLAN", later):
+            p2 = L.personal_this_week(L.Warehouse(Fake(approved=[], lf=[])), D, NOW)
+        self.assertEqual(p2, {"m9": ("reorder_1", "2026-10-11", "planned_later_this_week")})
         q.calls.clear()
         L.akcija_record(q, D, plan)
         self.assertEqual(len(q.calls), 2)
