@@ -91,3 +91,26 @@ def test_manifest_rows_are_allowed_and_complete():
 def test_commit_must_be_full_sha():
     with pytest.raises(SystemExit):
         T.main(["--commit", "5ede135"])
+
+
+def test_e2_rows_are_put_only_with_a_named_real_target(monkeypatch):
+    """MAIN 2026-10-06 17:53: real ids 255-257; the manifest keeps the provisional ids, nothing is mapped."""
+    import hashlib, json, os
+    import template_put as T
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    row = json.load(open(os.path.join(root, "templates_manifest.json"), encoding="utf-8"))["episode_e2"][1]
+    raw = open(os.path.join(root, row["file"]), "rb").read()
+    assert row["id"] == 9232 and row["provisional_id"] and T.E2_TARGETS == frozenset({255, 256, 257})
+    assert not (T.E2_TARGETS & T.ALLOWED)
+    calls = []
+    live = {"htmlContent": "shell", "subject": "s", "name": "money:winback_2_e2 — shell", "isActive": False}
+    monkeypatch.setattr(T, "fetch", lambda c, p: raw)
+    monkeypatch.setattr(T.C, "template", lambda i: dict(live, name=live["name"] if i == 256 else "money:winback_1_e2 x"))
+    monkeypatch.setattr(T.C, "_call", lambda m, path, body: (calls.append((m, path)), live.update(
+        htmlContent=body["htmlContent"], subject=body["subject"], name=body["templateName"])))
+    assert T.put_one(row, "c" * 40, True)[1] == 2 and T.put_one(row, "c" * 40, True, 232)[1] == 2
+    assert T.put_one(row, "c" * 40, True, 255)[1] == 2 and calls == []          # 255 is named for winback_1_e2
+    res, rc = T.put_one(row, "c" * 40, True, 256)
+    assert rc == 0 and res["id"] == 256 and res["manifest_id"] == 9232 and res["post_equals_file"]
+    assert calls == [("PUT", "/smtp/templates/256")]
+    assert hashlib.sha256(live["htmlContent"].encode()).hexdigest() == row["sha256"] and row["id"] == 9232

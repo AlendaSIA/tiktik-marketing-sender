@@ -36,7 +36,11 @@ REPO_RAW = "https://raw.githubusercontent.com/AlendaSIA/tiktik-marketing-sender/
 ALLOWED = frozenset(range(229, 237)) | {244} | {179, 180}
 # Manifest sections this script may read. "templates" stays the default, so a bare run never reaches 244:
 # it is put only by naming its section (--section post_purchase); 179 / 180 only with --section live_mapped.
-SECTIONS = ("templates", "post_purchase", "live_mapped")
+SECTIONS = ("templates", "post_purchase", "live_mapped", "episode_e2")
+# E2 (MAIN 2026-10-06 17:53): the three real, INACTIVE Brevo templates created for the approved E2 files. The manifest
+# keeps its provisional ids (9180 / 9232 / 9233) and no id mapping is changed anywhere: an episode_e2 row is put only
+# with --target-id, one variant per run, and only into a template whose stored name already carries that variant.
+E2_TARGETS = frozenset({255, 256, 257})
 
 
 def blob_sha(b: bytes) -> str:
@@ -51,9 +55,19 @@ def fetch(commit: str, path: str) -> bytes:
     return urllib.request.urlopen(REPO_RAW.format(commit=commit, path=path), timeout=30).read()
 
 
-def put_one(row, commit, apply):
+def put_one(row, commit, apply, target_id=None):
     res = {"n": row.get("n"), "variant": row["variant"], "id": row["id"]}
-    if row["id"] not in ALLOWED:
+    if target_id is not None:
+        if not row.get("provisional_id") or target_id not in E2_TARGETS:
+            res["refused"] = f"--target-id {target_id}: only a provisional row into {sorted(E2_TARGETS)}"
+            return res, 2
+        res["manifest_id"] = row["id"]
+        row = dict(row, id=target_id)
+        res["id"] = target_id
+    elif row.get("provisional_id"):
+        res["refused"] = "provisional id - name the real template with --target-id"
+        return res, 2
+    elif row["id"] not in ALLOWED:
         res["refused"] = f"id {row['id']} not in {sorted(ALLOWED)}"
         return res, 2
     raw = fetch(commit, row["file"])
@@ -66,6 +80,9 @@ def put_one(row, commit, apply):
     res.update(pre_sha256=sha256(live), file_sha256=row["sha256"], pre_active=t.get("isActive"))
     if t.get("isActive"):
         res["refused"] = "template is ACTIVE - this script never edits an active template"
+        return res, 2
+    if target_id is not None and not (t.get("name") or "").startswith(f"money:{row['variant']} "):
+        res["refused"] = f"template {target_id} is not named for {row['variant']}: {t.get('name')!r}"
         return res, 2
     if live == html and t.get("subject") == row["subject"] and t.get("name") == row["name"]:
         res["already_equal"] = True
@@ -92,6 +109,7 @@ def main(argv=None):
     ap.add_argument("--manifest", default="templates_manifest.json")
     ap.add_argument("--only", default=None, help="comma-separated variants (default: every row)")
     ap.add_argument("--section", default="templates", choices=SECTIONS, help="manifest section to read")
+    ap.add_argument("--target-id", type=int, default=None, help="real template id for ONE episode_e2 row")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", a.commit):
@@ -100,9 +118,11 @@ def main(argv=None):
     if a.only:
         keep = {v.strip() for v in a.only.split(",") if v.strip()}
         rows = [r for r in rows if r["variant"] in keep]
+    if (a.section == "episode_e2") != (a.target_id is not None) or (a.target_id is not None and len(rows) != 1):
+        sys.exit("episode_e2 is put one variant per run: --section episode_e2 --only <variant> --target-id <id>")
     out, rc = [], 0
     for r in rows:
-        res, code = put_one(r, a.commit, a.apply)
+        res, code = put_one(r, a.commit, a.apply, a.target_id)
         out.append(res)
         rc = max(rc, code)
     print(json.dumps({"commit": a.commit, "apply": a.apply, "results": out}, ensure_ascii=False, indent=1))
