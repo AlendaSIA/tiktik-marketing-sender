@@ -10,7 +10,8 @@ sha256 against the manifest, and - only with --apply - PUTs htmlContent, subject
 template id the manifest names. It never creates, deletes, activates or sends anything.
 
 Guards, all hard:
-  - only ids in ALLOWED (the eight templates created for this command, 229-236);
+  - only ids in ALLOWED (the eight templates created for this command, 229-236, and 244 from the manifest
+    section "post_purchase", read only with --section post_purchase);
   - the file must match the manifest byte for byte (git blob sha AND sha256), else refuse that row;
   - the live template must exist and be INACTIVE before, and stay inactive after; an active template is
     never edited from here;
@@ -30,7 +31,10 @@ import urllib.request
 import campaign as C
 
 REPO_RAW = "https://raw.githubusercontent.com/AlendaSIA/tiktik-marketing-sender/{commit}/{path}"
-ALLOWED = frozenset(range(229, 237))
+ALLOWED = frozenset(range(229, 237)) | {244}   # + 244 post_purchase_feedback (MAIN 2026-10-06)
+# Manifest sections this script may read. "templates" stays the default, so a bare run never reaches 244:
+# it is put only by naming its section (--section post_purchase).
+SECTIONS = ("templates", "post_purchase")
 
 
 def blob_sha(b: bytes) -> str:
@@ -85,11 +89,12 @@ def main(argv=None):
     ap.add_argument("--commit", required=True, help="full sha of the commit the files are read from")
     ap.add_argument("--manifest", default="templates_manifest.json")
     ap.add_argument("--only", default=None, help="comma-separated variants (default: every row)")
+    ap.add_argument("--section", default="templates", choices=SECTIONS, help="manifest section to read")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", a.commit):
         sys.exit("commit must be a full 40-character sha")
-    rows = json.load(open(a.manifest, encoding="utf-8"))["templates"]
+    rows = json.load(open(a.manifest, encoding="utf-8"))[a.section]
     if a.only:
         keep = {v.strip() for v in a.only.split(",") if v.strip()}
         rows = [r for r in rows if r["variant"] in keep]

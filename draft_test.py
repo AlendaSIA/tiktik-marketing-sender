@@ -76,8 +76,12 @@ CONTRACT_FIELDS = frozenset(
     # XSELL_VALID_UNTIL = last day of the intro price ("" = none). Own P goods stay at shop price.
     + [f"R{i}_REF_PRICE" for i in range(1, 5)] + ["XSELL_VALID_UNTIL"]
     # POST-PURCHASE v1.1 PP4.2 (MAIN 2026-10-05 12:00, contract sha 0d7136d27d6b): template 244 reads ANKETA_URL (the
-    # complete per-order survey link - writer builds it incl. utm, template and engine append NOTHING) and ORDER_NR.
+    # complete per-order survey link - template and engine append NOTHING) and ORDER_NR.
+    # MAIN 2026-10-06: the writer keeps ANKETA_URL WITHOUT utm; the survey link is EXEMPT from the utm_campaign
+    # check in contact_checks (SURVEY_FIELD). Same wording issued to Nakts sinhronizacija 6.
     + ["ANKETA_URL", "ORDER_NR"])
+# The one link that carries no utm_campaign by decision: the href that IS this contact's ANKETA_URL value.
+SURVEY_FIELD = "ANKETA_URL"
 
 # Rule 2: comma decimals, two decimals, U+00A0 thousands, U+00A0 before the euro sign.
 # Rule 6: an R row with spread reads "no <price>".
@@ -104,7 +108,15 @@ KABINETS_PASSWORD = "<title>Kabinets — parole</title>"  # customer-set passwor
 _KABINETS = re.compile(r"^https://plani\.tiktik\.lv/kabinets\.php\?")
 
 # Body markers, keyed by URL shape. (must_have_any, must_not_have_any, min_item_links)
+# THE SURVEY, measured live 2026-10-06 on the 5 what-if proof rows of mkt_control.letter_fields_244 (plan_date
+# 2026-10-04), this file's UA, no redirect following:
+#   valid token    -> 200, 10 490-10 502 B, <title>Tavs vērtējums — tiktik.lv</title>, <p class="order">Pasūtījums <b>NR</b></p>
+#   broken token   -> 200, 10 790 B, the SAME title and h1, but <p class="note">Šī saite nav derīga. ...: DEAD.
+# So the title proves nothing; the order line is the marker and the "nav derīga" note is the dead-page marker.
+_SURVEY = re.compile(r"^https://plani\.tiktik\.lv/atsauksme\.php\?")
+
 MARKERS = [
+    (_SURVEY, ('<p class="order">Pasūtījums',), ("Šī saite nav derīga",), 0),
     (_KABINETS,
      ("Laipni lūdzam kabinetā",              # access-choice page, 2026-09-24
       KABINETS_LOADER,                       # loader, 2026-09-25 - passes only via its boot link
@@ -320,13 +332,18 @@ def contact_checks(tpl_html, subject, email, week, attrs=None):
         if re.fullmatch(r"[PR][1-8]_PRICE|P[1-8]_REF_PRICE", k) and v not in (None, "") and not _PRICE_OK.match(str(v)):
             p.append(f"{k}={v!r} breaks rule 2 format")
     links = []
+    survey = str(attrs.get(SURVEY_FIELD) or "").strip() or None
     for href in sorted(set(C.hrefs_in(body))):
         u = _html.unescape(href).strip()
         if C.is_brevo_system_link(u):
             continue
         if u.count("?") > 1:
             p.append(f"two '?' in {u}")
-        if "utm_campaign=" not in u or f"utm_campaign={week}-" not in u:
+        # MAIN 2026-10-06: the survey link (the href equal to this contact's ANKETA_URL) is EXEMPT from the
+        # utm_campaign check - the writer keeps ANKETA_URL without utm. Every other link is held to it as before.
+        if u == survey:
+            r["survey_link_utm_exempt"] = True
+        elif "utm_campaign=" not in u or f"utm_campaign={week}-" not in u:
             p.append(f"no utm_campaign={week}- on {u}")
         links.append(link_verdict(u))
     r["links"] = links

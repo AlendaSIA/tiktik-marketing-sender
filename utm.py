@@ -45,6 +45,9 @@ THEMES = {
     "winback_2": "tava-cena-2",
     "winback_3": "tava-cena-3",
     "lost_quarterly": "izdevigi",
+    # POST-PURCHASE, template 244 (MAIN 2026-10-06). The survey link itself carries no utm (ANKETA_URL is exempt);
+    # the theme exists so utm.slug does not raise for the variant and any other link of the letter has a name.
+    "post_purchase_feedback": "atsauksme",
     # NOT DERIVABLE, and that is the correct answer rather than a gap. The weekly akcija is
     # brand rotation (`zarys`, ...), so its theme is chosen per campaign by Marketing and
     # cannot be a function of the variant. None means "Marketing names this one at campaign

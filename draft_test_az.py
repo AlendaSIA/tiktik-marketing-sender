@@ -8,14 +8,19 @@ check run, and - only with --send and every check green - ONE test letter to rai
 
 1. The template is the FILE the manifest names at --commit (blob sha + sha256 checked), never the live Brevo template:
    the v2.9.1 / L4 versions have not reached Brevo (MAIN: no template_put until Raivis' ratings).
-2. attrs = live Brevo attributes of --contact, then the overlay (shadow_brevo_price_attrs of today's plan_date:
-   P<n>_PRICE, P<n>_REF_PRICE, P1_FRESH, OFFER_VALID_UNTIL, OFFER_RUNG, GREETING).
+2. attrs = live Brevo attributes of --contact, then the overlay. With --plan-date the overlay is READ HERE from
+   mkt_control.letter_fields (the contact's row of that plan_date and this template: every contract field the row
+   carries). shadow_brevo_price_attrs is retired (MAIN 2026-10-06) and is not read anywhere. --overlay-b64 remains
+   for a hand-made overlay; the two cannot be combined.
+   244: the row's ANKETA_URL / ORDER_NR must equal the contact's mkt_control.letter_fields_244 row of the same day.
 3. Checks: draft_test.static_checks; draft_test.contact_checks on the letter AS THE CUSTOMER WOULD GET IT (the
    customer's own cabinet link must answer as a booted cabinet); draft_test_v28.display_checks (P2, P4, P6);
    G2 greeting line = GREETING (default 'Sveiki!'); L4 words; reorder letters carry no discount words.
 4. The copy that goes to Raivis: every link to plani.tiktik.lv (the customer's cabinet, token inside) is replaced by
    the cabinet link of OWN_CONTACT (Raivis' own address, rule-11 TEST_CONTACT); if that link does not pass the same
    link check, the links are disabled (href="#"). A yellow banner says which, with the contact masked.
+   244: the survey link is the customer's own order survey - checked live as the customer gets it, then DISABLED
+   (href="#") in the copy to Raivis, so a test click can never file an answer on a customer's order.
 """
 import argparse
 import base64
@@ -39,7 +44,47 @@ PRICE_LETTERS = {180, 232, 233, 234, 9180, 9232, 9233}   # LADDER POLICY L1 + CA
 REORDER_LETTERS = {179, 230, 231}            # L1 / P5: no ladder, no discount words
 L4_FORBIDDEN = ["vēl lētāk", "atkal", "šoreiz", "pakāp", "solis lētāk", "nākamreiz lētāk", "vēl zemāk"]
 DISCOUNT_WORDS = ["atlaid", "lētāk", "zemāk par"]
+SURVEY_LETTERS = {244}                       # the only plani link is the customer's per-order survey
+T_LETTER_FIELDS = "`jaunais-za-aizv04022026.mkt_control.letter_fields`"
+T_LETTER_FIELDS_244 = "`jaunais-za-aizv04022026.mkt_control.letter_fields_244`"
 _PLANI = re.compile(r"^https://plani\.tiktik\.lv/")
+
+
+def _bq_rows(sql, email, plan_date, template_id=None):
+    """Read-only, parameterised. bq is imported here so that the offline tests never need google-cloud."""
+    import bq as B
+    from google.cloud import bigquery
+    params = [bigquery.ScalarQueryParameter("email", "STRING", email.strip().lower()),
+              bigquery.ScalarQueryParameter("d", "DATE", plan_date)]
+    if template_id is not None:
+        params.append(bigquery.ScalarQueryParameter("tid", "INT64", template_id))
+    return [dict(r.items()) for r in B.query(sql, params)]
+
+
+def overlay_from_letter_fields(email, template_id, plan_date, rows=_bq_rows):
+    """(overlay, info). The ONE mkt_control.letter_fields row of (plan_date, email, template_id); the overlay is
+    every CONTRACT field that row carries (NULL = not carried). No row or more than one row is a refusal, not a
+    guess. For a survey letter the row must agree with letter_fields_244 (the table the writer mints links into)."""
+    got = rows(f"SELECT * FROM {T_LETTER_FIELDS} WHERE plan_date = @d AND LOWER(email) = @email AND template_id = @tid",
+               email, plan_date, template_id)
+    info = {"source": "mkt_control.letter_fields", "plan_date": plan_date, "rows": len(got)}
+    if len(got) != 1:
+        info["refused"] = f"{len(got)} letter_fields rows for this contact, template and plan_date (need exactly 1)"
+        return {}, info
+    row = got[0]
+    overlay = {k: v for k, v in row.items() if k in D.CONTRACT_FIELDS and v is not None}
+    info.update(run_id=row.get("run_id"), contract_pin=row.get("contract_pin"), email_type=row.get("email_type"),
+                would_send=row.get("would_send"), hold_reason=row.get("hold_reason"))
+    if template_id in SURVEY_LETTERS:
+        r244 = rows(f"SELECT ORDER_NR, ANKETA_URL, source, is_proof FROM {T_LETTER_FIELDS_244} "
+                    "WHERE plan_date = @d AND LOWER(email) = @email", email, plan_date)
+        same = len(r244) == 1 and all(str(r244[0].get(k) or "") == str(overlay.get(k) or "") != ""
+                                      for k in ("ANKETA_URL", "ORDER_NR"))
+        info["letter_fields_244"] = {"rows": len(r244), "equal": same,
+                                     "source": r244[0].get("source") if len(r244) == 1 else None}
+        if not same:
+            info["refused"] = "letter_fields ANKETA_URL/ORDER_NR do not equal the one letter_fields_244 row of that day"
+    return overlay, info
 
 
 def mask(email):
@@ -118,6 +163,7 @@ def main(argv=None):
     ap.add_argument("--variant")
     ap.add_argument("--seq")
     ap.add_argument("--overlay-b64", default="")
+    ap.add_argument("--plan-date", default="", help="YYYY-MM-DD: read the overlay from mkt_control.letter_fields")
     ap.add_argument("--note-b64", default="")
     ap.add_argument("--fill-b64", default="", help="236 only: {token: value} for the ⟦…⟧ frame, as the week's builder fills it")
     ap.add_argument("--summary-b64", default="")
@@ -135,10 +181,17 @@ def main(argv=None):
         sys.exit("week must be YYYY-Www")
     if not re.fullmatch(r"[a-z0-9_]{3,40}", a.variant) or not re.fullmatch(r"\d{1,2}/\d{1,2}", a.seq):
         sys.exit("bad variant/seq")
+    if a.plan_date and a.overlay_b64:
+        sys.exit("--plan-date and --overlay-b64 cannot be combined")
+    if a.plan_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", a.plan_date):
+        sys.exit("plan-date must be YYYY-MM-DD")
     overlay = json.loads(base64.b64decode(a.overlay_b64).decode("utf-8")) if a.overlay_b64 else {}
+    overlay_info = {"source": "--overlay-b64" if a.overlay_b64 else "none"}
+    if a.plan_date:
+        overlay, overlay_info = overlay_from_letter_fields(a.contact, a.template, a.plan_date)
     note = base64.b64decode(a.note_b64).decode("utf-8") if a.note_b64 else ""
     m = json.load(open(a.manifest, encoding="utf-8"))
-    rows = [r for r in m["templates"] + m.get("live_mapped", []) + m.get("episode_e2", []) if r["id"] == a.template]
+    rows = [r for r in m["templates"] + m.get("live_mapped", []) + m.get("episode_e2", []) + m.get("post_purchase", []) if r["id"] == a.template]
     if len(rows) != 1:
         sys.exit("template %d is not in the manifest" % a.template)
     row = rows[0]
@@ -161,6 +214,7 @@ def main(argv=None):
     attrs = dict(live)
     attrs.update(overlay)
     rep["overlay_keys"] = sorted(overlay)
+    rep["overlay"] = overlay_info
     # The shadow row places prices by SKU in the v2.7 slot order; NAME and IMG come from live Brevo. Proof that the two
     # agree: a slot without REF must carry the live price, a slot with REF must carry the live price as its reference.
     align = []
@@ -194,11 +248,15 @@ def main(argv=None):
                greeting=g, words=w,
                excerpt=[V.preheader(rendered) or ""] + V.visible_lines(rendered)[:30])
     rep["all_ok"] = bool(static_ok and cc and cc["ok"] and v28_ok and g["ok"] and w["ok"]
-                         and all(x["ok"] for x in align))
+                         and all(x["ok"] for x in align) and "refused" not in overlay_info)
 
-    own = C.contact_attributes(OWN_CONTACT)
-    own_url = str(own.get("KABINETS_URL") or "")
-    own_ok = bool(own_url) and f"utm_campaign={a.week}-" in own_url and D.link_verdict(own_url)["ok"]
+    survey_letter = a.template in SURVEY_LETTERS
+    if survey_letter:
+        own_url, own_ok = "", False   # no cabinet link in this letter; the customer's survey link is never handed to the test copy
+    else:
+        own = C.contact_attributes(OWN_CONTACT)
+        own_url = str(own.get("KABINETS_URL") or "")
+        own_ok = bool(own_url) and f"utm_campaign={a.week}-" in own_url and D.link_verdict(own_url)["ok"]
     body, replaced, left = neutralise(rendered, own_url if own_ok else "#")
     rep["links_in_test"] = {"replaced": replaced, "to": "own cabinet" if own_ok else "disabled (#)",
                             "customer_links_left": len(left)}
@@ -207,9 +265,12 @@ def main(argv=None):
     rung = attrs.get("OFFER_RUNG", 0)
     btxt = (f"<b>[TESTS {a.seq} · {a.variant} · {a.template}]</b> Renderēts kā {_html.escape(mask(a.contact))}, "
             f"{a.variant}, pakāpiens {rung}. <b>Klientam NAV sūtīts.</b><br>"
-            + ("Kabineta saites šajā testā ved uz TAVU kabinetu, ne klienta." if own_ok
+            + ("Anketas poga šajā testā ir atslēgta (#): tā ir klienta pasūtījuma anketa. Klienta saite pārbaudīta "
+               "dzīvā — atveras ar pasūtījuma numuru." if survey_letter
+               else "Kabineta saites šajā testā ved uz TAVU kabinetu, ne klienta." if own_ok
                else "Kabineta saites šajā testā ir atslēgtas (#).")
-            + "<br>Stils kā mūsu kampaņā " + _html.escape(STYLE_REF.get(a.template, REF_126)) + "."
+            + ("" if survey_letter else
+               "<br>Stils kā mūsu kampaņā " + _html.escape(STYLE_REF.get(a.template, REF_126)) + ".")
             + (("<br>" + _html.escape(note)) if note else ""))
     final = body if a.clean else re.sub(r"(<body[^>]*>)", lambda mm: mm.group(1) + banner(btxt), body, count=1)
     rep["sent"] = None
