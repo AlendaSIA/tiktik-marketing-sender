@@ -268,6 +268,10 @@ def test_booted_cabinet_reached_directly_stays_unknown(monkeypatch):
 
 # --- F6 (MAIN 2026-09-25): akcija_weekly (236) without cabinet products -> the featured page ---------------
 AKCIJA = open(os.path.join(ROOT, "templates", "akcija_weekly.html"), encoding="utf-8").read()
+# 236 v3.2 (Raivis 2026-10-06): the general akcija no longer advertises the cabinet. The cabinet-box rules below are
+# still the checker's rules for any letter that links to KABINETS_URL, so they run on the frame + the old box.
+AKCIJA_CAB = AKCIJA.replace("</body>", '{% if contact.KABINETS_HAS_PRODUCTS %}<p>Tavas ierastās preces — tavā kabinetā '
+                            '<a href="{{ contact.KABINETS_URL }}">Atvērt savu kabinetu &rarr;</a></p>{% endif %}</body>')
 FEATURED = "https://www.tiktik.lv/veikals/params/category/featured/"
 FEATURED_W39 = FEATURED + "?utm_source=brevo&utm_medium=email&utm_campaign=2026-w39-akcija"
 
@@ -290,7 +294,7 @@ def test_akcija_weekly_contact_without_cabinet_products_gets_the_featured_page()
 
 
 def test_akcija_weekly_contact_with_cabinet_products_keeps_the_cabinet_box():
-    body = D.render(D.C.apply_utm_week(AKCIJA, "2026-w39")[0], {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": LETTER})
+    body = D.render(D.C.apply_utm_week(AKCIJA_CAB, "2026-w39")[0], {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": LETTER})
     # COMMAND 2 (222 weekly format): the featured-page button is for everyone; a cabinet contact also gets the line
     assert _real_links(body) == [FEATURED_W39, LETTER]   # 236 v3 house design: red CTA above the products, cabinet box after
     assert "Atvērt savu kabinetu &rarr;" in body and "Skatīt visas nedēļas akcijas" in body
@@ -364,7 +368,7 @@ def test_akcija_cabinet_contact_passes_through_the_loader_end_to_end(monkeypatch
             + "".join(f'<a href="/veikals/item/c/p{i}/">p</a>' for i in range(61))).encode("utf-8")
     _site(monkeypatch, {LETTER: (200, "text/html", _loader()), BOOT: (200, "text/html", BOOTED),
                         FEATURED_W39: (200, "text/html; charset=UTF-8", page)})
-    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    r = D.contact_checks(D.send_path_html(AKCIJA_CAB, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
     assert r["ok"], r["problems"]
     assert [(l["url"], l.get("via")) for l in r["links"]] == [(LETTER, "loader>boot"), (FEATURED_W39, None)]
 
@@ -389,7 +393,7 @@ def test_cabinet_contact_without_kabinets_url_is_still_red(monkeypatch):
     monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
         "KABINETS_HAS_PRODUCTS": True, "VARDS": "Līga", "UZRUNA": ""})
     _site(monkeypatch, {})
-    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    r = D.contact_checks(D.send_path_html(AKCIJA_CAB, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
     assert r["kabinets_linked"] is True
     assert any(x.startswith("SEAM: KABINETS_URL has no utm_campaign=2026-w39-") for x in r["problems"])
 
@@ -399,7 +403,7 @@ def test_cabinet_link_without_the_weeks_utm_is_still_red(monkeypatch):
     monkeypatch.setattr(D.C, "contact_attributes", lambda e: {
         "KABINETS_HAS_PRODUCTS": True, "VARDS": "Līga", "UZRUNA": "", "KABINETS_URL": stale})
     _site(monkeypatch, {stale: (200, "text/html", "Laipni lūdzam kabinetā".encode("utf-8"))})
-    r = D.contact_checks(D.send_path_html(AKCIJA, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
+    r = D.contact_checks(D.send_path_html(AKCIJA_CAB, "2026-w39")[0], "S", "x@y.lv", "2026-w39")
     assert any(x.startswith("SEAM: KABINETS_URL has no utm_campaign=2026-w39-") for x in r["problems"])
 
 
@@ -424,3 +428,8 @@ def test_password_title_on_a_shop_page_is_not_a_pass(monkeypatch):
     shop = "https://www.tiktik.lv/veikals/item/a/b/"
     _site(monkeypatch, {shop: (200, "text/html", PAROLE)})
     assert not D.link_verdict(shop)["ok"]
+
+
+def test_akcija_weekly_does_not_advertise_the_cabinet():
+    assert "KABINETS" not in AKCIJA and "kabinet" not in AKCIJA.lower()
+    assert "https://www.tiktik.lv/veikals/" in AKCIJA

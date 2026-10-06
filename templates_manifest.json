@@ -90,11 +90,11 @@
    "variant": "akcija_weekly",
    "id": 236,
    "file": "templates/akcija_weekly.html",
-   "git_blob": "0caa6d0e5909ba92399a037e7049e971d2e7fb1d",
-   "sha256": "cecbbc96b4dedc2e40e96d661cf160e28f5d07b771cc536ff20b3c76abc6d3fc",
+   "git_blob": "f220eba654508a6bc542a584fb028be48991079c",
+   "sha256": "de6d4a3c7c52da799ab9acbff0f086dc52b7d00255c0ba7b0f45e6962210049a",
    "subject": "⟦PRECE⟧ no ⟦CENA⟧ — tikai šonedēļ",
    "preheader": "Šonedēļ par supercenām — ⟦PRECE⟧ no ⟦CENA⟧. Līdz ⟦LĪDZ⟧.",
-   "name": "money:akcija_weekly v3 — house design of campaigns 147/167 (Raivis 01.10 18:26-18:27)",
+   "name": "money:akcija_weekly v3 — house design of campaigns 147/167 (Raivis 01.10 18:26-18:27) v3.2",
    "purpose": "Weekly promo for everyone with no personal step this week. House design of the 2026-07..09 promo campaigns (c147 reference). Campaign layer fills ⟦DATUMI⟧ ⟦BIRKA⟧ (e.g. 'ZARYS NEDĒĻA' / 'NEDĒĻAS MIX') ⟦RAŽOTĀJS⟧ (brand, or 'mūsu TOP' for MIX) ⟦PRECE⟧ ⟦CENA⟧ ⟦LĪDZ⟧ ⟦KĀPĒC ŠIS RAŽOTĀJS⟧ and ⟦NEDĒĻAS PREČU BLOKI⟧ = a 4-column grid: brand week = all the maker's sale goods, max 16 (4x4) by sales; MIX = real top 16 sale goods. Never 'nolaidām cenas'."
   }
  ],
