@@ -190,7 +190,8 @@ class Send(unittest.TestCase):
 class EduAllRule(unittest.TestCase):
     """lv_edu_all (Raivis 2026-10-07): every old contact of the hand list, never a B2B lead."""
     BASE = {"l3": True, "l4": False, "l46": False, "l75": False, "lead": False, "suppressed": False, "blocked": False,
-            "language": None, "in_engine": False, "excluded_reason": None, "master_key": None, "in_lv_all": False}
+            "language": None, "in_engine": False, "excluded_reason": None, "master_key": None, "in_lv_all": False,
+            "b2b_email": False}
 
     def row(self, email, **kw):
         return dict(self.BASE, email=email, **kw)
@@ -201,7 +202,10 @@ class EduAllRule(unittest.TestCase):
                          ({"l4": True}, "LIST_4_SUPPRESSION"), ({"l46": True}, "EN_LIST"), ({"l75": True}, "EE_LIST"),
                          ({"language": "en"}, "NOT_LV"), ({"excluded_reason": "EN_PENDING"}, "NOT_LV"),
                          ({"blocked": True}, "BREVO_BLOCKLISTED"), ({"excluded_reason": "BLOCKED_OR_UNKNOWN"}, "BLOCKED_OR_UNKNOWN"),
-                         ({"excluded_reason": "A_REASON_NOBODY_HAS_SEEN"}, "A_REASON_NOBODY_HAS_SEEN")]:
+                         ({"excluded_reason": "A_REASON_NOBODY_HAS_SEEN"}, "A_REASON_NOBODY_HAS_SEEN"),
+                         ({"excluded_reason": "B2B_FLOW", "in_engine": True}, "B2B_FLOW"),               # change 1
+                         ({"excluded_reason": "NOT_TIKTIK_BUYER", "in_engine": True}, "NOT_TIKTIK_BUYER"),
+                         ({"excluded_reason": "LEAD_FLOW", "in_engine": True}, "LEAD_FLOW")]:
             for extra in ({}, {"in_lv_all": True, "in_engine": True, "master_key": "m1"}):
                 self.assertEqual(E.edu_all_gate(self.row("x@y.lv", **dict(extra, **kw))), gate, kw)
                 self.assertEqual([g for _, _, g in E.edu_all_gates([self.row("x@y.lv", **dict(extra, **kw))])], [gate])
@@ -211,9 +215,9 @@ class EduAllRule(unittest.TestCase):
                                                  suppressed="false", blocked="false")), "IN")
 
     def test_who_enters(self):
-        for kw in ({}, {"language": "lv"}, {"excluded_reason": "B2B_FLOW", "in_engine": True},
-                   {"excluded_reason": "NOT_TIKTIK_BUYER", "in_engine": True},
-                   {"excluded_reason": "PERSONAL_LETTER_THIS_WEEK", "in_engine": True}, {"l3": False, "in_lv_all": True}):
+        self.assertEqual(E.EDU_ALL_PASS_REASONS, (None, "", "PERSONAL_LETTER_THIS_WEEK"))
+        for kw in ({}, {"language": "lv"}, {"excluded_reason": "PERSONAL_LETTER_THIS_WEEK", "in_engine": True},
+                   {"l3": False, "in_lv_all": True}, {"in_engine": True, "b2b_email": True}):
             self.assertEqual(E.edu_all_gate(self.row("x@y.lv", **kw)), "IN", kw)
 
     def test_every_lv_all_address_is_inside(self):
@@ -239,6 +243,21 @@ class EduAllRule(unittest.TestCase):
         got = dict((e, g) for e, _, g in E.edu_all_gates([self.row("a@y.lv", master_key="m"),
                                                           self.row("z@y.lv", master_key="m", in_engine=True, in_lv_all=True)]))
         self.assertEqual(got, {"a@y.lv": "SECOND_ADDRESS_OF_PERSON", "z@y.lv": "IN"})
+
+    def test_unknown_address_of_a_b2b_customer_stays_out(self):                          # change 3
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", b2b_email=True)), "B2B_FLOW_BY_EMAIL")
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", b2b_email="true", in_engine="false")), "B2B_FLOW_BY_EMAIL")
+        # a person the engine holds is judged by the engine's own reason, not by the e-mail table
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", b2b_email=True, in_engine=True)), "IN")
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", b2b_email=True, in_engine=True, excluded_reason="B2B_FLOW")), "B2B_FLOW")
+        sql = E.edu_all_sql()
+        for must in ("b2b_shop_flow_classification_v2", E.F309_KEY, "b2b_email"):
+            self.assertIn(must, sql)
+
+    def test_self_sign_up_wins_over_a_cold_source(self):                                 # change 2
+        self.assertIn("list_id IN (55, 56, 57, 58)", E.LEADS_SQL)
+        self.assertIn("b.email IS NULL AND su.email IS NULL AS is_lead", E.LEADS_SQL)
+        self.assertTrue(set(E.SIGNUP_LISTS) <= set(E.FRESH_LISTS) <= set(E.INPUT_LISTS))
 
     def test_stale_or_missing_input_is_a_no_go(self):
         self.assertEqual(E.stale_inputs([{"name": "a", "day": "2026-10-08"}, {"name": "b", "day": "2026-10-07"},

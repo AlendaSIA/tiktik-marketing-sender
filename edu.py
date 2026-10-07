@@ -50,10 +50,13 @@ RULES = {"lv_glove_buyers": " AND info_track = 'cimdi'",     # LV people whose o
 EDU_ALL = "lv_edu_all"
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
 INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
-FRESH_LISTS = (3, 4, 46, 75, 52, 53)                                 # these must be of the day of the check
-# engine reasons that do NOT keep a person out of the educational letter (Raivis 2026-10-07: B2B-flow customers and
-# non-tiktik buyers get it). Any other reason - also one nobody has seen yet - keeps the address out.
-EDU_ALL_PASS_REASONS = (None, "", "PERSONAL_LETTER_THIS_WEEK", "B2B_FLOW", "NOT_TIKTIK_BUYER")
+FRESH_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # these must be of the day of the check
+SIGNUP_LISTS = (55, 56, 57, 58)                                      # questionnaire / hygiene-plan sign-ups
+# Raivis 2026-10-07 15:55: "b2b klientiem un ne veikala pircējiem nesūtam, sūtam veikala pircējiem, anketu pildītājiem
+# un vecajiem klientiem". So the ONLY engine reason that does not keep a person out is the personal letter of the
+# week; B2B_FLOW, NOT_TIKTIK_BUYER and any reason nobody has seen yet keep the address out.
+EDU_ALL_PASS_REASONS = (None, "", "PERSONAL_LETTER_THIS_WEEK")
+F309_KEY, F309_B2B = "036687330a0d889920e7166c94392ca6238c0115", "716"   # Pipedrive org field "MKT Plūsma" = B2B
 SUPPRESSION_LIST, EN_LIST, EE_LIST = 4, 46, 75  # Brevo lists: tiktik_suppression, EN_foreign_LANG_en, EE_klienti_tel372
 EXCLUDE_LISTS = (SUPPRESSION_LIST, EN_LIST, EE_LIST)
 TEST_EXCLUDE_LISTS = (EN_LIST, EE_LIST)         # the test address itself sits in list 4 (measured 2026-10-07)
@@ -112,6 +115,8 @@ def edu_all_gate(r: dict) -> str:
         return "EE_LIST"
     if _b(r.get("lead")):
         return "B2B_LEAD"
+    if not _b(r.get("in_engine")) and _b(r.get("b2b_email")):
+        return "B2B_FLOW_BY_EMAIL"                 # the engine holds no person, but the address is a B2B customer's
     if _b(r.get("suppressed")) or reason == "SUPPRESSED":
         return "SUPPRESSED"
     if _b(r.get("blocked")):
@@ -440,8 +445,10 @@ buy AS (  -- bought ANYWHERE: old account, new account, paid shop order, or the 
          JOIN `{P}.business_marts.customer_master` m USING (master_key) WHERE m.orders > 0 AND i.email_norm LIKE '%@%'),
 g AS (SELECT email, ARRAY_AGG(DISTINCT source ORDER BY source) AS sources FROM src WHERE email LIKE '%@%' GROUP BY 1),
 b AS (SELECT email, STRING_AGG(DISTINCT why ORDER BY why) AS bought FROM buy GROUP BY 1)
-SELECT CURRENT_TIMESTAMP() AS built_at, g.email, g.sources, b.bought, b.email IS NULL AS is_lead
-FROM g LEFT JOIN b USING (email)"""
+su AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{T_BLIST}` WHERE list_id IN (55, 56, 57, 58))
+SELECT CURRENT_TIMESTAMP() AS built_at, g.email, g.sources, b.bought, su.email IS NOT NULL AS signed_up,
+       b.email IS NULL AND su.email IS NULL AS is_lead     -- bought anywhere, or signed up himself = NOT a lead
+FROM g LEFT JOIN b USING (email) LEFT JOIN su USING (email)"""
 
 
 def inputs(q) -> int:
@@ -489,15 +496,31 @@ ld AS (SELECT DISTINCT email FROM `{T_LEAD}` WHERE is_lead),
 bs AS (SELECT LOWER(TRIM(email)) AS email, LOGICAL_OR(email_blocklisted OR NOT email_subscribed) AS blocked
        FROM `{P}.business_marts.brevo_contacts_snapshot` GROUP BY 1),
 sg AS (SELECT email, MIN(language) AS language FROM `{T_SEGMENT}` GROUP BY 1),
+-- B2B by e-mail, for addresses the engine holds no person for: the flow classification (its own e-mail, its Paytraq
+-- client's e-mail, the persons of its Pipedrive organisations) and Pipedrive organisation field 309 = B2B
+ex AS (SELECT p.org_id, LOWER(TRIM(e)) AS email FROM `{P}.channel_raw.pipedrive_persons` p,
+            UNNEST(SPLIT(REGEXP_REPLACE(IFNULL(p.email_all, ''), r'[;\\s]+', ','), ',')) e WHERE TRIM(e) LIKE '%@%'),
+cls AS (SELECT customer_key, LOWER(TRIM(email)) AS email, pd_org_ids
+        FROM `{P}.legacy_paytraq.b2b_shop_flow_classification_v2` WHERE flow = 'B2B'),
+borg AS (SELECT DISTINCT SAFE_CAST(o AS INT64) AS org_id FROM cls, UNNEST(REGEXP_EXTRACT_ALL(IFNULL(pd_org_ids, ''), r'\\d+')) o
+         UNION DISTINCT SELECT id FROM `{P}.channel_raw.pipedrive_orgs`
+         WHERE REGEXP_EXTRACT(raw_json, r'"{F309_KEY}":\\s*"?(\\d+)') = '{F309_B2B}'),
+bcid AS (SELECT REGEXP_EXTRACT(customer_key, r'^cid:(.+)$') AS cid FROM cls
+         UNION DISTINCT SELECT paytraq_client_id FROM `{P}.channel_raw.pipedrive_orgs` o JOIN borg ON borg.org_id = o.id),
+b2b AS (SELECT email FROM cls WHERE email LIKE '%@%'
+        UNION DISTINCT SELECT ex.email FROM ex JOIN borg USING (org_id)
+        UNION DISTINCT SELECT LOWER(TRIM(c.email)) FROM `{P}.paytraq_core.clients` c JOIN bcid ON bcid.cid = CAST(c.client_id AS STRING)
+                       WHERE c.email LIKE '%@%'),
 x AS (SELECT email, LOGICAL_OR(list_id = 3) AS l3, LOGICAL_OR(list_id = 4) AS l4, LOGICAL_OR(list_id = 46) AS l46,
              LOGICAL_OR(list_id = 75) AS l75 FROM bl GROUP BY 1)
 SELECT b.email, IFNULL(x.l3, FALSE) AS l3, IFNULL(x.l4, FALSE) AS l4, IFNULL(x.l46, FALSE) AS l46,
        IFNULL(x.l75, FALSE) AS l75,
        ld.email IS NOT NULL AS lead, s.email IS NOT NULL AS suppressed, IFNULL(bs.blocked, FALSE) AS blocked,
-       sg.language, a.email IS NOT NULL AS in_engine, a.excluded_reason,
+       sg.language, a.email IS NOT NULL AS in_engine, a.excluded_reason, b2b.email IS NOT NULL AS b2b_email,
        COALESCE(a.master_key, i.master_key) AS master_key, lvall.email IS NOT NULL AS in_lv_all
 FROM base b LEFT JOIN x USING (email) LEFT JOIN a USING (email) LEFT JOIN i USING (email) LEFT JOIN s USING (email)
-LEFT JOIN ld USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN lvall USING (email)"""
+LEFT JOIN ld USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN lvall USING (email)
+LEFT JOIN b2b USING (email)"""
 
 
 def build_audience_edu_all(q, d, code, check_run, plan_run, test_only):
