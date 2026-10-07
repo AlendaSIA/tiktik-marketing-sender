@@ -1091,7 +1091,8 @@ def _download(url) -> str:
     """The export file. Brevo's link may want the key; a refusal is reported with the host and the status."""
     import campaign as C
     last = None
-    for headers in ({}, {"api-key": C.api_key()}, {"api-key": C.api_key(), "accept": "application/json"}):
+    ua = {"User-Agent": "curl/8.5.0", "Accept": "*/*"}     # the file host refuses the default Python client name (403)
+    for headers in (ua, dict(ua, **{"api-key": C.api_key()})):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as f:
                 return f.read().decode("utf-8", "replace")
