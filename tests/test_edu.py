@@ -115,7 +115,7 @@ class Send(unittest.TestCase):
         reh = code[code.index("def rehearse("):code.index("def verify(")]
         self.assertNotIn("emailCampaigns", reh)                                        # the rehearsal: no campaign, no send
         self.assertNotIn("sendNow", reh)
-        self.assertEqual(code.count("fill_list(q, d, code, who,"), 2)                  # rehearsal and send: one filler
+        self.assertEqual(code.count("f = fill_list(q, d, code, who,"), 2)                # rehearsal and send: one filler
         for word in ("send_log", "contact_sequence", "shadow_send_plan", "letter_fields`", "/smtp/email", "pd_record",
                      "track_enabled` SET", "UPDATE "):
             self.assertNotIn(word, code, word)
