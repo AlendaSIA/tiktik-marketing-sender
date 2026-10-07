@@ -545,12 +545,14 @@ def list_members(list_id) -> set:
             return out
 
 
-def fill_list(q, d, code, who, name, emails, rounds=3, pause=6) -> dict:
+def fill_list(q, d, code, who, name, emails, rounds=3, pause=6, settle_s=300) -> dict:
     """Create a Brevo list and put exactly these e-mails into it, 150 a call. THE SAME CODE for the size rehearsal
     and for the send. Creates no campaign and sends nothing.
-    MEASURED 2026-10-07 (rehearsal lv_all): Brevo answered 'success' for all 5 374 and the list held 4 924. So the
-    answer of the add call is NOT trusted: the list is READ BACK, what is missing is added again (up to `rounds`
-    times), and 'ok' is only who the list really holds."""
+    MEASURED 2026-10-07 (rehearsal lv_all, list 78): Brevo answered 'success' for all 5 374, yet the list's own
+    counter (uniqueSubscribers) said 4 924 right after and 5 374 about three minutes later - Brevo settles a list
+    behind the answer. A campaign sent into an unsettled list could miss people, so nothing is trusted but a read:
+    the MEMBERS are read back, the missing are added again (up to `rounds` times), 'ok' is only who the list really
+    holds, and the counter must reach that number (`settle_s` seconds at most) before the caller may go on."""
     t0 = time.time()
     asked = [e.strip().lower() for e in emails]
     list_id = int(_brevo("POST", "/contacts/lists", {"name": name, "folderId": 1})["id"])
@@ -571,13 +573,23 @@ def fill_list(q, d, code, who, name, emails, rounds=3, pause=6) -> dict:
             break
     ok = [e for e in asked if e in members]
     extra = sorted(members - set(asked))
+    t1, counter, black = time.time(), None, None
+    while True:                                            # the list's own counter, as a campaign would see it
+        info = _brevo("GET", f"/contacts/lists/{list_id}")
+        counter, black = info.get("uniqueSubscribers"), info.get("totalBlacklisted")
+        if (counter or 0) >= len(ok) or time.time() - t1 > settle_s:
+            break
+        time.sleep(10)
+    settled = (counter or 0) >= len(ok)
     out = {"list_id": list_id, "name": name, "asked": len(asked), "calls": calls, "brevo_said_added": said_ok,
            "added": len(ok), "not_added": len(asked) - len(ok),
            "not_added_pct": round(100.0 * (len(asked) - len(ok)) / max(len(asked), 1), 2), "limit_pct": ADD_FAIL_PCT,
-           "rounds": history, "in_list_but_not_asked": len(extra), "seconds": round(time.time() - t0, 1),
+           "rounds": history, "in_list_but_not_asked": len(extra), "counter": counter, "counter_blacklisted": black,
+           "counter_settled": settled, "settle_seconds": round(time.time() - t1, 1),
+           "seconds": round(time.time() - t0, 1),
            "call_errors": errors[:5], "not_added_examples": todo[:10]}
     log(q, d, code, who, "LIST_FILLED", out)
-    return {**out, "ok": ok, "failed": todo, "extra": extra}
+    return {**out, "ok": ok, "failed": todo, "extra": extra}       # callers: refuse unless counter_settled
 
 
 def snapshot_lists(q, list_ids) -> dict:
@@ -614,7 +626,7 @@ def rehearse(q, d, code, check_run, name) -> int:
     back = _brevo("GET", f"/contacts/lists/{f['list_id']}")
     res = {k: v for k, v in f.items() if k not in ("ok", "failed", "extra")}
     res.update(done=True, check_run=check_run, list_read_back={k: back.get(k) for k in ("id", "name", "uniqueSubscribers",
-               "totalSubscribers", "totalBlacklisted", "campaignStats")}, would_pass_2pct_rule=f["not_added_pct"] <= ADD_FAIL_PCT,
+               "totalSubscribers", "totalBlacklisted", "campaignStats")}, would_pass_2pct_rule=f["not_added_pct"] <= ADD_FAIL_PCT and f["counter_settled"] and not f["extra"],
                brevo_lists_snapshot=lists, campaign_created=False, sent=False)
     if f["failed"]:
         q(f"INSERT INTO `{T_LOG}` (send_date, letter_code, logged_at, who, event, detail) "
@@ -693,6 +705,8 @@ def send(q, d, code, now=None) -> int:
         list_id, ok, fail_pct = f["list_id"], f["ok"], f["not_added_pct"]
         if f["extra"]:
             raise RuntimeError(f"LIST_HOLDS_ADDRESSES_NOBODY_ASKED_FOR n={len(f['extra'])}")
+        if not f["counter_settled"]:
+            raise RuntimeError(f"LIST_COUNTER_NOT_SETTLED counter={f['counter']} members={len(ok)} after {f['settle_seconds']} s")
         if not ok or fail_pct > ADD_FAIL_PCT or (test_only and ok != [TEST_RECIPIENT]):
             raise RuntimeError(f"LIST_NOT_FILLED added={len(ok)} of {len(aud)} ({fail_pct:.1f}% missing, limit {ADD_FAIL_PCT}%)")
         excl = exclusion_lists(test_only)

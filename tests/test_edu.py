@@ -89,6 +89,45 @@ class Rules(unittest.TestCase):
         self.assertTrue(any(r.startswith("UNKNOWN_AUDIENCE_RULE") for r in got) and "AUDIENCE_EMPTY" in got)
 
 
+class ListFill(unittest.TestCase):
+    """The add call's answer is not trusted: members are read back, the missing re-added, the counter must settle."""
+    def run_fill(self, drop_first=(), counter_seq=(3,)):
+        state = {"members": set(), "adds": 0, "counters": list(counter_seq)}
+
+        def brevo(method, path, payload=None):
+            if method == "POST" and path == "/contacts/lists":
+                return {"id": 500}
+            if method == "POST" and path.endswith("/contacts/add"):
+                state["adds"] += 1
+                keep = [e for e in payload["emails"] if not (state["adds"] == 1 and e in drop_first)]
+                state["members"] |= set(keep)
+                return {"contacts": {"success": payload["emails"], "failure": []}}     # Brevo says yes to all
+            if method == "GET" and path.startswith("/contacts/lists/500/contacts"):
+                return {"contacts": [{"email": e} for e in sorted(state["members"])]}
+            if method == "GET" and path == "/contacts/lists/500":
+                c = state["counters"].pop(0) if len(state["counters"]) > 1 else state["counters"][0]
+                return {"uniqueSubscribers": c, "totalBlacklisted": 0}
+            raise AssertionError(path)
+        import unittest.mock as m
+        with m.patch.object(E, "_brevo", brevo), m.patch.object(E, "log", lambda *a, **k: None), \
+                m.patch.object(E.time, "sleep", lambda s: None):
+            return E.fill_list(None, "2026-10-08", "G7", "t", "L", ["a@x.lv", "B@x.lv ", "c@x.lv"], settle_s=0), state
+
+    def test_all_in_first_round(self):
+        f, st = self.run_fill()
+        self.assertEqual((f["added"], f["not_added"], f["calls"], f["counter_settled"]), (3, 0, 1, True))
+        self.assertEqual(f["ok"], ["a@x.lv", "b@x.lv", "c@x.lv"])
+
+    def test_brevo_says_yes_but_one_is_missing_then_readded(self):
+        f, st = self.run_fill(drop_first=("b@x.lv",))
+        self.assertEqual((f["brevo_said_added"], f["added"], f["calls"]), (4, 3, 2))
+        self.assertEqual(f["rounds"][0]["missing"], 1)
+
+    def test_counter_behind_is_not_settled(self):
+        f, st = self.run_fill(counter_seq=(2,))
+        self.assertFalse(f["counter_settled"])
+
+
 class Send(unittest.TestCase):
     def test_sends_only_with_a_fresh_go_and_no_stop(self):
         self.assertEqual(E.send_refusals(sendfacts()), [])
