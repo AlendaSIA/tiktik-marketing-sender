@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS `{T_BREVO}` (send_date DATE, letter_code STRING, chec
 CREATE TABLE IF NOT EXISTS `{T_SENT}` (send_date DATE, letter_code STRING, campaign_id INT64,
   source_campaign_id INT64, brevo_list_id INT64, master_key STRING, email STRING, sent_at TIMESTAMP,
   check_run STRING, test_only BOOL);
-CREATE TABLE IF NOT EXISTS `{T_LOG}` (send_date DATE, letter_code STRING, at TIMESTAMP, who STRING, event STRING,
+CREATE TABLE IF NOT EXISTS `{T_LOG}` (send_date DATE, letter_code STRING, logged_at TIMESTAMP, who STRING, event STRING,
   detail STRING);
 """
 
@@ -283,7 +283,7 @@ def _i(v):
 def log(q, d, code, who, event, detail=None):
     txt = detail if detail is None or isinstance(detail, str) else json.dumps(detail, ensure_ascii=False, default=str)
     print(f"EDU_LOG {event} " + (txt or ""))
-    q(f"INSERT INTO `{T_LOG}` (send_date, letter_code, at, who, event, detail) "
+    q(f"INSERT INTO `{T_LOG}` (send_date, letter_code, logged_at, who, event, detail) "
       f"VALUES (@d, @c, CURRENT_TIMESTAMP(), @w, @e, @t)", d=d, c=code, w=who, e=event, t=txt)
 
 
@@ -485,8 +485,8 @@ def stop(q, d, code, by, why) -> int:
     q(f"INSERT INTO `{T_GATE}` (send_date, letter_code, kind, check_run, reason, detail, written_at, written_by) "
       f"VALUES (@d, @c, 'STOP', NULL, @r, NULL, CURRENT_TIMESTAMP(), @b)", d=d, c=code, r=why, b=by)
     n = stops(q, d, code)
-    started = q(f"SELECT event, CAST(at AS STRING) AS at FROM `{T_LOG}` WHERE send_date = @d AND letter_code = @c "
-                f"AND event IN ('SEND_STARTED', 'SENT') ORDER BY at", d=d, c=code)
+    started = q(f"SELECT event, CAST(logged_at AS STRING) AS logged FROM `{T_LOG}` WHERE send_date = @d "
+                f"AND letter_code = @c AND event IN ('SEND_STARTED', 'SENT') ORDER BY logged_at", d=d, c=code)
     print("EDU_STOP " + json.dumps({"date": d, "letter": code, "stop_records_read_back": n, "engine_send_possible": n == 0,
                                     "send_already_started": started}, ensure_ascii=False))
     return 0 if n >= 1 else 1
@@ -494,12 +494,12 @@ def stop(q, d, code, by, why) -> int:
 
 def status(q, d, code) -> int:
     out = {"letter": letter_row(q, d, code),
-           "gate": q(f"SELECT kind, check_run, reason, CAST(written_at AS STRING) AS at, written_by FROM `{T_GATE}` "
+           "gate": q(f"SELECT kind, check_run, reason, CAST(written_at AS STRING) AS written, written_by FROM `{T_GATE}` "
                      f"WHERE send_date = @d AND letter_code = @c ORDER BY written_at", d=d, c=code),
            "sent_rows": int(q(f"SELECT COUNT(*) AS n FROM `{T_SENT}` WHERE send_date = @d AND letter_code = @c",
                               d=d, c=code)[0]["n"]),
-           "log": q(f"SELECT CAST(at AS STRING) AS at, who, event, detail FROM `{T_LOG}` WHERE send_date = @d "
-                    f"AND letter_code = @c ORDER BY at", d=d, c=code)}
+           "log": q(f"SELECT CAST(logged_at AS STRING) AS logged, who, event, detail FROM `{T_LOG}` "
+                    f"WHERE send_date = @d AND letter_code = @c ORDER BY logged_at", d=d, c=code)}
     print("EDU_STATUS " + json.dumps(out, ensure_ascii=False, indent=1, default=str))
     return 0
 
