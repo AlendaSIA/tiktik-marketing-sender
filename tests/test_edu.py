@@ -397,5 +397,87 @@ class HistoryAndColdRegister(unittest.TestCase):
         self.assertIn("pipedrive_label4_live", code)                      # the live register must be of the day too
 
 
+
+class ProductSlots(unittest.TestCase):
+    def vals(self, **over):
+        v = {}
+        for i, sl in enumerate(E.PARAM_SLOTS):
+            v.update({sl + "_NAME": "Prece " + sl, sl + "_URL": f"https://www.tiktik.lv/veikals/item/p{i}/",
+                      sl + "_IMG": f"https://img.example/p{i}.jpg", sl + "_STD": "9,99 €", sl + "_PRICE": "7.99"})
+        v.update(over)
+        return v
+
+    def rows(self, v, day="2026-10-08"):
+        return [{"param_key": k, "param_value": x, "set_day": day} for k, x in v.items()]
+
+    def shop(self):
+        return {f"https://www.tiktik.lv/veikals/item/p{i}": {"std_price": "9.99", "eff_price": "7.99", "stock": "5"}
+                for i in range(8)}
+
+    def ok(self, v):
+        return {v[f"{sl}_{f}"]: True for sl in E.PARAM_SLOTS for f in ("URL", "IMG")}
+
+    def test_the_forty_keys(self):
+        self.assertEqual(len(E.PARAM_KEYS), 40)
+        self.assertEqual(E.PARAM_KEYS[:5], ("G1_NAME", "G1_URL", "G1_IMG", "G1_STD", "G1_PRICE"))
+        self.assertEqual(E.PARAM_KEYS[-1], "T4_PRICE")
+
+    def test_complete_for_the_date(self):
+        v = self.vals()
+        self.assertEqual(E.param_problems(self.rows(v), "2026-10-08"), [])
+        self.assertTrue(E.param_problems([], "2026-10-08")[0].startswith("MISSING 40 of 40"))
+        r = [x for x in self.rows(v) if x["param_key"] != "T3_PRICE"]
+        self.assertEqual(E.param_problems(r, "2026-10-08"), ["MISSING 1 of 40: T3_PRICE"])
+        self.assertIn("EMPTY G2_NAME", E.param_problems(self.rows(self.vals(G2_NAME="  ")), "2026-10-08"))
+        self.assertEqual(len(E.param_problems(self.rows(v, "2026-10-07"), "2026-10-08")), 40)       # yesterday's values
+        self.assertIn("DUPLICATE G1_URL", E.param_problems(self.rows(v) + self.rows(v)[1:2], "2026-10-08"))
+        self.assertIn("UNKNOWN_KEY G9_NAME", E.param_problems(self.rows(dict(v, G9_NAME="x")), "2026-10-08"))
+
+    def test_values_hash(self):
+        v = self.vals()
+        h = E.params_sha(v)
+        self.assertEqual(len(h), 64)
+        self.assertEqual(h, E.params_sha(dict(reversed(list(v.items())))))               # order of rows does not matter
+        self.assertNotEqual(h, E.params_sha(dict(v, T2_PRICE="8.99")))                    # one price does
+        self.assertEqual(E.send_refusals_params(h, v), [])
+        self.assertTrue(E.send_refusals_params(h, dict(v, G1_PRICE="1.00"))[0].startswith("PARAM_VALUES_NOT_THOSE_OF_THE_GO"))
+        self.assertTrue(E.send_refusals_params(None, v)[0].startswith("PARAM_VALUES_NOT_THOSE_OF_THE_GO"))
+        self.assertEqual(E.send_refusals_params(h, None), ["PARAMS_NOT_COMPLETE_AT_SEND"])
+
+    def test_shop_gate(self):
+        v = self.vals()
+        self.assertEqual(E.slot_problems(v, self.shop(), self.ok(v)), [])
+        sh = self.shop(); sh["https://www.tiktik.lv/veikals/item/p0"]["stock"] = "0"
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["G1 OUT_OF_STOCK"])
+        sh = self.shop(); sh["https://www.tiktik.lv/veikals/item/p1"]["eff_price"] = "8.49"
+        self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G2 PRICE_DIFFERS"))
+        sh = self.shop(); del sh["https://www.tiktik.lv/veikals/item/p7"]                 # hidden or gone
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["T4 NOT_A_VISIBLE_SHOP_PRODUCT"])
+        ok = self.ok(v); ok[v["T1_IMG"]] = False; del ok[v["G3_URL"]]
+        self.assertEqual(E.slot_problems(v, self.shop(), ok), ["G3 URL_DOES_NOT_ANSWER", "T1 IMAGE_DOES_NOT_ANSWER"])
+        self.assertTrue(E.slot_problems(self.vals(G4_STD="n/a"), self.shop(), self.ok(v))[0].startswith("G4 STD_DIFFERS"))
+        self.assertEqual(E.money("7,99 €"), 7.99)
+        self.assertEqual(E.money("19.90"), 19.9)
+        self.assertIsNone(E.money("1.2.3"))
+        self.assertIsNone(E.money(""))
+        self.assertEqual(E.norm_url("HTTP://tiktik.lv/a/b/?utm=1#x"), "https://www.tiktik.lv/a/b")
+
+    def test_copy_carries_params_and_check_refuses(self):
+        src = {"subject": "s", "htmlContent": "<p>{{ params.G1_NAME }}</p>", "sender": {"id": 2}}
+        v = self.vals()
+        p = E.campaign_payload(src, "E", 9, [4], v)
+        self.assertEqual(list(p["params"]), list(E.PARAM_KEYS))
+        self.assertEqual(p["params"]["T4_PRICE"], "7.99")
+        self.assertNotIn("params", E.campaign_payload(src, "E", 9, [4]))
+        self.assertNotIn("params", E.campaign_payload(src, "E", 9, [4], None))
+        base = {"rule": "lv_all", "letter": {"approved_sha256": "x", "armed": True}}
+        self.assertTrue(any(r.startswith("PARAMS_NOT_READY=G1 OUT_OF_STOCK") for r in
+                            E.check_reasons(dict(base, param_problems=["G1 OUT_OF_STOCK"]))))
+        self.assertFalse(any(r.startswith("PARAMS_NOT_READY") for r in E.check_reasons(dict(base, param_problems=[]))))
+        code = open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read()
+        self.assertNotIn("INSERT INTO `{T_PARAM}`", code)                                # this code only READS the table
+        self.assertNotIn("DELETE FROM `{T_PARAM}`", code)
+
+
 if __name__ == "__main__":
     unittest.main()

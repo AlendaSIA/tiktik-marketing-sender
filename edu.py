@@ -64,6 +64,13 @@ EDU_MIX = ("own", "own", "other", "other", "other", "own", "other")
 T_CAT, T_PSRC, T_PICK, T_PICKRUN = f"{M}.edu_catalog", f"{M}.edu_piece_source", f"{M}.edu_pick", f"{M}.edu_pick_run"
 T_SEENX = f"{M}.edu_seen_extra"
 T_HIST, T_HSTATE = f"{M}.brevo_campaign_recipients_hist", f"{M}.edu_hist_state"   # who received which campaign
+# PRODUCT SLOTS (MAIN 2026-10-07 18:40, the form is fixed by MAIN): 40 campaign params per letter and date in
+# mkt_control.edu_letter_param. This code only READS that table. Brevo does not give campaign params back, so the
+# engine's copy sets them from the table and the read-back cannot prove them - the values hash logged at GO does.
+T_PARAM = f"{M}.edu_letter_param"
+PARAM_SLOTS, PARAM_FIELDS = ("G1", "G2", "G3", "G4", "T1", "T2", "T3", "T4"), ("NAME", "URL", "IMG", "STD", "PRICE")
+PARAM_KEYS = tuple(f"{a}_{b}" for a in PARAM_SLOTS for b in PARAM_FIELDS)
+T_SHOP = f"{P}.business_marts.product_catalog"      # the shop as the letter must match it: visible products only
 HIST_MAX_AGE_MIN = 30                              # a pick reads a history refreshed at most this long ago
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
 INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
@@ -101,6 +108,9 @@ CREATE TABLE IF NOT EXISTS `{T_BLIST}` (list_id INT64, email STRING, fetched_at 
 CREATE TABLE IF NOT EXISTS `{T_CAT}` (letter_code STRING, edu_group STRING, piece STRING, title STRING,
   source_campaign_id INT64, sendable BOOL, prio INT64, note STRING, updated_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS `{T_PSRC}` (piece STRING, kind STRING, ref STRING);
+CREATE TABLE IF NOT EXISTS `{T_PARAM}` (send_date DATE, letter_code STRING, param_key STRING, param_value STRING,
+  source STRING, set_at TIMESTAMP);
+ALTER TABLE `{T_BREVO}` ADD COLUMN IF NOT EXISTS param_mentions INT64;
 CREATE TABLE IF NOT EXISTS `{T_HSTATE}` (refreshed_at TIMESTAMP, snapshot_id STRING, sent_campaigns INT64,
   newest_sent_id INT64, covered INT64, missing INT64, added_campaigns INT64, added_rows INT64, detail STRING);
 ALTER TABLE `{T_REG}` ADD COLUMN IF NOT EXISTS loaded_at TIMESTAMP;
@@ -243,6 +253,72 @@ def render_alert(thursday, picks, catalog) -> str:
     return "\n".join(lines)
 
 
+def param_problems(rows, today) -> list:
+    """Is the letter complete for the date? rows = [{param_key, param_value, set_day}] of one date + letter.
+    All 40 keys, each once, each non-empty, each set TODAY; no key outside the 40. -> [] or every problem."""
+    out, seen = [], {}
+    for r in rows:
+        seen.setdefault(r.get("param_key"), []).append(r)
+    missing = [k for k in PARAM_KEYS if k not in seen]
+    if missing:
+        out.append(f"MISSING {len(missing)} of 40: " + ",".join(missing[:8]))
+    for k, rs in seen.items():
+        if k not in PARAM_KEYS:
+            out.append(f"UNKNOWN_KEY {k}")
+        elif len(rs) > 1:
+            out.append(f"DUPLICATE {k}")
+        elif not (rs[0].get("param_value") or "").strip():
+            out.append(f"EMPTY {k}")
+        elif str(rs[0].get("set_day") or "")[:10] != today:
+            out.append(f"NOT_SET_TODAY {k} set={rs[0].get('set_day')}")
+    return out
+
+
+def params_sha(values) -> str:
+    """THE hash of the 40 slot values: sha256 of compact JSON, keys in the fixed order. Logged at GO, recomputed by
+    the send - one changed price between the two and the send refuses."""
+    return hashlib.sha256(json.dumps([[k, values[k]] for k in PARAM_KEYS], ensure_ascii=False,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def money(v):
+    """'7,99 €' / '7.99' / 7.99 -> 7.99; anything that is not one amount -> None."""
+    t = "".join(ch for ch in str(v if v is not None else "").replace(",", ".") if ch.isdigit() or ch == ".")
+    try:
+        return round(float(t), 2) if t and t.count(".") <= 1 else None
+    except ValueError:
+        return None
+
+
+def norm_url(u) -> str:
+    u = (u or "").strip().lower().split("#")[0].split("?")[0]
+    return u.replace("http://", "https://").replace("https://tiktik.lv", "https://www.tiktik.lv").rstrip("/")
+
+
+def slot_problems(values, shop, http_ok) -> list:
+    """The shop gate, pure. shop = {norm_url: {std_price, eff_price, stock}} of VISIBLE products; http_ok = {url: bool}
+    for every URL and image of the letter. Per slot: the product is visible and in stock, PRICE and STD equal the
+    shop's, the page and the image answer. Anything unknown is a problem (fail closed)."""
+    out = []
+    for sl in PARAM_SLOTS:
+        url, img = values.get(sl + "_URL"), values.get(sl + "_IMG")
+        p = shop.get(norm_url(url))
+        if not p:
+            out.append(f"{sl} NOT_A_VISIBLE_SHOP_PRODUCT")
+        else:
+            if not (p.get("stock") is not None and float(p["stock"]) > 0):
+                out.append(f"{sl} OUT_OF_STOCK")
+            for fld, col in (("PRICE", "eff_price"), ("STD", "std_price")):
+                a, b = money(values.get(f"{sl}_{fld}")), money(p.get(col))
+                if a is None or b is None or abs(a - b) > 0.005:
+                    out.append(f"{sl} {fld}_DIFFERS letter={values.get(sl + '_' + fld)} shop={p.get(col)}")
+        if http_ok.get(url) is not True:
+            out.append(f"{sl} URL_DOES_NOT_ANSWER")
+        if http_ok.get(img) is not True:
+            out.append(f"{sl} IMAGE_DOES_NOT_ANSWER")
+    return out
+
+
 def history_refusal(state, max_age_min=HIST_MAX_AGE_MIN):
     """May a pick trust the recipients history? state = the latest edu_hist_state row (age_min added). -> '' or why not.
     It must be fresh AND cover every campaign Brevo has sent - otherwise a piece somebody already had looks unseen."""
@@ -307,6 +383,8 @@ def check_reasons(s: dict) -> list:
         r.append("SALES_SWITCH_OPEN=" + str(s["sales_switch_open"])[:120])
     if s.get("tracks_enabled") not in (0, "0"):
         r.append(f"TRACK_ENABLED={s.get('tracks_enabled')}")
+    if s.get("param_problems"):
+        r.append("PARAMS_NOT_READY=" + "; ".join(s["param_problems"])[:300])
     if s.get("overlap"):
         r.append(f"OVERLAPS_ANOTHER_LETTER_OF_THE_DATE={s['overlap']} (one educational letter per person and date)")
     if s.get("rule") in EDU_ALL_RULES and s.get("inputs_stale") != []:
@@ -373,6 +451,14 @@ def send_refusals(s: dict) -> list:
     return r
 
 
+def send_refusals_params(go_sha, params) -> list:
+    """Pure: the send may use the slot values only when they are complete and hash to what the GO logged."""
+    if not params:
+        return ["PARAMS_NOT_COMPLETE_AT_SEND"]
+    now = params_sha(params)
+    return [] if go_sha and now == go_sha else [f"PARAM_VALUES_NOT_THOSE_OF_THE_GO now={now[:12]} go={str(go_sha)[:12]}"]
+
+
 def content_refusals(letter, camp, placeholders, unsub) -> list:
     r = []
     sha = content_sha(camp.get("subject"), camp.get("previewText"), camp.get("htmlContent"))
@@ -385,8 +471,9 @@ def content_refusals(letter, camp, placeholders, unsub) -> list:
     return r
 
 
-def campaign_payload(source, name, list_id, excl) -> dict:
-    """The engine's own campaign: the source's subject, preview text and HTML, byte for byte; nothing else of it."""
+def campaign_payload(source, name, list_id, excl, params=None) -> dict:
+    """The engine's own campaign: the source's subject, preview text and HTML, byte for byte; nothing else of it.
+    params = the 40 slot values of the letter and date, set here because Brevo does not copy or return them."""
     p = {"name": name, "subject": source.get("subject"), "sender": {"id": (source.get("sender") or {}).get("id") or 2},
          "replyTo": source.get("replyTo") or "info@tiktik.lv", "htmlContent": source.get("htmlContent"),
          "recipients": {"listIds": [list_id]}, "inlineImageActivation": False,
@@ -395,6 +482,8 @@ def campaign_payload(source, name, list_id, excl) -> dict:
         p["previewText"] = source["previewText"]
     if excl:
         p["recipients"]["exclusionListIds"] = list(excl)
+    if params:
+        p["params"] = {k: params[k] for k in PARAM_KEYS}
     return p
 
 
@@ -743,6 +832,37 @@ def build_audience(q, d, code, check_run, plan_run, test_only, rule):
     return n, funnel
 
 
+def read_params(q, d, code):
+    rows = q(f"SELECT param_key, param_value, CAST(DATE(set_at, 'Europe/Riga') AS STRING) AS set_day, "
+             f"CAST(CURRENT_DATE('Europe/Riga') AS STRING) AS today FROM `{T_PARAM}` "
+             f"WHERE send_date = @d AND letter_code = @c", d=d, c=code)
+    today = rows[0]["today"] if rows else q("SELECT CAST(CURRENT_DATE('Europe/Riga') AS STRING) AS t")[0]["t"]
+    return rows, today
+
+
+def http_answers(url) -> bool:
+    """GET, 200 and a body. A page that redirects elsewhere or errors is not an answer."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "curl/8.5.0", "Accept": "*/*"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200 and bool(r.read(64))
+    except Exception:  # noqa: BLE001 - no answer is no answer
+        return False
+
+
+def param_gate(q, d, code, fetch=http_answers):
+    """THE PARAM GATE of the send day. -> (problems, values hash or None, values or None)."""
+    rows, today = read_params(q, d, code)
+    problems = param_problems(rows, today)
+    if problems:
+        return problems, None, None
+    values = {r["param_key"]: r["param_value"] for r in rows}
+    shop = {norm_url(r["url"]): r for r in q(f"SELECT url, std_price, eff_price, stock FROM `{T_SHOP}` WHERE url IS NOT NULL")}
+    urls = sorted({values[f"{sl}_{f}"] for sl in PARAM_SLOTS for f in ("URL", "IMG")})
+    problems = slot_problems(values, shop, {u: fetch(u) for u in urls})
+    return problems, params_sha(values), values
+
+
 def overlap_other_letters(q, d, code, check_run) -> int:
     """How many addresses of THIS frozen audience another letter of the same date already holds: in the audience of
     its latest check when that check is a GO, or already sent to. Must be 0 - one educational letter per person."""
@@ -927,6 +1047,10 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
             else:
                 time.sleep(6)
         s["verify_execution"] = execution
+        b = s.get("brevo") or {}
+        s["params_needed"] = b.get("param_mentions") is None or int(b.get("param_mentions") or 0) > 0
+        if s.get("brevo") and s["params_needed"]:
+            s["param_problems"], s["params_sha"], _ = param_gate(q, d, code)
         reasons = check_reasons(s)
         broke = False
     except Exception as e:  # noqa: BLE001 - a check that cannot finish is a NO-GO
@@ -990,7 +1114,8 @@ def _facts(camp) -> dict:
     html = camp.get("htmlContent") or ""
     return {"sha256": content_sha(camp.get("subject"), camp.get("previewText"), html),
             "placeholders": len(C.placeholder_hits(camp.get("subject"), camp.get("previewText"), html)),
-            "unsubscribe_links": C.unsubscribe_links(html), "html_bytes": len(html.encode("utf-8"))}
+            "unsubscribe_links": C.unsubscribe_links(html), "html_bytes": len(html.encode("utf-8")),
+            "param_mentions": html.count("params.")}
 
 
 def list_members(list_id) -> set:
@@ -1183,18 +1308,18 @@ def verify(q, d, code, check_run) -> int:
     """GET only: what Brevo holds NOW for the source campaign -> one mkt_control.edu_brevo row for this check."""
     L = letter_row(q, d, code)
     row = {"sid": (L or {}).get("source_campaign_id"), "sha": None, "st": None, "subj": None, "mod": None, "ph": None,
-           "un": None, "hb": None, "err": None}
+           "un": None, "hb": None, "err": None, "pm": None}
     try:
         camp = _brevo("GET", f"/emailCampaigns/{int(row['sid'])}")
         f = _facts(camp)
         row.update(sha=f["sha256"], st=camp.get("status"), subj=camp.get("subject"), mod=camp.get("modifiedAt"),
-                   ph=f["placeholders"], un=f["unsubscribe_links"], hb=f["html_bytes"])
+                   ph=f["placeholders"], un=f["unsubscribe_links"], hb=f["html_bytes"], pm=f["param_mentions"])
     except Exception as e:  # noqa: BLE001 - an unread letter is not an approved one
         row["err"] = f"{type(e).__name__}: {e}"[:300]
     q(f"INSERT INTO `{T_BREVO}` (send_date, letter_code, check_run, source_campaign_id, sha256, status, subject, "
-      f"modified_at, placeholders, unsubscribe_links, html_bytes, error, checked_at) "
+      f"modified_at, placeholders, unsubscribe_links, html_bytes, error, checked_at, param_mentions) "
       f"VALUES (@d, @c, @cr, CAST(@sid AS INT64), @sha, @st, @subj, @mod, CAST(@ph AS INT64), CAST(@un AS INT64), "
-      f"CAST(@hb AS INT64), @err, CURRENT_TIMESTAMP())", d=d, c=code, cr=check_run,
+      f"CAST(@hb AS INT64), @err, CURRENT_TIMESTAMP(), CAST(@pm AS INT64))", d=d, c=code, cr=check_run,
       **{k: (None if v is None else str(v)) for k, v in row.items()})
     print("EDU_VERIFY " + json.dumps({"date": d, "letter": code, "check_run": check_run, **row}, ensure_ascii=False))
     return 0 if not row["err"] else 1
@@ -1216,7 +1341,8 @@ def send(q, d, code, now=None) -> int:
     if gates and gates[0]["kind"] == "GO":
         g = gates[0]
         s["go"] = {"check_run": g["check_run"], "age_min": _i(g["age_min"]),
-                   "audience": (json.loads(g["detail"] or "{}")).get("audience")}
+                   "audience": (json.loads(g["detail"] or "{}")).get("audience"),
+                   "params_sha": (json.loads(g["detail"] or "{}")).get("params_sha")}
         aud = q(f"SELECT email, master_key FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr "
                 f"ORDER BY email", d=d, c=code, cr=g["check_run"])
         s["audience"] = len(aud)
@@ -1233,6 +1359,12 @@ def send(q, d, code, now=None) -> int:
     source = _brevo("GET", f"/emailCampaigns/{L['source_campaign_id']}")
     f = _facts(source)
     refusals = content_refusals(L, source, f["placeholders"], f["unsubscribe_links"])
+    params = None
+    if f["param_mentions"]:                                    # the letter has product slots: the values of the GO or no send
+        rows, today = read_params(q, d, code)
+        if not param_problems(rows, today):
+            params = {r["param_key"]: r["param_value"] for r in rows}
+        refusals += send_refusals_params(s["go"].get("params_sha"), params)
     if refusals:
         log(q, d, code, who, "SEND_REFUSED", {"reasons": refusals, "nothing_sent": True})
         print("EDU_SEND " + json.dumps({"date": d, "letter": code, "sent": False, "reasons": refusals}))
@@ -1255,7 +1387,8 @@ def send(q, d, code, now=None) -> int:
         if not ok or fail_pct > ADD_FAIL_PCT or (test_only and ok != [TEST_RECIPIENT]):
             raise RuntimeError(f"LIST_NOT_FILLED added={len(ok)} of {len(aud)} ({fail_pct:.1f}% missing, limit {ADD_FAIL_PCT}%)")
         excl = exclusion_lists(test_only)
-        created = _brevo("POST", "/emailCampaigns", campaign_payload(source, f"ENGINE · EDU · {tag}", list_id, excl))
+        created = _brevo("POST", "/emailCampaigns", campaign_payload(source, f"ENGINE · EDU · {tag}", list_id, excl,
+                                                                     params))
         campaign_id = int(created["id"])
         mine = _brevo("GET", f"/emailCampaigns/{campaign_id}")
         rec = mine.get("recipients") or {}
