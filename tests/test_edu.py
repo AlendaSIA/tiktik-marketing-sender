@@ -257,6 +257,7 @@ class EduAllRule(unittest.TestCase):
     def test_self_sign_up_wins_over_a_cold_source(self):                                 # change 2
         self.assertIn("list_id IN (55, 56, 57, 58)", E.LEADS_SQL)
         self.assertIn("b.email IS NULL AND su.email IS NULL AS is_lead", E.LEADS_SQL)
+        self.assertNotRegex(E.LEADS_SQL, r"\)\s*\n\w+ AS \(")                      # every CTE is followed by a comma
         self.assertTrue(set(E.SIGNUP_LISTS) <= set(E.FRESH_LISTS) <= set(E.INPUT_LISTS))
 
     def test_stale_or_missing_input_is_a_no_go(self):

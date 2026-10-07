@@ -444,7 +444,7 @@ buy AS (  -- bought ANYWHERE: old account, new account, paid shop order, or the 
   UNION DISTINCT SELECT DISTINCT i.email_norm, 'person_bought' FROM `{P}.business_marts.customer_identity` i
          JOIN `{P}.business_marts.customer_master` m USING (master_key) WHERE m.orders > 0 AND i.email_norm LIKE '%@%'),
 g AS (SELECT email, ARRAY_AGG(DISTINCT source ORDER BY source) AS sources FROM src WHERE email LIKE '%@%' GROUP BY 1),
-b AS (SELECT email, STRING_AGG(DISTINCT why ORDER BY why) AS bought FROM buy GROUP BY 1)
+b AS (SELECT email, STRING_AGG(DISTINCT why ORDER BY why) AS bought FROM buy GROUP BY 1),
 su AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{T_BLIST}` WHERE list_id IN (55, 56, 57, 58))
 SELECT CURRENT_TIMESTAMP() AS built_at, g.email, g.sources, b.bought, su.email IS NOT NULL AS signed_up,
        b.email IS NULL AND su.email IS NULL AS is_lead     -- bought anywhere, or signed up himself = NOT a lead
