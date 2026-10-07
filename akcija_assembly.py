@@ -4,8 +4,10 @@ Contract: _CONTRACT-v2.8--price-fields.md, sections WEEKLY AKCIJA PER CONTACT v1
 7ae3f6db1a9f). Sūtīšanas dzinējs 6, MAIN's block of 2026-10-07.
 
 What it does, once a day AFTER the 08:55 send-time run (WA8 v1.4: at send time, never at plan time):
-  week      = the Tuesday on or before the letter date; week_id = ISO year-week of that Tuesday; the week ends on
-              the Monday after (WA7a v1.3). The maker is the row of mkt_control.akcija_week (owner MAIN).
+  week      = WA10 (contract 1f5092311c3e): the NEXT letter to be sent - send date = the Tuesday on or AFTER the
+              day (on a Tuesday: that day), week_id = ISO year-week of that Tuesday, the week ends on the Monday
+              after (WA7a v1.3). The maker is the row of mkt_control.akcija_week (owner MAIN). The audience rows
+              of the day are judged for the same Tuesday, so audience and assembly describe ONE letter.
   audience  = today's rows of mkt_control.shadow_akcija_audience (latest run) with in_audience.
   own block = the contact's rows of mkt_control.akcija_own_goods of the SAME plan_date (never yesterday's): maker
               week = that maker by rnk_maker, MIX week = every maker by rnk; at most 12 (WA7b).
@@ -59,8 +61,8 @@ class SelectorError(ValueError):
 
 # ---------------------------------------------------------------------------------------------- week and texts
 def week_of(letter_date: dt.date):
-    """-> (tuesday, week_id, ending monday). Tuesday on or before the date (WA7a v1.3, WA8 v1.4)."""
-    tue = letter_date - dt.timedelta(days=(letter_date.weekday() - 1) % 7)
+    """-> (send tuesday, week_id, ending monday). WA10: the Tuesday on or AFTER the day - the next letter sent."""
+    tue = letter_date + dt.timedelta(days=(1 - letter_date.weekday()) % 7)
     iso = tue.isocalendar()
     return tue, f"{iso[0]}-W{iso[1]:02d}", tue + dt.timedelta(days=6)
 
@@ -267,6 +269,8 @@ def checks(rows, *, audience_n, week_id, maker, rules_source, goods_n, goods_dro
     empty_subj = [r["email"] for r in rows if not r["subject"]]
     nothing = sum("NOTHING_TO_SHOW" in (r["reason"] or "") for r in rows)
     return [
+        _row("akcija_asm_audience_same_letter", "hard", audience_week == week_id, audience_week,
+             {"assembled_week": week_id, "audience_offer_week": audience_week}),          # WA10
         _row("akcija_asm_rows_equal_audience", "hard", len(rows) == audience_n, len(rows), {"audience": audience_n}),
         _row("akcija_asm_subject_empty", "hard", not empty_subj, len(empty_subj), empty_subj[:20]),
         _row("akcija_asm_subject_has_exclamation", "hard", not bang, len(bang), bang[:20]),
@@ -365,7 +369,7 @@ def run(query, day: dt.date, record: bool, what_if_maker=None) -> dict:
     aud_run = query(f"SELECT run_id, ANY_VALUE(offer_week) AS offer_week FROM `{T_AUD}` WHERE plan_date = DATE '{d}' "
                     f"GROUP BY run_id ORDER BY MAX(planned_at) DESC LIMIT 1")
     run_id = aud_run[0]["run_id"] if aud_run else "none"
-    res = {"plan_date": d, "week_id": week_id, "week_start": tue.isoformat(), "week_end": end.isoformat(),
+    res = {"plan_date": d, "week_id": week_id, "send_date": tue.isoformat(), "week_start": tue.isoformat(), "week_end": end.isoformat(),
            "plan_run": run_id, "recorded": False}
 
     def stop(name, level, why, detail=None):

@@ -383,10 +383,13 @@ def last_sent(history_rows, email_type):
 
 
 def akcija_week(today):
-    """The next weekly akcija: Tuesday on/after today, its ISO week label and the Monday..Sunday it owns."""
+    """The next weekly akcija: Tuesday on/after today, its ISO week label and the akcija week it owns.
+    WA11 (contract 1f5092311c3e): the week in which a personal sales letter excludes a contact from the weekly letter
+    is the send Tuesday through the following Monday, both included - not Monday..Sunday around the Tuesday.
+    -> (send tuesday, week label, first day of the window, last day of the window)."""
     tue = today + dt.timedelta(days=(1 - today.weekday()) % 7)
     iso = tue.isocalendar()
-    return tue, f"{iso[0]}-W{iso[1]:02d}", tue - dt.timedelta(days=1), tue + dt.timedelta(days=5)
+    return tue, f"{iso[0]}-W{iso[1]:02d}", tue, tue + dt.timedelta(days=6)
 
 
 def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week, is_buyer=True):

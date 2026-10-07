@@ -308,7 +308,7 @@ class Akcija(unittest.TestCase):
         return self.J.akcija_row(**base)
 
     def test_week(self):
-        self.assertEqual(self.week, (D(2026, 10, 6), "2026-W41", D(2026, 10, 5), D(2026, 10, 11)))
+        self.assertEqual(self.week, (D(2026, 10, 6), "2026-W41", D(2026, 10, 6), D(2026, 10, 12)))   # WA11: Tuesday..Monday
         self.assertEqual(self.J.akcija_week(D(2026, 10, 6))[0], D(2026, 10, 6))
         self.assertEqual(self.J.akcija_week(D(2026, 10, 7))[0], D(2026, 10, 13))
 

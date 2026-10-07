@@ -28,11 +28,21 @@ def rules(*rows):
 class Week(unittest.TestCase):
     def test_tuesday_to_monday(self):
         self.assertEqual(A.week_of(dt.date(2026, 10, 6)), (dt.date(2026, 10, 6), "2026-W41", dt.date(2026, 10, 12)))
-        self.assertEqual(A.week_of(dt.date(2026, 10, 7))[1], "2026-W41")
-        self.assertEqual(A.week_of(dt.date(2026, 10, 12))[1], "2026-W41")        # the Monday belongs to the week before
+        # WA10: on any other day the NEXT letter is assembled - the Tuesday on or after the day
+        self.assertEqual(A.week_of(dt.date(2026, 10, 7)), (dt.date(2026, 10, 13), "2026-W42", dt.date(2026, 10, 19)))
+        self.assertEqual(A.week_of(dt.date(2026, 10, 12))[1], "2026-W42")        # Monday: tomorrow's letter
         self.assertEqual(A.week_of(dt.date(2026, 10, 13))[1], "2026-W42")
         self.assertEqual(A.week_of(dt.date(2026, 12, 29))[1], "2026-W53")
-        self.assertEqual(A.week_of(dt.date(2027, 1, 4))[1], "2026-W53")
+        self.assertEqual(A.week_of(dt.date(2026, 12, 30))[:2], (dt.date(2027, 1, 5), "2027-W01"))
+
+    def test_same_tuesday_as_the_planner_and_wa11_window(self):
+        import send_lookups as L
+        J = L._job()
+        for d in (dt.date(2026, 10, 5), dt.date(2026, 10, 6), dt.date(2026, 10, 7), dt.date(2026, 12, 30)):
+            tue, label, first, last = J.akcija_week(d)
+            self.assertEqual((tue, label), A.week_of(d)[:2])
+            self.assertEqual((first, last), (tue, tue + dt.timedelta(days=6)))       # Tuesday .. Monday
+            self.assertEqual((first.weekday(), last.weekday()), (1, 0))
 
     def test_texts(self):
         self.assertEqual(A.lidz(dt.date(2026, 10, 12)), "pirmdienai, 12. oktobrim")
@@ -144,8 +154,8 @@ class Assembly(unittest.TestCase):
         x = self.one([own("a")])
         ok = {c["check_name"]: c for c in A.checks([x], audience_n=1, week_id="2026-W41", maker="ZARYS",
               rules_source="DEFAULT", goods_n=6, goods_dropped={}, audience_week="2026-W42")}
-        self.assertTrue(all(c["ok"] for c in ok.values()))
-        self.assertIn('"audience_is_for_this_week": false', ok["akcija_asm_week"]["detail"])
+        self.assertTrue(all(c["ok"] for n, c in ok.items() if n != "akcija_asm_audience_same_letter"))
+        self.assertFalse(ok["akcija_asm_audience_same_letter"]["ok"])
         x["params"]["own"][0]["url"] = "https://plani.tiktik.lv/kabinets.php?k=1"
         x["params"]["blocks"][0]["items"].append(dict(x["params"]["blocks"][0]["items"][0]))
         bad = {c["check_name"]: c["ok"] for c in A.checks([x], audience_n=2, week_id="w", maker="m", rules_source="d",
@@ -162,9 +172,9 @@ class Run(unittest.TestCase):
             if "shadow_akcija_audience" in sql:
                 return [{"run_id": "r1", "offer_week": "2026-W45"}]
             return []
-        res = A.run(q, dt.date(2026, 11, 4), record=False)
+        res = A.run(q, dt.date(2026, 11, 4), record=False)                      # Wednesday -> Tuesday 10.11 = W46
         self.assertEqual(res["status"], "NO_LETTERS")
-        self.assertIn("no akcija_week row for 2026-W45", res["why"])
+        self.assertIn("no akcija_week row for 2026-W46", res["why"])
 
         def q2(sql):
             if "akcija_week`" in sql:
