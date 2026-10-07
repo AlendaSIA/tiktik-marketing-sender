@@ -15,6 +15,9 @@ among today's due letters) posts the dash row like any other hard check; so does
 DAILY SHADOW SAMPLE (CF5, MAIN 2026-10-06): the same step queues one deliverable letter per type in
 mkt_control.shadow_sample (once a day) and starts Cloud Run job tiktik-shadow-sample, which mails them to
 raivis@alenda.lv only. Nothing is marked sent.
+WEEKLY AKCIJA 236 PER CONTACT (contract WA8 v1.4, Sūtīšanas dzinējs 6, 2026-10-07): after the send-time run the same
+bundle's akcija_assembly.py assembles today's letters into mkt_control.akcija_assembled and writes akcija_asm_* rows
+to shadow_selfcheck. SHADOW ONLY - it delivers nothing. A hard akcija_asm_* row posts the dash row like any other.
 Never twice a day: the posted row is remembered in mkt_control.shadow_selfcheck (check_name '_dash_row_posted').
 It sends nothing to anyone and touches nothing but that marker row and the dash file. DRY=1 prints the row only.
 """
@@ -44,6 +47,17 @@ def sendtime(dry):
     return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
 
 
+def assembly(dry):
+    """Weekly akcija 236 per contact, in shadow (the bundle is already unpacked by sendtime). -> None or why not."""
+    try:
+        r = subprocess.run([sys.executable, "/tmp/eng/akcija_assembly.py"] + ([] if dry else ["--record"]),
+                           capture_output=True, text=True, timeout=300)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print(r.stdout[:400])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
 def bq(sql):
     out = subprocess.check_output(["bq", "--project_id", P, "query", "--nouse_legacy_sql", "--format=json",
                                    "--max_rows=200", sql], stderr=subprocess.DEVNULL).decode()
@@ -57,6 +71,7 @@ def main():
           f"AND check_name = '_dash_row_posted' LIMIT 1"):
         print("already posted today"); return 0
     st_err = sendtime(os.environ.get("DRY") == "1") if runs else None
+    asm_err = assembly(os.environ.get("DRY") == "1") if runs and st_err is None else None   # needs today's SG7 rows
     if not runs:
         what, run_id = "Ēnas plāns šodien nav izpildīts (nav shadow_run_report rindas) — nekas nav sūtīts", "none"
     else:
@@ -73,6 +88,9 @@ def main():
                     + " — nekas nav sūtīts; detaļas mkt_control.shadow_selfcheck")
         elif st_err:
             what = ("Sūtīšanas brīža vārtu pārbaude (L8/L9/L10) neizdevās — " + st_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
+        elif asm_err:
+            what = ("Nedēļas akcijas (236) salikšana ēnā neizdevās — " + asm_err.replace("\n", " ")
                     + " — nekas nav sūtīts")
         else:
             print("self-check clean - no dash row"); return 0
