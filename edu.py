@@ -1087,6 +1087,19 @@ def rawkeys(ids) -> int:
     return 0
 
 
+def _download(url) -> str:
+    """The export file. Brevo's link may want the key; a refusal is reported with the host and the status."""
+    import campaign as C
+    last = None
+    for headers in ({}, {"api-key": C.api_key()}, {"api-key": C.api_key(), "accept": "application/json"}):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as f:
+                return f.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            last = f"download {urllib.parse.urlsplit(url).netloc}{urllib.parse.urlsplit(url).path[:40]} -> {e.code} {e.read()[:120]!r}"
+    raise RuntimeError(last)
+
+
 def history(q, budget_s=480) -> int:
     """Who received which campaign, refreshed from Brevo: for every SENT campaign the history does not hold yet, a
     recipients export (Brevo builds a file; nothing in the account changes) appended as a new snapshot. Then one
@@ -1116,8 +1129,7 @@ def history(q, budget_s=480) -> int:
                 time.sleep(3)
             if not url:
                 raise RuntimeError("export not completed")
-            with urllib.request.urlopen(url, timeout=60) as f:
-                emails = emails_of_export(f.read().decode("utf-8", "replace"))
+            emails = emails_of_export(_download(url))
             for part in chunks(emails, 5000):
                 q(f"INSERT INTO `{T_HIST}` (snapshot_id, campaign_id, email) SELECT @s, CAST(@c AS INT64), e "
                   f"FROM UNNEST(@es) AS e", s=snap, c=str(cid), es=part)
