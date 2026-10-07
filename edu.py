@@ -39,6 +39,7 @@ P = "jaunais-za-aizv04022026"
 M = f"{P}.mkt_control"
 T_LETTER, T_SEGMENT, T_AUD, T_GATE = f"{M}.edu_letter", f"{M}.edu_segment", f"{M}.edu_audience", f"{M}.edu_gate"
 T_BREVO, T_SENT, T_LOG = f"{M}.edu_brevo", f"{M}.edu_sent", f"{M}.edu_log"
+T_BLIST = f"{M}.edu_brevo_list"                 # snapshot of Brevo lists (EE, EN), read by the campaign identity
 SEND_JOB, REGION = "tiktik-edu-send", "europe-west1"
 SALES_JOB = "tiktik-marketing-sender"
 TEST_RECIPIENT = "raivis@alenda.lv"            # the only address a test_only letter can reach - a constant
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS `{T_BREVO}` (send_date DATE, letter_code STRING, chec
 CREATE TABLE IF NOT EXISTS `{T_SENT}` (send_date DATE, letter_code STRING, campaign_id INT64,
   source_campaign_id INT64, brevo_list_id INT64, master_key STRING, email STRING, sent_at TIMESTAMP,
   check_run STRING, test_only BOOL);
+CREATE TABLE IF NOT EXISTS `{T_BLIST}` (list_id INT64, email STRING, fetched_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS `{T_LOG}` (send_date DATE, letter_code STRING, logged_at TIMESTAMP, who STRING, event STRING,
   detail STRING);
 """
@@ -521,6 +523,74 @@ def _facts(camp) -> dict:
             "unsubscribe_links": C.unsubscribe_links(html), "html_bytes": len(html.encode("utf-8"))}
 
 
+def fill_list(q, d, code, who, name, emails) -> dict:
+    """Create a Brevo list and put exactly these e-mails into it, 150 a call. THE SAME CODE for the size rehearsal
+    and for the send. Creates no campaign and sends nothing."""
+    t0 = time.time()
+    list_id = int(_brevo("POST", "/contacts/lists", {"name": name, "folderId": 1})["id"])
+    ok, failed, errors, calls = [], [], [], 0
+    for part in chunks(list(emails), ADD_CHUNK):
+        calls += 1
+        try:
+            r = _brevo("POST", f"/contacts/lists/{list_id}/contacts/add", {"emails": part}).get("contacts") or {}
+            ok += [e.lower() for e in r.get("success") or []]
+            failed += [e.lower() if isinstance(e, str) else str(e) for e in r.get("failure") or []]
+        except RuntimeError as e:
+            failed += part
+            errors.append(str(e)[:300])
+    asked = len(emails)
+    out = {"list_id": list_id, "name": name, "asked": asked, "calls": calls, "added": len(ok),
+           "not_added": asked - len(ok), "not_added_pct": round(100.0 * (asked - len(ok)) / max(asked, 1), 2),
+           "limit_pct": ADD_FAIL_PCT, "seconds": round(time.time() - t0, 1), "call_errors": errors[:5],
+           "not_added_examples": failed[:10]}
+    log(q, d, code, who, "LIST_FILLED", out)
+    return {**out, "ok": ok, "failed": failed}
+
+
+def snapshot_lists(q, list_ids) -> dict:
+    """What Brevo holds in these lists NOW -> mkt_control.edu_brevo_list (replaced per list). GET only."""
+    out = {}
+    for lid in list_ids:
+        emails, offset = [], 0
+        while True:
+            r = _brevo("GET", f"/contacts/lists/{int(lid)}/contacts?limit=500&offset={offset}")
+            page = [(c.get("email") or "").strip().lower() for c in r.get("contacts") or []]
+            emails += [e for e in page if e]
+            offset += 500
+            if len(page) < 500:
+                break
+        q(f"DELETE FROM `{T_BLIST}` WHERE list_id = @l", l=int(lid))
+        for part in chunks(sorted(set(emails)), 5000):
+            q(f"INSERT INTO `{T_BLIST}` (list_id, email, fetched_at) SELECT @l, e, CURRENT_TIMESTAMP() "
+              f"FROM UNNEST(@es) AS e", l=int(lid), es=part)
+        out[int(lid)] = len(set(emails))
+    return out
+
+
+def rehearse(q, d, code, check_run, name) -> int:
+    """SIZE REHEARSAL (MAIN 2026-10-07 13:36): the frozen audience of a check goes into a Brevo list with the send's
+    own list filler. NO campaign is created and nothing is sent; the list stays, attached to nothing."""
+    who = "edu.rehearse"
+    aud = [r["email"] for r in q(f"SELECT email FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c "
+                                 f"AND check_run = @cr ORDER BY email", d=d, c=code, cr=check_run)]
+    if not aud or not name:
+        print("EDU_REHEARSAL " + json.dumps({"done": False, "why": "no frozen audience for that check, or no list name"}))
+        return 3
+    lists = snapshot_lists(q, (EE_LIST, EN_LIST))
+    f = fill_list(q, d, code, who, name, aud)
+    back = _brevo("GET", f"/contacts/lists/{f['list_id']}")
+    res = {k: v for k, v in f.items() if k not in ("ok", "failed")}
+    res.update(done=True, check_run=check_run, list_read_back={k: back.get(k) for k in ("id", "name", "uniqueSubscribers",
+               "totalSubscribers", "totalBlacklisted", "campaignStats")}, would_pass_2pct_rule=f["not_added_pct"] <= ADD_FAIL_PCT,
+               brevo_lists_snapshot=lists, campaign_created=False, sent=False)
+    if f["failed"]:
+        q(f"INSERT INTO `{T_LOG}` (send_date, letter_code, logged_at, who, event, detail) "
+          f"SELECT @d, @c, CURRENT_TIMESTAMP(), @w, 'LIST_NOT_ADDED', e FROM UNNEST(@es) AS e",
+          d=d, c=code, w=who, es=f["failed"][:5000])
+    print("EDU_REHEARSAL " + json.dumps(res, ensure_ascii=False, default=str))
+    return 0
+
+
 def verify(q, d, code, check_run) -> int:
     """GET only: what Brevo holds NOW for the source campaign -> one mkt_control.edu_brevo row for this check."""
     L = letter_row(q, d, code)
@@ -586,19 +656,8 @@ def send(q, d, code, now=None) -> int:
     campaign_id = list_id = None
     try:
         tag = f"{code} {d}" + (" TESTS" if test_only else "")
-        list_id = int(_brevo("POST", "/contacts/lists", {"name": f"ENGINE EDU {tag} {check_run[-6:]}", "folderId": 1})["id"])
-        ok, failed = [], []
-        for part in chunks([a["email"] for a in aud], ADD_CHUNK):
-            try:
-                r = _brevo("POST", f"/contacts/lists/{list_id}/contacts/add", {"emails": part}).get("contacts") or {}
-                ok += [e.lower() for e in r.get("success") or []]
-                failed += [e.lower() if isinstance(e, str) else str(e) for e in r.get("failure") or []]
-            except RuntimeError as e:
-                failed += part
-                log(q, d, code, who, "LIST_ADD_ERROR", str(e)[:300])
-        fail_pct = 100.0 * (len(aud) - len(ok)) / len(aud)
-        log(q, d, code, who, "LIST_FILLED", {"list_id": list_id, "asked": len(aud), "added": len(ok),
-                                             "not_added": len(aud) - len(ok), "examples": failed[:10]})
+        f = fill_list(q, d, code, who, f"ENGINE EDU {tag} {check_run[-6:]}", [a["email"] for a in aud])
+        list_id, ok, fail_pct = f["list_id"], f["ok"], f["not_added_pct"]
         if not ok or fail_pct > ADD_FAIL_PCT or (test_only and ok != [TEST_RECIPIENT]):
             raise RuntimeError(f"LIST_NOT_FILLED added={len(ok)} of {len(aud)} ({fail_pct:.1f}% missing, limit {ADD_FAIL_PCT}%)")
         excl = exclusion_lists(test_only)
@@ -657,7 +716,7 @@ def main(argv) -> int:
     code = (args.get("letter") or os.environ.get("EDU_LETTER") or "").strip()
     if mode in ("setup", "prepare"):
         return {"setup": setup, "prepare": prepare}[mode](query)
-    if mode not in ("check", "stop", "status", "verify", "send") or not code:
+    if mode not in ("check", "stop", "status", "verify", "send", "rehearse") or not code:
         print("usage: edu.py setup | prepare | check|stop|status --date=YYYY-MM-DD --letter=CODE [--by=.. --why=..] ; "
               "job: EDU_MODE=verify|send EDU_DATE EDU_LETTER [EDU_CHECK_RUN]")
         return 2
@@ -670,6 +729,9 @@ def main(argv) -> int:
         return stop(query, d, code, args["by"], args["why"])
     if mode == "status":
         return status(query, d, code)
+    if mode == "rehearse":
+        return rehearse(query, d, code, os.environ.get("EDU_CHECK_RUN") or args.get("check_run") or "",
+                        os.environ.get("EDU_LIST_NAME") or args.get("name") or "")
     if mode == "verify":
         return verify(query, d, code, os.environ.get("EDU_CHECK_RUN") or args.get("check_run") or "manual")
     return send(query, d, code)

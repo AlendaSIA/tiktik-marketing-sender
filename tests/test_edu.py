@@ -111,6 +111,11 @@ class Send(unittest.TestCase):
     def test_this_path_writes_no_sales_table_and_has_one_send_call(self):
         code = open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read().split('"""', 2)[2]
         self.assertEqual(code.count("/sendNow"), 1)
+        self.assertEqual(code.count('"/emailCampaigns", campaign_payload('), 1)       # one place creates a campaign
+        reh = code[code.index("def rehearse("):code.index("def verify(")]
+        self.assertNotIn("emailCampaigns", reh)                                        # the rehearsal: no campaign, no send
+        self.assertNotIn("sendNow", reh)
+        self.assertEqual(code.count("fill_list(q, d, code, who,"), 2)                  # rehearsal and send: one filler
         for word in ("send_log", "contact_sequence", "shadow_send_plan", "letter_fields`", "/smtp/email", "pd_record",
                      "track_enabled` SET", "UPDATE "):
             self.assertNotIn(word, code, word)
