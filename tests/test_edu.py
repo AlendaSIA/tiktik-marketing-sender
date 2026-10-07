@@ -72,7 +72,9 @@ def sendfacts(**k):
 class Rules(unittest.TestCase):
     def test_two_rules_differ_only_in_the_track_filter(self):
         glove, everyone = E.audience_sql("lv_glove_buyers"), E.audience_sql("lv_all")
-        self.assertEqual(sorted(E.RULES), ["lv_all", "lv_glove_buyers"])
+        self.assertEqual(sorted(E.RULES), ["lv_all", "lv_edu_all", "lv_glove_buyers"])
+        with self.assertRaises(KeyError):
+            E.audience_sql("lv_edu_all")
         self.assertNotEqual(glove, everyone)
         self.assertEqual(glove.count(" AND info_track = 'cimdi'"), 1)
         self.assertEqual(glove.replace(" AND info_track = 'cimdi'", ""), everyone)      # nothing else differs
@@ -182,6 +184,80 @@ class Send(unittest.TestCase):
             self.assertNotIn(word, code, word)
         writes = [ln for ln in code.splitlines() if "INSERT INTO" in ln or "CREATE OR REPLACE" in ln]
         self.assertTrue(writes and all("{T_" in ln for ln in writes), writes)
+
+
+
+class EduAllRule(unittest.TestCase):
+    """lv_edu_all (Raivis 2026-10-07): every old contact of the hand list, never a B2B lead."""
+    BASE = {"l3": True, "l4": False, "l46": False, "l75": False, "lead": False, "suppressed": False, "blocked": False,
+            "language": None, "in_engine": False, "excluded_reason": None, "master_key": None, "in_lv_all": False}
+
+    def row(self, email, **kw):
+        return dict(self.BASE, email=email, **kw)
+
+    def test_nobody_who_must_stay_out_can_enter(self):
+        for kw, gate in [({"lead": True}, "B2B_LEAD"), ({"suppressed": True}, "SUPPRESSED"),
+                         ({"excluded_reason": "SUPPRESSED", "in_engine": True}, "SUPPRESSED"),
+                         ({"l4": True}, "LIST_4_SUPPRESSION"), ({"l46": True}, "EN_LIST"), ({"l75": True}, "EE_LIST"),
+                         ({"language": "en"}, "NOT_LV"), ({"excluded_reason": "EN_PENDING"}, "NOT_LV"),
+                         ({"blocked": True}, "BREVO_BLOCKLISTED"), ({"excluded_reason": "BLOCKED_OR_UNKNOWN"}, "BLOCKED_OR_UNKNOWN"),
+                         ({"excluded_reason": "A_REASON_NOBODY_HAS_SEEN"}, "A_REASON_NOBODY_HAS_SEEN")]:
+            for extra in ({}, {"in_lv_all": True, "in_engine": True, "master_key": "m1"}):
+                self.assertEqual(E.edu_all_gate(self.row("x@y.lv", **dict(extra, **kw))), gate, kw)
+                self.assertEqual([g for _, _, g in E.edu_all_gates([self.row("x@y.lv", **dict(extra, **kw))])], [gate])
+        # BigQuery answers booleans as the strings "true" / "false"
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", lead="true")), "B2B_LEAD")
+        self.assertEqual(E.edu_all_gate(self.row("x@y.lv", lead="false", l4="false", l46="false", l75="false",
+                                                 suppressed="false", blocked="false")), "IN")
+
+    def test_who_enters(self):
+        for kw in ({}, {"language": "lv"}, {"excluded_reason": "B2B_FLOW", "in_engine": True},
+                   {"excluded_reason": "NOT_TIKTIK_BUYER", "in_engine": True},
+                   {"excluded_reason": "PERSONAL_LETTER_THIS_WEEK", "in_engine": True}, {"l3": False, "in_lv_all": True}):
+            self.assertEqual(E.edu_all_gate(self.row("x@y.lv", **kw)), "IN", kw)
+
+    def test_every_lv_all_address_is_inside(self):
+        rows = [self.row(f"p{i}@y.lv", in_lv_all=True, in_engine=True, master_key=f"m{i}", language="lv",
+                         l3=bool(i % 2)) for i in range(50)]
+        rows += [self.row(f"second{i}@y.lv", master_key=f"m{i}") for i in range(50)]      # other addresses of the same people
+        rows += [self.row(f"old{i}@y.lv") for i in range(20)]
+        got = {e: g for e, _, g in E.edu_all_gates(rows)}
+        self.assertTrue(all(got[f"p{i}@y.lv"] == "IN" for i in range(50)))
+        self.assertTrue(all(got[f"second{i}@y.lv"] == "SECOND_ADDRESS_OF_PERSON" for i in range(50)))
+        self.assertTrue(all(got[f"old{i}@y.lv"] == "IN" for i in range(20)))
+
+    def test_no_duplicates_and_one_address_per_person(self):
+        rows = [self.row("B@y.lv", master_key="m"), self.row("a@y.lv", master_key="m"), self.row("a@y.lv", master_key="m"),
+                self.row(" b@y.lv ", master_key="m"), self.row("c@y.lv", master_key="m", lead=True),
+                self.row("n1@y.lv"), self.row("n2@y.lv"), self.row("", master_key="m")]
+        got = E.edu_all_gates(rows)
+        self.assertEqual(len(got), len({e for e, _, _ in got}))
+        ins = [e for e, _, g in got if g == "IN"]
+        self.assertEqual(sorted(ins), ["a@y.lv", "n1@y.lv", "n2@y.lv"])
+        self.assertEqual(dict((e, g) for e, _, g in got)["c@y.lv"], "B2B_LEAD")
+        # the engine's own address wins over an alphabetically earlier one
+        got = dict((e, g) for e, _, g in E.edu_all_gates([self.row("a@y.lv", master_key="m"),
+                                                          self.row("z@y.lv", master_key="m", in_engine=True, in_lv_all=True)]))
+        self.assertEqual(got, {"a@y.lv": "SECOND_ADDRESS_OF_PERSON", "z@y.lv": "IN"})
+
+    def test_stale_or_missing_input_is_a_no_go(self):
+        self.assertEqual(E.stale_inputs([{"name": "a", "day": "2026-10-08"}, {"name": "b", "day": "2026-10-07"},
+                                         {"name": "c", "day": None}], "2026-10-08"), ["b", "c"])
+        base = {"rule": "lv_edu_all", "letter": {"approved_sha256": "x", "armed": True}}
+        self.assertTrue(any(r.startswith("EDU_ALL_INPUT_NOT_OF_TODAY") for r in E.check_reasons(dict(base))))            # not checked
+        self.assertTrue(any(r.startswith("EDU_ALL_INPUT_NOT_OF_TODAY=b2b_lead_email")
+                            for r in E.check_reasons(dict(base, inputs_stale=["b2b_lead_email"]))))
+        self.assertFalse(any(r.startswith("EDU_ALL_INPUT") for r in E.check_reasons(dict(base, inputs_stale=[]))))
+        self.assertFalse(any(r.startswith("EDU_ALL_INPUT") for r in E.check_reasons(dict(base, rule="lv_all"))))
+
+    def test_the_texts(self):
+        sql = E.edu_all_sql()
+        for must in ("list_id IN (3, 4, 46, 75)", "b2b_lead_email", "email_suppression_all", "brevo_contacts_snapshot",
+                     "customer_identity"):
+            self.assertIn(must, sql)
+        self.assertNotIn(" LIKE CONCAT", E.LEADS_SQL)                       # the Pipedrive match is an exact split
+        self.assertIn("'shop_paid'", E.LEADS_SQL)
+        self.assertIn("'old_account'", E.LEADS_SQL)
 
 
 if __name__ == "__main__":

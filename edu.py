@@ -45,7 +45,15 @@ SALES_JOB = "tiktik-marketing-sender"
 TEST_RECIPIENT = "raivis@alenda.lv"            # the only address a test_only letter can reach - a constant
 # Audience rules. They differ ONLY in the track filter; gates, freeze and checks are the same code.
 RULES = {"lv_glove_buyers": " AND info_track = 'cimdi'",     # LV people whose own category is gloves
-         "lv_all": ""}                                        # every LV person the engine holds (MAIN 2026-10-07 14:21)
+         "lv_all": "",                                        # every LV person the engine holds (MAIN 2026-10-07 14:21)
+         "lv_edu_all": None}   # every OLD contact of the hand list minus B2B leads (Raivis 2026-10-07 15:17); own SQL
+EDU_ALL = "lv_edu_all"
+T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
+INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
+FRESH_LISTS = (3, 4, 46, 75, 52, 53)                                 # these must be of the day of the check
+# engine reasons that do NOT keep a person out of the educational letter (Raivis 2026-10-07: B2B-flow customers and
+# non-tiktik buyers get it). Any other reason - also one nobody has seen yet - keeps the address out.
+EDU_ALL_PASS_REASONS = (None, "", "PERSONAL_LETTER_THIS_WEEK", "B2B_FLOW", "NOT_TIKTIK_BUYER")
 SUPPRESSION_LIST, EN_LIST, EE_LIST = 4, 46, 75  # Brevo lists: tiktik_suppression, EN_foreign_LANG_en, EE_klienti_tel372
 EXCLUDE_LISTS = (SUPPRESSION_LIST, EN_LIST, EE_LIST)
 TEST_EXCLUDE_LISTS = (EN_LIST, EE_LIST)         # the test address itself sits in list 4 (measured 2026-10-07)
@@ -93,6 +101,54 @@ def tolerance_ok(n: int, expected, pct) -> bool:
     return abs(n - expected) * 100 <= (pct if pct is not None else DEFAULT_TOLERANCE_PCT) * expected
 
 
+def edu_all_gate(r: dict) -> str:
+    """ONE address of the hand list -> 'IN' or the first reason it stays out. Pure; order = the order of the funnel."""
+    reason = r.get("excluded_reason")
+    if _b(r.get("l4")):
+        return "LIST_4_SUPPRESSION"
+    if _b(r.get("l46")):
+        return "EN_LIST"
+    if _b(r.get("l75")):
+        return "EE_LIST"
+    if _b(r.get("lead")):
+        return "B2B_LEAD"
+    if _b(r.get("suppressed")) or reason == "SUPPRESSED":
+        return "SUPPRESSED"
+    if _b(r.get("blocked")):
+        return "BREVO_BLOCKLISTED"
+    if (r.get("language") or "lv").strip().lower() != "lv" or reason == "EN_PENDING":
+        return "NOT_LV"
+    if reason not in EDU_ALL_PASS_REASONS:
+        return str(reason)
+    return "IN"
+
+
+def edu_all_gates(rows) -> list:
+    """All addresses -> [(email, master_key, gate)], one row per address. Among the addresses that pass, a person the
+    engine knows (master_key) keeps ONE: the engine's own address first, then one of list 3, then by alphabet."""
+    seen, out, best = set(), [], {}
+    for r in rows:
+        e = (r.get("email") or "").strip().lower()
+        if not e or e in seen:
+            continue
+        seen.add(e)
+        g, mk = edu_all_gate(r), (r.get("master_key") or None)
+        out.append([e, mk, g])
+        if g == "IN" and mk:
+            rank = (not _b(r.get("in_lv_all")), not _b(r.get("in_engine")), not _b(r.get("l3")), e)
+            if mk not in best or rank < best[mk][0]:
+                best[mk] = (rank, e)
+    for row in out:
+        if row[2] == "IN" and row[1] and best[row[1]][1] != row[0]:
+            row[2] = "SECOND_ADDRESS_OF_PERSON"
+    return [tuple(x) for x in out]
+
+
+def stale_inputs(rows, today: str) -> list:
+    """Which inputs of lv_edu_all are NOT of the day of the check. rows = [{name, day}]. Missing = stale."""
+    return sorted(r["name"] for r in rows if str(r.get("day") or "")[:10] != today)
+
+
 def exclusion_lists(test_only: bool) -> list:
     return list(TEST_EXCLUDE_LISTS if test_only else EXCLUDE_LISTS)
 
@@ -126,6 +182,8 @@ def check_reasons(s: dict) -> list:
         r.append("SALES_SWITCH_OPEN=" + str(s["sales_switch_open"])[:120])
     if s.get("tracks_enabled") not in (0, "0"):
         r.append(f"TRACK_ENABLED={s.get('tracks_enabled')}")
+    if s.get("rule") == EDU_ALL and s.get("inputs_stale") != []:
+        r.append("EDU_ALL_INPUT_NOT_OF_TODAY=" + ",".join(s.get("inputs_stale") or ["not checked"])[:200])
     if s.get("segment_age_h") is None or s["segment_age_h"] > SEGMENT_MAX_AGE_H or not s.get("segment_rows"):
         r.append(f"SEGMENT_MISSING_OR_OLD age_h={s.get('segment_age_h')}")
     n = s.get("audience")
@@ -338,6 +396,8 @@ WHERE p.email IS NOT NULL""")
 def audience_sql(rule: str) -> str:
     """One text for every rule; the rule adds its track filter and nothing else. An unknown rule raises."""
     track = RULES[rule]
+    if track is None:
+        raise KeyError(rule)                       # lv_edu_all has its own text (edu_all_sql) and its own gates
     return f"""
 WITH g AS (SELECT DISTINCT email FROM `{T_SEGMENT}` WHERE language = 'lv'{track}),
 a AS (SELECT LOWER(TRIM(email)) AS email, master_key, excluded_reason FROM `{M}.shadow_akcija_audience`
@@ -351,9 +411,116 @@ SELECT g.email, a.master_key,
 FROM g LEFT JOIN a USING (email) LEFT JOIN s USING (email)"""
 
 
+LEADS_SQL = f"""
+CREATE OR REPLACE TABLE `{T_LEAD}` AS
+WITH ex AS (  -- Pipedrive persons, EXACT split of email_all (never LIKE)
+  SELECT p.id AS person_id, p.org_id, LOWER(TRIM(e)) AS email
+  FROM `{P}.channel_raw.pipedrive_persons` p,
+       UNNEST(SPLIT(REGEXP_REPLACE(IFNULL(p.email_all, ''), r'[;\\s]+', ','), ',')) e
+  WHERE REGEXP_CONTAINS(TRIM(e), r'^[^@\\s,]+@[^@\\s,]+\\.[^@\\s,]+$')),
+l4 AS (SELECT id FROM `{P}.channel_raw.pipedrive_orgs`
+       WHERE 4 IN UNNEST(ARRAY(SELECT SAFE_CAST(x AS INT64) FROM UNNEST(JSON_VALUE_ARRAY(raw_json, '$.label_ids')) x))),
+src AS (
+  SELECT LOWER(TRIM(email)) AS email, IF(REGEXP_CONTAINS(tag, r'(^|,)dent-'), 'cold_mail_dent', 'cold_mail_gp') AS source
+  FROM `{P}.business_marts.brevo_events_raw`
+  WHERE event = 'delivered' AND REGEXP_CONTAINS(IFNULL(tag, ''), r'(^|,)(gp|dent)-')
+  UNION ALL SELECT ex.email, 'pd_org_label4' FROM ex JOIN l4 ON l4.id = ex.org_id
+  UNION ALL SELECT LOWER(TRIM(email)), source FROM `{T_REG}` WHERE status IN ('', 'JAUNS')
+  UNION ALL SELECT LOWER(TRIM(email)), CONCAT('brevo_list_', CAST(list_id AS STRING))
+            FROM `{T_BLIST}` WHERE list_id IN (52, 53)),
+buy AS (  -- bought ANYWHERE: old account, new account, paid shop order, or the engine's person has orders
+  SELECT DISTINCT LOWER(TRIM(e)) AS email, 'old_account' AS why FROM `{P}.legacy_paytraq.client_map`,
+         UNNEST(REGEXP_EXTRACT_ALL(IFNULL(emails, ''), r'[^,; ]+@[^,; ]+')) e WHERE docs > 0
+  UNION DISTINCT SELECT DISTINCT LOWER(TRIM(c.email)), 'new_account' FROM `{P}.paytraq_core.clients` c
+         JOIN `{P}.paytraq_core.sales_documents_list` d ON d.client_id = c.client_id
+         WHERE d.document_type = 'sale' AND d.document_status NOT IN ('voided', 'draft') AND c.email LIKE '%@%'
+  UNION DISTINCT SELECT DISTINCT LOWER(TRIM(email)), 'shop_paid' FROM `{P}.business_marts.mozello_orders`
+         WHERE payment_status = 'paid' AND email LIKE '%@%'
+  UNION DISTINCT SELECT DISTINCT i.email_norm, 'person_bought' FROM `{P}.business_marts.customer_identity` i
+         JOIN `{P}.business_marts.customer_master` m USING (master_key) WHERE m.orders > 0 AND i.email_norm LIKE '%@%'),
+g AS (SELECT email, ARRAY_AGG(DISTINCT source ORDER BY source) AS sources FROM src WHERE email LIKE '%@%' GROUP BY 1),
+b AS (SELECT email, STRING_AGG(DISTINCT why ORDER BY why) AS bought FROM buy GROUP BY 1)
+SELECT CURRENT_TIMESTAMP() AS built_at, g.email, g.sources, b.bought, b.email IS NULL AS is_lead
+FROM g LEFT JOIN b USING (email)"""
+
+
+def inputs(q) -> int:
+    """The inputs of lv_edu_all, made fresh: the Brevo lists (snapshot job, GET only) and the B2B-lead table.
+    A B2B lead = a cold-outreach contact that never bought anywhere. Exit 0 only if both are of now."""
+    out = subprocess.run(["gcloud", "run", "jobs", "execute", SEND_JOB, "--region", REGION, "--project", P, "--wait",
+                          "--update-env-vars", "^@^EDU_MODE=snapshot@EDU_SNAPSHOT_LISTS=" + ",".join(map(str, INPUT_LISTS))],
+                         capture_output=True, text=True, timeout=160)
+    q(LEADS_SQL)
+    r = q(f"SELECT COUNT(*) AS n, COUNTIF(is_lead) AS leads, COUNTIF(NOT is_lead) AS cold_but_bought FROM `{T_LEAD}`")[0]
+    stale = edu_all_stale(q)
+    print("EDU_INPUTS " + json.dumps({"snapshot_job_exit": out.returncode, "lead_table": r, "not_of_today": stale}))
+    return 0 if not out.returncode and not stale and int(r["leads"]) > 0 else 1
+
+
+def edu_all_stale(q) -> list:
+    lists = ", ".join(map(str, FRESH_LISTS))
+    rows = q(f"""
+SELECT CONCAT('brevo_list_', CAST(l AS STRING)) AS name,
+       CAST((SELECT DATE(MAX(fetched_at), 'Europe/Riga') FROM `{T_BLIST}` WHERE list_id = l) AS STRING) AS day,
+       CAST(CURRENT_DATE('Europe/Riga') AS STRING) AS today
+FROM UNNEST([{lists}]) AS l
+UNION ALL SELECT 'b2b_lead_email', CAST((SELECT DATE(MAX(built_at), 'Europe/Riga') FROM `{T_LEAD}`) AS STRING),
+       CAST(CURRENT_DATE('Europe/Riga') AS STRING)
+UNION ALL SELECT 'brevo_contacts_snapshot', CAST((SELECT DATE(TIMESTAMP_MILLIS(last_modified_time), 'Europe/Riga')
+       FROM `{P}.business_marts.__TABLES__` WHERE table_id = 'brevo_contacts_snapshot') AS STRING),
+       CAST(CURRENT_DATE('Europe/Riga') AS STRING)""")
+    return stale_inputs(rows, rows[0]["today"]) if rows else ["no answer"]
+
+
+def edu_all_sql() -> str:
+    """Every address of Brevo list 3 (and every lv_all address, should one not be in the list yet) with the facts the
+    gates need. One row per address; the gates themselves are edu_all_gate (pure, tested)."""
+    lv_all = audience_sql("lv_all")
+    return f"""
+WITH bl AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, list_id FROM `{T_BLIST}` WHERE list_id IN (3, 4, 46, 75)),
+lvall AS (SELECT DISTINCT email FROM ({lv_all}) WHERE gate = 'IN'),
+base AS (SELECT email FROM bl WHERE list_id = 3 UNION DISTINCT SELECT email FROM lvall),
+a AS (SELECT LOWER(TRIM(email)) AS email, MAX(master_key) AS master_key, MAX(excluded_reason) AS excluded_reason
+      FROM `{M}.shadow_akcija_audience` WHERE plan_date = @d AND run_id = @run GROUP BY 1),
+i AS (SELECT email_norm AS email, MIN(master_key) AS master_key FROM `{P}.business_marts.customer_identity`
+      WHERE email_norm IS NOT NULL GROUP BY 1),
+s AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.email_suppression_all`),
+ld AS (SELECT DISTINCT email FROM `{T_LEAD}` WHERE is_lead),
+bs AS (SELECT LOWER(TRIM(email)) AS email, LOGICAL_OR(email_blocklisted OR NOT email_subscribed) AS blocked
+       FROM `{P}.business_marts.brevo_contacts_snapshot` GROUP BY 1),
+sg AS (SELECT email, MIN(language) AS language FROM `{T_SEGMENT}` GROUP BY 1),
+x AS (SELECT email, LOGICAL_OR(list_id = 3) AS l3, LOGICAL_OR(list_id = 4) AS l4, LOGICAL_OR(list_id = 46) AS l46,
+             LOGICAL_OR(list_id = 75) AS l75 FROM bl GROUP BY 1)
+SELECT b.email, IFNULL(x.l3, FALSE) AS l3, IFNULL(x.l4, FALSE) AS l4, IFNULL(x.l46, FALSE) AS l46,
+       IFNULL(x.l75, FALSE) AS l75,
+       ld.email IS NOT NULL AS lead, s.email IS NOT NULL AS suppressed, IFNULL(bs.blocked, FALSE) AS blocked,
+       sg.language, a.email IS NOT NULL AS in_engine, a.excluded_reason,
+       COALESCE(a.master_key, i.master_key) AS master_key, lvall.email IS NOT NULL AS in_lv_all
+FROM base b LEFT JOIN x USING (email) LEFT JOIN a USING (email) LEFT JOIN i USING (email) LEFT JOIN s USING (email)
+LEFT JOIN ld USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN lvall USING (email)"""
+
+
+def build_audience_edu_all(q, d, code, check_run, plan_run, test_only):
+    gates = edu_all_gates(q(edu_all_sql(), d=d, run=plan_run))
+    funnel = {}
+    for _, _, g in gates:
+        funnel[g] = funnel.get(g, 0) + 1
+    ins = [(TEST_RECIPIENT, "test")] if test_only else [(e, mk or "") for e, mk, g in gates if g == "IN"]
+    for part in chunks(ins, 4000):
+        q(f"INSERT INTO `{T_AUD}` (send_date, letter_code, check_run, email, master_key, built_at) "
+          f"SELECT @d, @c, @cr, e, NULLIF(k, ''), CURRENT_TIMESTAMP() FROM UNNEST(@es) AS e WITH OFFSET o "
+          f"JOIN UNNEST(@ks) AS k WITH OFFSET o2 ON o = o2", d=d, c=code, cr=check_run,
+          es=[x[0] for x in part], ks=[x[1] for x in part])
+    n = int(q(f"SELECT COUNT(*) AS n FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr",
+              d=d, c=code, cr=check_run)[0]["n"])
+    return n, funnel
+
+
 def build_audience(q, d, code, check_run, plan_run, test_only, rule):
     """Freeze the audience of this check. -> (n, funnel). The real rule is always measured; a test_only letter
     then keeps ONE row, the test recipient - whatever the rule says about him."""
+    if rule == EDU_ALL:
+        return build_audience_edu_all(q, d, code, check_run, plan_run, test_only)
     sql = audience_sql(rule)
     funnel = {r["gate"]: int(r["n"]) for r in q(f"SELECT gate, COUNT(*) AS n FROM ({sql}) GROUP BY 1", d=d, run=plan_run)}
     if test_only:
@@ -447,7 +614,9 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
                                                                 else round(int(seg["age_min"]) / 60, 1))
         s["rule"] = (L or {}).get("audience_rule")
         s["rule_unknown"] = bool(L) and s["rule"] not in RULES
-        if L and s["plan_run"] and s["segment_rows"] and not s["rule_unknown"]:
+        if s["rule"] == EDU_ALL:
+            s["inputs_stale"] = edu_all_stale(q)
+        if L and s["plan_run"] and s["segment_rows"] and not s["rule_unknown"] and not s.get("inputs_stale"):
             s["audience"], s["funnel"] = build_audience(q, d, code, check_run, s["plan_run"], L["test_only"], s["rule"])
             bad = q(f"SELECT COUNT(*) - COUNT(DISTINCT a.email) AS dup, COUNTIF(s.email IS NOT NULL) AS supp "
                     f"FROM `{T_AUD}` a LEFT JOIN (SELECT DISTINCT LOWER(TRIM(email)) AS email "
@@ -768,8 +937,8 @@ def main(argv) -> int:
     args = dict(a.lstrip("-").split("=", 1) for a in argv[1:] if "=" in a)
     d = (args.get("date") or os.environ.get("EDU_DATE") or "").strip()
     code = (args.get("letter") or os.environ.get("EDU_LETTER") or "").strip()
-    if mode in ("setup", "prepare"):
-        return {"setup": setup, "prepare": prepare}[mode](query)
+    if mode in ("setup", "prepare", "inputs"):
+        return {"setup": setup, "prepare": prepare, "inputs": inputs}[mode](query)
     if mode == "snapshot":                                                 # GET only: Brevo lists -> edu_brevo_list
         print("EDU_SNAPSHOT " + json.dumps(snapshot_lists(query, [int(x) for x in os.environ["EDU_SNAPSHOT_LISTS"].split(",")])))
         return 0
