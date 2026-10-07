@@ -69,6 +69,26 @@ def sendfacts(**k):
     return s
 
 
+class Rules(unittest.TestCase):
+    def test_two_rules_differ_only_in_the_track_filter(self):
+        glove, everyone = E.audience_sql("lv_glove_buyers"), E.audience_sql("lv_all")
+        self.assertEqual(sorted(E.RULES), ["lv_all", "lv_glove_buyers"])
+        self.assertNotEqual(glove, everyone)
+        self.assertEqual(glove.count(" AND info_track = 'cimdi'"), 1)
+        self.assertEqual(glove.replace(" AND info_track = 'cimdi'", ""), everyone)      # nothing else differs
+        self.assertNotIn("info_track", everyone)
+        for sql in (glove, everyone):                                                   # the same gates in both
+            for must in ("language = 'lv'", "email_suppression_all", "shadow_akcija_audience",
+                         "excluded_reason = 'PERSONAL_LETTER_THIS_WEEK' THEN 'IN'", "ELSE a.excluded_reason END"):
+                self.assertIn(must, sql)
+
+    def test_unknown_rule_never_builds_an_audience(self):
+        with self.assertRaises(KeyError):
+            E.audience_sql("everybody")
+        got = E.check_reasons(facts(rule="everybody", rule_unknown=True, audience=None))
+        self.assertTrue(any(r.startswith("UNKNOWN_AUDIENCE_RULE") for r in got) and "AUDIENCE_EMPTY" in got)
+
+
 class Send(unittest.TestCase):
     def test_sends_only_with_a_fresh_go_and_no_stop(self):
         self.assertEqual(E.send_refusals(sendfacts()), [])

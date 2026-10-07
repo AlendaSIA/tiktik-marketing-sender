@@ -43,7 +43,9 @@ T_BLIST = f"{M}.edu_brevo_list"                 # snapshot of Brevo lists (EE, E
 SEND_JOB, REGION = "tiktik-edu-send", "europe-west1"
 SALES_JOB = "tiktik-marketing-sender"
 TEST_RECIPIENT = "raivis@alenda.lv"            # the only address a test_only letter can reach - a constant
-RULE = "lv_glove_buyers"
+# Audience rules. They differ ONLY in the track filter; gates, freeze and checks are the same code.
+RULES = {"lv_glove_buyers": " AND info_track = 'cimdi'",     # LV people whose own category is gloves
+         "lv_all": ""}                                        # every LV person the engine holds (MAIN 2026-10-07 14:21)
 SUPPRESSION_LIST, EN_LIST, EE_LIST = 4, 46, 75  # Brevo lists: tiktik_suppression, EN_foreign_LANG_en, EE_klienti_tel372
 EXCLUDE_LISTS = (SUPPRESSION_LIST, EN_LIST, EE_LIST)
 TEST_EXCLUDE_LISTS = (EN_LIST, EE_LIST)         # the test address itself sits in list 4 (measured 2026-10-07)
@@ -106,6 +108,8 @@ def check_reasons(s: dict) -> list:
         r.append("NOT_ARMED")
     if s.get("stops"):
         r.append("STOPPED")
+    if s.get("rule_unknown"):
+        r.append(f"UNKNOWN_AUDIENCE_RULE={s.get('rule')}")
     if not s.get("plan_run"):
         r.append("NO_PLAN_RUN_TODAY")
     elif s.get("plan_selfcheck_failed") not in (0, "0"):
@@ -331,8 +335,11 @@ WHERE p.email IS NOT NULL""")
     return 0 if int(r["lv_gloves"]) > 0 and r["n"] == r["emails"] else 1
 
 
-AUDIENCE_SQL = f"""
-WITH g AS (SELECT DISTINCT email FROM `{T_SEGMENT}` WHERE info_track = 'cimdi' AND language = 'lv'),
+def audience_sql(rule: str) -> str:
+    """One text for every rule; the rule adds its track filter and nothing else. An unknown rule raises."""
+    track = RULES[rule]
+    return f"""
+WITH g AS (SELECT DISTINCT email FROM `{T_SEGMENT}` WHERE language = 'lv'{track}),
 a AS (SELECT LOWER(TRIM(email)) AS email, master_key, excluded_reason FROM `{M}.shadow_akcija_audience`
       WHERE plan_date = @d AND run_id = @run),
 s AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.email_suppression_all`)
@@ -344,17 +351,17 @@ SELECT g.email, a.master_key,
 FROM g LEFT JOIN a USING (email) LEFT JOIN s USING (email)"""
 
 
-def build_audience(q, d, code, check_run, plan_run, test_only):
+def build_audience(q, d, code, check_run, plan_run, test_only, rule):
     """Freeze the audience of this check. -> (n, funnel). The real rule is always measured; a test_only letter
     then keeps ONE row, the test recipient - whatever the rule says about him."""
-    funnel = {r["gate"]: int(r["n"]) for r in q(
-        f"SELECT gate, COUNT(*) AS n FROM ({AUDIENCE_SQL}) GROUP BY 1", d=d, run=plan_run)}
+    sql = audience_sql(rule)
+    funnel = {r["gate"]: int(r["n"]) for r in q(f"SELECT gate, COUNT(*) AS n FROM ({sql}) GROUP BY 1", d=d, run=plan_run)}
     if test_only:
         q(f"INSERT INTO `{T_AUD}` (send_date, letter_code, check_run, email, master_key, built_at) "
           f"VALUES (@d, @c, @cr, @e, 'test', CURRENT_TIMESTAMP())", d=d, c=code, cr=check_run, e=TEST_RECIPIENT)
     else:
         q(f"INSERT INTO `{T_AUD}` (send_date, letter_code, check_run, email, master_key, built_at) "
-          f"SELECT @d, @c, @cr, email, master_key, CURRENT_TIMESTAMP() FROM ({AUDIENCE_SQL}) WHERE gate = 'IN'",
+          f"SELECT @d, @c, @cr, email, master_key, CURRENT_TIMESTAMP() FROM ({sql}) WHERE gate = 'IN'",
           d=d, c=code, cr=check_run, run=plan_run)
     n = int(q(f"SELECT COUNT(*) AS n FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr",
               d=d, c=code, cr=check_run)[0]["n"])
@@ -438,8 +445,10 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
                 f"FROM `{T_SEGMENT}`")[0]
         s["segment_rows"], s["segment_age_h"] = int(seg["n"]), (None if seg["age_min"] is None
                                                                 else round(int(seg["age_min"]) / 60, 1))
-        if L and s["plan_run"] and s["segment_rows"]:
-            s["audience"], s["funnel"] = build_audience(q, d, code, check_run, s["plan_run"], L["test_only"])
+        s["rule"] = (L or {}).get("audience_rule")
+        s["rule_unknown"] = bool(L) and s["rule"] not in RULES
+        if L and s["plan_run"] and s["segment_rows"] and not s["rule_unknown"]:
+            s["audience"], s["funnel"] = build_audience(q, d, code, check_run, s["plan_run"], L["test_only"], s["rule"])
             bad = q(f"SELECT COUNT(*) - COUNT(DISTINCT a.email) AS dup, COUNTIF(s.email IS NOT NULL) AS supp "
                     f"FROM `{T_AUD}` a LEFT JOIN (SELECT DISTINCT LOWER(TRIM(email)) AS email "
                     f"FROM `{P}.business_marts.email_suppression_all`) s USING (email) "
@@ -469,7 +478,7 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
       f"VALUES (@d, @c, @k, @cr, @r, @t, CURRENT_TIMESTAMP(), 'edu.check')", d=d, c=code, k=kind, cr=check_run,
       r="; ".join(reasons) or None, t=json.dumps(detail, ensure_ascii=False, default=str))
     back = q(f"SELECT kind FROM `{T_GATE}` WHERE check_run = @cr", cr=check_run)
-    print("EDU_CHECK " + json.dumps({"date": d, "letter": code, "result": kind, "check_run": check_run,
+    print("EDU_CHECK " + json.dumps({"date": d, "letter": code, "result": kind, "check_run": check_run, "rule": s.get("rule"),
                                      "audience": s.get("audience"), "funnel": s.get("funnel"), "reasons": reasons,
                                      "record_read_back": [r["kind"] for r in back]}, ensure_ascii=False))
     if dash:
@@ -577,7 +586,7 @@ def rehearse(q, d, code, check_run, name) -> int:
     if not aud or not name:
         print("EDU_REHEARSAL " + json.dumps({"done": False, "why": "no frozen audience for that check, or no list name"}))
         return 3
-    lists = snapshot_lists(q, (EE_LIST, EN_LIST))
+    lists = snapshot_lists(q, [int(x) for x in (os.environ.get("EDU_SNAPSHOT_LISTS") or f"{EE_LIST},{EN_LIST}").split(",")])
     f = fill_list(q, d, code, who, name, aud)
     back = _brevo("GET", f"/contacts/lists/{f['list_id']}")
     res = {k: v for k, v in f.items() if k not in ("ok", "failed")}
