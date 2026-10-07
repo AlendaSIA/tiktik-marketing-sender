@@ -198,7 +198,8 @@ def campaign_payload(source, name, list_id, excl) -> dict:
     """The engine's own campaign: the source's subject, preview text and HTML, byte for byte; nothing else of it."""
     p = {"name": name, "subject": source.get("subject"), "sender": {"id": (source.get("sender") or {}).get("id") or 2},
          "replyTo": source.get("replyTo") or "info@tiktik.lv", "htmlContent": source.get("htmlContent"),
-         "recipients": {"listIds": [list_id]}, "inlineImageActivation": False}
+         "recipients": {"listIds": [list_id]}, "inlineImageActivation": False,
+         "mirrorActive": bool(source.get("mirrorActive"))}
     if source.get("previewText"):
         p["previewText"] = source["previewText"]
     if excl:
@@ -669,6 +670,11 @@ def send(q, d, code, now=None) -> int:
         problems = content_refusals(L, mine, fm["placeholders"], fm["unsubscribe_links"])
         if sorted(rec.get("lists") or []) != [list_id] or sorted(rec.get("exclusionLists") or []) != sorted(excl):
             problems.append(f"RECIPIENTS_READ_BACK_DIFFER lists={rec.get('lists')} excl={rec.get('exclusionLists')}")
+        for k in ("header", "footer", "mirrorActive", "replyTo"):         # what Brevo adds around the HTML
+            if mine.get(k) != source.get(k):
+                problems.append(f"COPY_DIFFERS_IN_{k} engine={str(mine.get(k))[:40]} source={str(source.get(k))[:40]}")
+        if (mine.get("sender") or {}).get("id") != (source.get("sender") or {}).get("id"):
+            problems.append("COPY_DIFFERS_IN_sender")
         if mine.get("status") != "draft":
             problems.append(f"ENGINE_CAMPAIGN_STATUS={mine.get('status')}")
         if stops(q, d, code):                                              # the last look before the one call

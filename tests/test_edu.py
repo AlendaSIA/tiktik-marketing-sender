@@ -104,6 +104,8 @@ class Send(unittest.TestCase):
         p = E.campaign_payload(src, "ENGINE", 500, E.exclusion_lists(False))
         self.assertEqual((p["subject"], p["previewText"], p["htmlContent"]), ("S", "P", "H"))
         self.assertEqual(p["recipients"], {"listIds": [500], "exclusionListIds": [4, 46, 75]})
+        self.assertEqual((p["sender"], p["replyTo"], p["mirrorActive"]), ({"id": 2}, "info@tiktik.lv", False))
+        self.assertTrue(E.campaign_payload({**src, "mirrorActive": True}, "E", 1, [])["mirrorActive"])
         self.assertEqual(E.exclusion_lists(True), [46, 75])                 # the test address sits in list 4
         self.assertEqual(E.TEST_RECIPIENT, "raivis@alenda.lv")
         self.assertEqual(len(E.chunks(list(range(301)), 150)), 3)
