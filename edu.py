@@ -63,6 +63,8 @@ EDU_ALL_RULES = (EDU_ALL, PICK_RULE) + tuple(GROUP_RULES)
 EDU_MIX = ("own", "own", "other", "other", "other", "own", "other")
 T_CAT, T_PSRC, T_PICK, T_PICKRUN = f"{M}.edu_catalog", f"{M}.edu_piece_source", f"{M}.edu_pick", f"{M}.edu_pick_run"
 T_SEENX = f"{M}.edu_seen_extra"
+T_HIST, T_HSTATE = f"{M}.brevo_campaign_recipients_hist", f"{M}.edu_hist_state"   # who received which campaign
+HIST_MAX_AGE_MIN = 30                              # a pick reads a history refreshed at most this long ago
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
 INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
 FRESH_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # these must be of the day of the check
@@ -99,6 +101,9 @@ CREATE TABLE IF NOT EXISTS `{T_BLIST}` (list_id INT64, email STRING, fetched_at 
 CREATE TABLE IF NOT EXISTS `{T_CAT}` (letter_code STRING, edu_group STRING, piece STRING, title STRING,
   source_campaign_id INT64, sendable BOOL, prio INT64, note STRING, updated_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS `{T_PSRC}` (piece STRING, kind STRING, ref STRING);
+CREATE TABLE IF NOT EXISTS `{T_HSTATE}` (refreshed_at TIMESTAMP, snapshot_id STRING, sent_campaigns INT64,
+  newest_sent_id INT64, covered INT64, missing INT64, added_campaigns INT64, added_rows INT64, detail STRING);
+ALTER TABLE `{T_REG}` ADD COLUMN IF NOT EXISTS loaded_at TIMESTAMP;
 CREATE TABLE IF NOT EXISTS `{T_SEENX}` (email STRING, piece STRING, source STRING, loaded_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS `{T_PICK}` (pick_run STRING, thursday DATE, email STRING, master_key STRING,
   track STRING, edu_group STRING, slot INT64, slot_kind STRING, letter_code STRING, reason STRING, seen STRING,
@@ -236,6 +241,32 @@ def render_alert(thursday, picks, catalog) -> str:
         lines.append("  Jau saņemts: " + ("; ".join(f"{title.get(p, p)} ({n})" for p, n in had[:12]) or "nekas"))
     lines += ["", "Vajag jaunu šablonu katrai no šīm grupām līdz ceturtdienai, citādi šie klienti vēstuli nesaņems."]
     return "\n".join(lines)
+
+
+def history_refusal(state, max_age_min=HIST_MAX_AGE_MIN):
+    """May a pick trust the recipients history? state = the latest edu_hist_state row (age_min added). -> '' or why not.
+    It must be fresh AND cover every campaign Brevo has sent - otherwise a piece somebody already had looks unseen."""
+    if not state:
+        return "HISTORY_NEVER_REFRESHED"
+    if state.get("age_min") is None or int(state["age_min"]) > max_age_min or int(state["age_min"]) < 0:
+        return f"HISTORY_NOT_FRESH age_min={state.get('age_min')}"
+    if int(state.get("missing") or 0) != 0:
+        return f"HISTORY_OLDER_THAN_BREVO missing_campaigns={state.get('missing')} newest_sent={state.get('newest_sent_id')}"
+    return ""
+
+
+def emails_of_export(text) -> list:
+    """The addresses of a Brevo recipients export (CSV, any delimiter): the first address of every data line."""
+    out, seen = [], set()
+    for ln in (text or "").splitlines()[1:]:
+        for tok in ln.replace(";", ",").replace("\t", ",").split(","):
+            tok = tok.strip().strip('"').strip().lower()
+            if "@" in tok and "." in tok.rsplit("@", 1)[-1] and " " not in tok:
+                if tok not in seen:
+                    seen.add(tok)
+                    out.append(tok)
+                break
+    return out
 
 
 def stale_inputs(rows, today: str) -> list:
@@ -557,6 +588,50 @@ def inputs(q) -> int:
     return 0 if not out.returncode and not stale and int(r["leads"]) > 0 else 1
 
 
+def coldreg(q) -> int:
+    """LIVE Pipedrive, GET only: every person e-mail of an organisation that carries Label 4 ("Cold lead") ->
+    mkt_control.b2b_cold_register, source pd_label4_live (replaced). The nightly mirror is a day behind a label set
+    today; this is not. Nothing is written to Pipedrive."""
+    tok = subprocess.run(["gcloud", "secrets", "versions", "access", "latest", "--secret", "PIPEDRIVE_API_TOKEN",
+                          "--project", P], capture_output=True, text=True, timeout=60).stdout.strip()
+
+    def pages(what):
+        start = 0
+        while True:
+            with urllib.request.urlopen(f"https://api.pipedrive.com/v1/{what}?limit=500&start={start}&api_token={tok}",
+                                        timeout=60) as r:
+                d = json.loads(r.read())
+            for x in d.get("data") or []:
+                yield x
+            pg = (d.get("additional_data") or {}).get("pagination") or {}
+            if not pg.get("more_items_in_collection"):
+                return
+            start = pg["next_start"]
+
+    orgs = {o["id"] for o in pages("organizations")
+            if 4 in (o.get("label_ids") or ([o["label"]] if o.get("label") else []))}
+    rows = set()
+    for p in pages("persons"):
+        org = p.get("org_id")
+        org = org.get("value") if isinstance(org, dict) else org
+        if org in orgs:
+            for e in p.get("email") or []:
+                v = (e.get("value") or "").strip().lower() if isinstance(e, dict) else ""
+                if "@" in v:
+                    rows.add((v, str(org)))
+    if not orgs or not rows:
+        print("EDU_COLDREG " + json.dumps({"done": False, "label4_orgs": len(orgs), "emails": len(rows)}))
+        return 1
+    q(f"DELETE FROM `{T_REG}` WHERE source = 'pd_label4_live'")
+    for part in chunks(sorted(rows), 4000):
+        q(f"INSERT INTO `{T_REG}` (source, file, file_sha, email, status, pd_org_id, loaded_at) "
+          f"SELECT 'pd_label4_live', 'pipedrive api', '', e, '', k, CURRENT_TIMESTAMP() FROM UNNEST(@es) AS e WITH OFFSET o "
+          f"JOIN UNNEST(@ks) AS k WITH OFFSET o2 ON o = o2", es=[x[0] for x in part], ks=[x[1] for x in part])
+    print("EDU_COLDREG " + json.dumps({"done": True, "label4_orgs_live": len(orgs), "person_emails": len({r[0] for r in rows}),
+                                       "rows": len(rows), "pipedrive_written": False}))
+    return 0
+
+
 def edu_all_stale(q) -> list:
     lists = ", ".join(map(str, FRESH_LISTS))
     rows = q(f"""
@@ -566,6 +641,8 @@ SELECT CONCAT('brevo_list_', CAST(l AS STRING)) AS name,
 FROM UNNEST([{lists}]) AS l
 UNION ALL SELECT 'b2b_lead_email', CAST((SELECT DATE(MAX(built_at), 'Europe/Riga') FROM `{T_LEAD}`) AS STRING),
        CAST(CURRENT_DATE('Europe/Riga') AS STRING)
+UNION ALL SELECT 'pipedrive_label4_live', CAST((SELECT DATE(MAX(loaded_at), 'Europe/Riga') FROM `{T_REG}`
+       WHERE source = 'pd_label4_live') AS STRING), CAST(CURRENT_DATE('Europe/Riga') AS STRING)
 UNION ALL SELECT 'brevo_contacts_snapshot', CAST((SELECT DATE(TIMESTAMP_MILLIS(last_modified_time), 'Europe/Riga')
        FROM `{P}.business_marts.__TABLES__` WHERE table_id = 'brevo_contacts_snapshot') AS STRING),
        CAST(CURRENT_DATE('Europe/Riga') AS STRING)""")
@@ -634,6 +711,8 @@ def build_audience_edu_all(q, d, code, check_run, plan_run, test_only, rule=EDU_
     funnel = {}
     for _, _, g in gates:
         funnel[g] = funnel.get(g, 0) + 1
+    if rule == PICK_RULE:
+        print("EDU_PICK_IN_FORCE " + json.dumps({"date": d, "letter": code, "pick_run": latest_pick(q, d)[0]}))
     ins = [(TEST_RECIPIENT, "test")] if test_only else [(e, mk or "") for e, mk, g in gates if g == "IN"]
     for part in chunks(ins, 4000):
         q(f"INSERT INTO `{T_AUD}` (send_date, letter_code, check_run, email, master_key, built_at) "
@@ -695,9 +774,12 @@ def pick(q, thursday, mix=EDU_MIX, fallback=False) -> int:
     today = q("SELECT CAST(CURRENT_DATE('Europe/Riga') AS STRING) AS t")[0]["t"]
     pr = q(f"SELECT run_id FROM `{M}.shadow_run_report` WHERE plan_date = @d ORDER BY finished_at DESC LIMIT 1", d=today)
     stale = edu_all_stale(q)
-    if not pr or stale:
-        print("EDU_PICK " + json.dumps({"done": False, "why": "no plan run today" if not pr else "inputs not of today",
-                                        "not_of_today": stale}))
+    hs = q(f"SELECT *, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), refreshed_at, MINUTE) AS age_min FROM `{T_HSTATE}` "
+           f"ORDER BY refreshed_at DESC LIMIT 1")
+    hist_no = history_refusal(hs[0] if hs else None)
+    if not pr or stale or hist_no:
+        print("EDU_PICK " + json.dumps({"done": False, "why": "no plan run today" if not pr else
+                                        ("inputs not of today" if stale else hist_no), "not_of_today": stale}))
         return 3
     rows = q(edu_all_sql(), d=today, run=pr[0]["run_id"])
     tracks = {(r.get("email") or "").strip().lower(): r.get("track") for r in rows}
@@ -730,7 +812,11 @@ def pick(q, thursday, mix=EDU_MIX, fallback=False) -> int:
     for p in picks:
         k = (p["edu_group"], p["letter_code"] or "-", p["r"])
         by[k] = by.get(k, 0) + 1
-    print("EDU_PICK " + json.dumps({"done": True, "pick_run": run, "thursday": thursday, "mix": list(mix),
+    in_force = latest_pick(q, thursday)[0]
+    print("EDU_PICK " + json.dumps({"done": True, "pick_run": run, "in_force_for_the_date": in_force,
+                                    "this_run_is_in_force": in_force == run, "history_snapshot": hs[0]["snapshot_id"],
+                                    "history_newest_campaign": hs[0]["newest_sent_id"],
+                                    "thursday": thursday, "mix": list(mix),
                                     "fallback": bool(fallback), "people": len(picks), "picked": n_pick,
                                     "nothing": len(picks) - n_pick, "alert_sent": False,
                                     "by_group": [list(k) + [v] for k, v in sorted(by.items())]}, ensure_ascii=False))
@@ -986,6 +1072,76 @@ def snapshot_lists(q, list_ids) -> dict:
     return out
 
 
+def rawkeys(ids) -> int:
+    """GET only: which fields Brevo returns for these campaigns, and the keys of `params` when it returns them."""
+    for cid in ids:
+        c = _brevo("GET", f"/emailCampaigns/{int(cid)}")
+        p = c.get("params")
+        print("EDU_RAWKEYS " + json.dumps({"id": int(cid), "name": c.get("name"), "status": c.get("status"),
+              "keys": sorted(c), "has_params": "params" in c, "params_type": type(p).__name__,
+              "params_keys": sorted(p) if isinstance(p, dict) else None,
+              "html_mentions_params": (c.get("htmlContent") or "").count("params."),
+              "html_mentions_contact": (c.get("htmlContent") or "").count("contact."),
+              "sha256": content_sha(c.get("subject"), c.get("previewText"), c.get("htmlContent")),
+              "recipients": c.get("recipients")}, ensure_ascii=False))
+    return 0
+
+
+def history(q, budget_s=480) -> int:
+    """Who received which campaign, refreshed from Brevo: for every SENT campaign the history does not hold yet, a
+    recipients export (Brevo builds a file; nothing in the account changes) appended as a new snapshot. Then one
+    edu_hist_state row: how many sent campaigns Brevo has and how many are still missing (0 = the pick may run)."""
+    t0, snap = time.time(), "edu-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    have = {int(r["c"]) for r in q(f"SELECT DISTINCT campaign_id AS c FROM `{T_HIST}`")}
+    sent, off = [], 0
+    while True:
+        r = _brevo("GET", f"/emailCampaigns?status=sent&limit=100&offset={off}&excludeHtmlContent=true&sort=desc")
+        cs = r.get("campaigns") or []
+        sent += [int(c["id"]) for c in cs]
+        off += 100
+        if len(cs) < 100:
+            break
+    added, rows_added, errors = [], 0, []
+    for cid in sorted(set(sent) - have):
+        if time.time() - t0 > budget_s:
+            break
+        try:
+            pid = _brevo("POST", f"/emailCampaigns/{cid}/exportRecipients", {"recipientsType": "all"}).get("processId")
+            url = None
+            for _ in range(40):
+                pr = _brevo("GET", f"/processes/{pid}")
+                if pr.get("status") == "completed":
+                    url = pr.get("export_url")
+                    break
+                time.sleep(3)
+            if not url:
+                raise RuntimeError("export not completed")
+            with urllib.request.urlopen(url, timeout=60) as f:
+                emails = emails_of_export(f.read().decode("utf-8", "replace"))
+            for part in chunks(emails, 5000):
+                q(f"INSERT INTO `{T_HIST}` (snapshot_id, campaign_id, email) SELECT @s, CAST(@c AS INT64), e "
+                  f"FROM UNNEST(@es) AS e", s=snap, c=str(cid), es=part)
+            if not emails:                                  # a sent campaign nobody received still counts as covered
+                q(f"INSERT INTO `{T_HIST}` (snapshot_id, campaign_id, email) VALUES (@s, CAST(@c AS INT64), NULL)",
+                  s=snap, c=str(cid))
+            added.append(cid)
+            rows_added += len(emails)
+        except Exception as e:  # noqa: BLE001 - a campaign that cannot be read stays missing and blocks the pick
+            errors.append(f"{cid}: {type(e).__name__}: {e}"[:160])
+    have |= set(added)
+    missing = sorted(set(sent) - have)
+    st = {"snapshot_id": snap, "sent_campaigns": len(set(sent)), "newest_sent_id": max(sent) if sent else None,
+          "covered": len(set(sent) & have), "missing": len(missing), "added_campaigns": len(added), "added_rows": rows_added}
+    q(f"INSERT INTO `{T_HSTATE}` (refreshed_at, snapshot_id, sent_campaigns, newest_sent_id, covered, missing, "
+      f"added_campaigns, added_rows, detail) VALUES (CURRENT_TIMESTAMP(), @s, CAST(@n AS INT64), CAST(@mx AS INT64), "
+      f"CAST(@cv AS INT64), CAST(@mi AS INT64), CAST(@ac AS INT64), CAST(@ar AS INT64), @dt)", s=snap,
+      n=str(st["sent_campaigns"]), mx=str(st["newest_sent_id"] or 0), cv=str(st["covered"]), mi=str(st["missing"]),
+      ac=str(st["added_campaigns"]), ar=str(rows_added),
+      dt=json.dumps({"added": added, "missing": missing[:60], "errors": errors[:20]}))
+    print("EDU_HISTORY " + json.dumps(dict(st, added=added, missing_ids=missing[:60], errors=errors[:10])))
+    return 0 if not missing else 1
+
+
 def rehearse(q, d, code, check_run, name) -> int:
     """SIZE REHEARSAL (MAIN 2026-10-07 13:36): the frozen audience of a check goes into a Brevo list with the send's
     own list filler. NO campaign is created and nothing is sent; the list stays, attached to nothing."""
@@ -1144,8 +1300,10 @@ def main(argv) -> int:
     args = dict(a.lstrip("-").split("=", 1) for a in argv[1:] if "=" in a)
     d = (args.get("date") or os.environ.get("EDU_DATE") or "").strip()
     code = (args.get("letter") or os.environ.get("EDU_LETTER") or "").strip()
-    if mode in ("setup", "prepare", "inputs"):
-        return {"setup": setup, "prepare": prepare, "inputs": inputs}[mode](query)
+    if mode in ("setup", "prepare", "inputs", "coldreg", "history"):
+        return {"setup": setup, "prepare": prepare, "inputs": inputs, "coldreg": coldreg, "history": history}[mode](query)
+    if mode == "rawkeys":
+        return rawkeys([x for x in (os.environ.get("EDU_IDS") or args.get("ids") or "").split(",") if x])
     if mode == "pick":                                                     # dry: the Tuesday selection for Thursday d
         dt.date.fromisoformat(d)
         mix = tuple(x for x in (args.get("mix") or "").split(",") if x) or EDU_MIX

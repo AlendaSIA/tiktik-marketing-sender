@@ -365,5 +365,37 @@ class EduGroupsAndPick(unittest.TestCase):
         self.assertIn("letter_code != @c", E.SEEN_SQL + open(E.__file__, encoding="utf-8").read())
 
 
+
+class HistoryAndColdRegister(unittest.TestCase):
+    def test_pick_refuses_an_old_history(self):
+        H = E.history_refusal
+        self.assertEqual(H(None), "HISTORY_NEVER_REFRESHED")
+        self.assertEqual(H({"age_min": "3", "missing": "0", "newest_sent_id": "292"}), "")
+        self.assertTrue(H({"age_min": "3", "missing": "2", "newest_sent_id": "292"}).startswith("HISTORY_OLDER_THAN_BREVO"))
+        self.assertTrue(H({"age_min": "31", "missing": "0"}).startswith("HISTORY_NOT_FRESH"))
+        self.assertTrue(H({"age_min": None, "missing": "0"}).startswith("HISTORY_NOT_FRESH"))
+        self.assertTrue(H({"age_min": "-5", "missing": "0"}).startswith("HISTORY_NOT_FRESH"))
+
+    def test_export_parsing(self):
+        csv = 'Email_ID;Send_Date;Open\n"A@b.lv";01-10-2026;x\nc@d.com;;\nnot an address;;\na@b.lv;dup;\n'
+        self.assertEqual(E.emails_of_export(csv), ["a@b.lv", "c@d.com"])
+        self.assertEqual(E.emails_of_export("EMAIL,DATE\nx@y.lv,2026\n"), ["x@y.lv"])
+        self.assertEqual(E.emails_of_export(""), [])
+
+    def test_these_modes_only_read_the_outside(self):
+        code = open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read()
+        cr = code[code.index("def coldreg("):code.index("def edu_all_stale(")]
+        self.assertNotIn("POST", cr)
+        self.assertNotIn("PUT", cr)
+        self.assertNotIn("DELETE\"", cr)
+        self.assertNotIn("method=", cr)                                   # Pipedrive: plain GET requests only
+        hi = code[code.index("def history("):code.index("def rehearse(")]
+        self.assertEqual(hi.count('_brevo("POST"'), 1)                    # the recipients export, nothing else
+        self.assertIn("exportRecipients", hi)
+        rk = code[code.index("def rawkeys("):code.index("def history(")]
+        self.assertNotIn('"POST"', rk)
+        self.assertIn("pipedrive_label4_live", code)                      # the live register must be of the day too
+
+
 if __name__ == "__main__":
     unittest.main()
