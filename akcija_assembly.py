@@ -344,8 +344,8 @@ def load_partition(day, rows):
     """Replace today's partition of akcija_assembled in ONE load job (atomic; the other days stay)."""
     with tempfile.NamedTemporaryFile("w", suffix=".ndjson", delete=False, encoding="utf-8") as f:
         for r in rows:
-            f.write(json.dumps({**{k: v for k, v in r.items() if not k.startswith("_")},
-                                "params": json.dumps(r["params"], ensure_ascii=False)}, ensure_ascii=False) + "\n")
+            # params goes in as a nested object: a JSON column loaded from a string would hold a JSON STRING
+            f.write(json.dumps({k: v for k, v in r.items() if not k.startswith("_")}, ensure_ascii=False) + "\n")
         path = f.name
     table = T_OUT.split(".", 1)[1] + "$" + day.strftime("%Y%m%d")
     out = subprocess.run(["bq", "--project_id", P, "load", "--quiet", "--replace",
