@@ -533,28 +533,51 @@ def _facts(camp) -> dict:
             "unsubscribe_links": C.unsubscribe_links(html), "html_bytes": len(html.encode("utf-8"))}
 
 
-def fill_list(q, d, code, who, name, emails) -> dict:
+def list_members(list_id) -> set:
+    """Who IS in a Brevo list now (GET, 500 a page)."""
+    out, offset = set(), 0
+    while True:
+        r = _brevo("GET", f"/contacts/lists/{int(list_id)}/contacts?limit=500&offset={offset}")
+        page = [(c.get("email") or "").strip().lower() for c in r.get("contacts") or []]
+        out |= {e for e in page if e}
+        offset += 500
+        if len(page) < 500:
+            return out
+
+
+def fill_list(q, d, code, who, name, emails, rounds=3, pause=6) -> dict:
     """Create a Brevo list and put exactly these e-mails into it, 150 a call. THE SAME CODE for the size rehearsal
-    and for the send. Creates no campaign and sends nothing."""
+    and for the send. Creates no campaign and sends nothing.
+    MEASURED 2026-10-07 (rehearsal lv_all): Brevo answered 'success' for all 5 374 and the list held 4 924. So the
+    answer of the add call is NOT trusted: the list is READ BACK, what is missing is added again (up to `rounds`
+    times), and 'ok' is only who the list really holds."""
     t0 = time.time()
+    asked = [e.strip().lower() for e in emails]
     list_id = int(_brevo("POST", "/contacts/lists", {"name": name, "folderId": 1})["id"])
-    ok, failed, errors, calls = [], [], [], 0
-    for part in chunks(list(emails), ADD_CHUNK):
-        calls += 1
-        try:
-            r = _brevo("POST", f"/contacts/lists/{list_id}/contacts/add", {"emails": part}).get("contacts") or {}
-            ok += [e.lower() for e in r.get("success") or []]
-            failed += [e.lower() if isinstance(e, str) else str(e) for e in r.get("failure") or []]
-        except RuntimeError as e:
-            failed += part
-            errors.append(str(e)[:300])
-    asked = len(emails)
-    out = {"list_id": list_id, "name": name, "asked": asked, "calls": calls, "added": len(ok),
-           "not_added": asked - len(ok), "not_added_pct": round(100.0 * (asked - len(ok)) / max(asked, 1), 2),
-           "limit_pct": ADD_FAIL_PCT, "seconds": round(time.time() - t0, 1), "call_errors": errors[:5],
-           "not_added_examples": failed[:10]}
+    errors, calls, said_ok, history, todo, members = [], 0, 0, [], list(asked), set()
+    for rnd in range(1, rounds + 1):
+        for part in chunks(todo, ADD_CHUNK):
+            calls += 1
+            try:
+                r = _brevo("POST", f"/contacts/lists/{list_id}/contacts/add", {"emails": part}).get("contacts") or {}
+                said_ok += len(r.get("success") or [])
+            except RuntimeError as e:
+                errors.append(str(e)[:300])
+        time.sleep(pause)
+        members = list_members(list_id)
+        todo = [e for e in asked if e not in members]
+        history.append({"round": rnd, "in_list": len(members & set(asked)), "missing": len(todo)})
+        if not todo:
+            break
+    ok = [e for e in asked if e in members]
+    extra = sorted(members - set(asked))
+    out = {"list_id": list_id, "name": name, "asked": len(asked), "calls": calls, "brevo_said_added": said_ok,
+           "added": len(ok), "not_added": len(asked) - len(ok),
+           "not_added_pct": round(100.0 * (len(asked) - len(ok)) / max(len(asked), 1), 2), "limit_pct": ADD_FAIL_PCT,
+           "rounds": history, "in_list_but_not_asked": len(extra), "seconds": round(time.time() - t0, 1),
+           "call_errors": errors[:5], "not_added_examples": todo[:10]}
     log(q, d, code, who, "LIST_FILLED", out)
-    return {**out, "ok": ok, "failed": failed}
+    return {**out, "ok": ok, "failed": todo, "extra": extra}
 
 
 def snapshot_lists(q, list_ids) -> dict:
@@ -589,7 +612,7 @@ def rehearse(q, d, code, check_run, name) -> int:
     lists = snapshot_lists(q, [int(x) for x in (os.environ.get("EDU_SNAPSHOT_LISTS") or f"{EE_LIST},{EN_LIST}").split(",")])
     f = fill_list(q, d, code, who, name, aud)
     back = _brevo("GET", f"/contacts/lists/{f['list_id']}")
-    res = {k: v for k, v in f.items() if k not in ("ok", "failed")}
+    res = {k: v for k, v in f.items() if k not in ("ok", "failed", "extra")}
     res.update(done=True, check_run=check_run, list_read_back={k: back.get(k) for k in ("id", "name", "uniqueSubscribers",
                "totalSubscribers", "totalBlacklisted", "campaignStats")}, would_pass_2pct_rule=f["not_added_pct"] <= ADD_FAIL_PCT,
                brevo_lists_snapshot=lists, campaign_created=False, sent=False)
@@ -668,6 +691,8 @@ def send(q, d, code, now=None) -> int:
         tag = f"{code} {d}" + (" TESTS" if test_only else "")
         f = fill_list(q, d, code, who, f"ENGINE EDU {tag} {check_run[-6:]}", [a["email"] for a in aud])
         list_id, ok, fail_pct = f["list_id"], f["ok"], f["not_added_pct"]
+        if f["extra"]:
+            raise RuntimeError(f"LIST_HOLDS_ADDRESSES_NOBODY_ASKED_FOR n={len(f['extra'])}")
         if not ok or fail_pct > ADD_FAIL_PCT or (test_only and ok != [TEST_RECIPIENT]):
             raise RuntimeError(f"LIST_NOT_FILLED added={len(ok)} of {len(aud)} ({fail_pct:.1f}% missing, limit {ADD_FAIL_PCT}%)")
         excl = exclusion_lists(test_only)
@@ -731,6 +756,9 @@ def main(argv) -> int:
     code = (args.get("letter") or os.environ.get("EDU_LETTER") or "").strip()
     if mode in ("setup", "prepare"):
         return {"setup": setup, "prepare": prepare}[mode](query)
+    if mode == "snapshot":                                                 # GET only: Brevo lists -> edu_brevo_list
+        print("EDU_SNAPSHOT " + json.dumps(snapshot_lists(query, [int(x) for x in os.environ["EDU_SNAPSHOT_LISTS"].split(",")])))
+        return 0
     if mode not in ("check", "stop", "status", "verify", "send", "rehearse") or not code:
         print("usage: edu.py setup | prepare | check|stop|status --date=YYYY-MM-DD --letter=CODE [--by=.. --why=..] ; "
               "job: EDU_MODE=verify|send EDU_DATE EDU_LETTER [EDU_CHECK_RUN]")
