@@ -144,9 +144,67 @@ def hash_main() -> int:
     return 0
 
 
+# ---- PROOF MODE (one-off; MAIN 2026-10-07, close handover 2026-10-06 section 4) --------------------------------------
+# ONE mail to raivis@alenda.lv that answers two questions before delivery (WA8a) is decided: do arrays in params render
+# through a template loop, and what does {{ unsubscribe }} become in a transactional mail. Inline htmlContent, never a
+# template id. It runs only when SAMPLE_MODE=proof AND PROOF_DAY = today (Europe/Riga): a stale or copied execution
+# refuses. SAMPLE_DRY=1 prints the payload and posts nothing.
+PROOF_ITEM = ("<li>{{ i.name }} | {{ i.sale }} | <s>{{ i.std }}</s> | <a href=\"{{ i.url }}\">saite</a></li>")
+PROOF_HTML = (
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body style=\"font:14px Arial\">"
+    "<p>PIERADIJUMA VESTULE (Sutisanas dzinejs 6). Klientiem NAV sutita. Uzruna: [{{ params.uzruna }}] "
+    "H1: [{{ params.h1 }}]</p>"
+    "<p>A. own, skaits [{{ params.own|length }}]</p><ul>"
+    "{% for i in params.own %}" + PROOF_ITEM.replace("<li>", "<li>{{ forloop.Counter }}. ") + "{% endfor %}</ul>"
+    "<p>B. blocks ar atslegu items, skaits [{{ params.blocks|length }}]</p>"
+    "{% for b in params.blocks %}<p>B-bloks [{{ b.title }}]</p><ul>"
+    "{% for i in b.items %}" + PROOF_ITEM + "{% endfor %}</ul>{% endfor %}"
+    "<p>C. tas pats ar atslegu goods</p>"
+    "{% for b in params.blocks2 %}<p>C-bloks [{{ b.title }}]</p><ul>"
+    "{% for i in b.goods %}" + PROOF_ITEM + "{% endfor %}</ul>{% endfor %}"
+    "<p>D. tukss saraksts: [{% if params.empty %}RADITS{% else %}PASLEPTS{% endif %}]"
+    "{% for i in params.empty %}<b>NEDRIKST BUT</b>{% endfor %}</p>"
+    "<hr><p style=\"font-size:12px;color:#666\">NESPIED so saiti (ta atrakstitu Raivi): "
+    "<a href=\"{{ unsubscribe }}\">atrakstities</a><br>Saite ka teksts: [{{ unsubscribe }}]</p>"
+    "</body></html>")
+
+
+def proof_payload() -> dict:
+    it = lambda n: {"name": f"Prece {n}", "img": "https://www.tiktik.lv/favicon.ico",  # noqa: E731
+                    "url": "https://www.tiktik.lv/", "sale": f"{n},49 €", "std": f"{n},99 €"}
+    return {"sender": {"id": C.SENDER_ID}, "to": [{"email": RECIPIENT}],
+            "subject": "PIERADIJUMS 236 - masivi un atrakstisanas saite - {{ params.uzruna }}",
+            "htmlContent": PROOF_HTML, "tags": ["shadow-proof"],
+            "params": {"uzruna": "Raivi", "h1": "ZARYS produktu nedēļa", "own": [it(1), it(2)], "empty": [],
+                       "blocks": [{"title": "Pirmais", "items": [it(3), it(4)]},
+                                  {"title": "Otrais", "items": [it(5)]}],
+                       "blocks2": [{"title": "Pirmais", "goods": [it(3), it(4)]},
+                                   {"title": "Otrais", "goods": [it(5)]}]}}
+
+
+def proof_main(today=None, post=None) -> int:
+    import zoneinfo
+    day = today or dt.datetime.now(zoneinfo.ZoneInfo("Europe/Riga")).date()
+    if os.environ.get("PROOF_DAY") != day.isoformat():
+        print("PROOF_REFUSED " + json.dumps({"why": "PROOF_DAY is not today", "today": day.isoformat()}))
+        return 2
+    p = proof_payload()
+    assert p["to"] == [{"email": RECIPIENT}] and RECIPIENT == "raivis@alenda.lv", "recipient guard"
+    assert not {"cc", "bcc", "templateId", "messageVersions"} & set(p), "payload guard"
+    if os.environ.get("SAMPLE_DRY") == "1":
+        print("PROOF_DRY " + json.dumps({"to": p["to"], "subject": p["subject"], "html_bytes": len(p["htmlContent"]),
+                                         "params_bytes": len(json.dumps(p["params"]))}))
+        return 0
+    r = (post or (lambda x: C._call("POST", "/smtp/email", x)))(p)
+    print("PROOF_SENT " + json.dumps({"to": RECIPIENT, "messageId": r.get("messageId"), "day": day.isoformat()}))
+    return 0
+
+
 def main() -> int:
     if os.environ.get("SAMPLE_MODE") == "hash":
         return hash_main()
+    if os.environ.get("SAMPLE_MODE") == "proof":
+        return proof_main()
     import zoneinfo
     from google.cloud import bigquery
     bq = bigquery.Client(project=P)
