@@ -72,7 +72,8 @@ def sendfacts(**k):
 class Rules(unittest.TestCase):
     def test_two_rules_differ_only_in_the_track_filter(self):
         glove, everyone = E.audience_sql("lv_glove_buyers"), E.audience_sql("lv_all")
-        self.assertEqual(sorted(E.RULES), ["lv_all", "lv_edu_all", "lv_glove_buyers"])
+        self.assertEqual(sorted(E.RULES), sorted(["lv_all", "lv_edu_all", "lv_glove_buyers", "lv_edu_pick"]
+                                                  + ["lv_edu_" + g for g in E.GROUPS]))
         with self.assertRaises(KeyError):
             E.audience_sql("lv_edu_all")
         self.assertNotEqual(glove, everyone)
@@ -278,6 +279,90 @@ class EduAllRule(unittest.TestCase):
         self.assertNotIn(" LIKE CONCAT", E.LEADS_SQL)                       # the Pipedrive match is an exact split
         self.assertIn("'shop_paid'", E.LEADS_SQL)
         self.assertIn("'old_account'", E.LEADS_SQL)
+
+
+
+class EduGroupsAndPick(unittest.TestCase):
+    TRACKS = ["cimdi", "dezinfekcija", "teipi", "papirs", "medicina", "tirisana", "apgerbs", "cits", "inventars", None, "",
+              "CIMDI ", "something new"]
+
+    def gates(self):
+        g = [(f"p{i}@y.lv", None, "IN") for i in range(len(self.TRACKS) * 5)]
+        g += [("lead@y.lv", None, "B2B_LEAD"), ("b2b@y.lv", "m", "B2B_FLOW"), ("sup@y.lv", None, "SUPPRESSED")]
+        tracks = {f"p{i}@y.lv": self.TRACKS[i % len(self.TRACKS)] for i in range(len(self.TRACKS) * 5)}
+        tracks.update({"lead@y.lv": "cimdi", "b2b@y.lv": "papirs", "sup@y.lv": "teipi"})
+        return g, tracks
+
+    def test_seven_groups_exclusive_and_complete(self):
+        self.assertEqual(len(E.GROUPS), 7)
+        self.assertEqual(sorted(E.GROUP_RULES.values()), sorted(E.GROUPS))
+        g, tracks = self.gates()
+        base = {e for e, _, x in g if x == "IN"}
+        per = {r: {e for e, _, x in E.narrow(g, tracks, r) if x == "IN"} for r in E.GROUP_RULES}
+        self.assertEqual(set().union(*per.values()), base)                                  # complete
+        self.assertEqual(sum(len(v) for v in per.values()), len(base))                      # exclusive
+        for r, v in per.items():                                                            # nobody gated out comes in
+            self.assertFalse(v & {"lead@y.lv", "b2b@y.lv", "sup@y.lv"})
+            self.assertEqual({x for _, _, x in E.narrow(g, tracks, r)} - {"IN", "OTHER_GROUP"},
+                             {"B2B_LEAD", "B2B_FLOW", "SUPPRESSED"})
+        for tr in ("cits", "inventars", None, "", "something new"):                         # no track = the gloves line
+            self.assertEqual(E.group_of(tr), "cimdi")
+        self.assertEqual(E.group_of("CIMDI "), "cimdi")
+        self.assertEqual(E.group_of("papirs"), "papirs")
+        self.assertEqual(E.narrow(g, tracks, "lv_edu_all"), g)
+
+    def test_pick_rule_audience(self):
+        g, tracks = self.gates()
+        self.assertEqual({x for _, _, x in E.narrow(g, tracks, "lv_edu_pick", None) if x.startswith("NO_")},
+                         {"NO_SELECTION_FOR_THE_DATE"})
+        got = E.narrow(g, tracks, "lv_edu_pick", {"p1@y.lv", "lead@y.lv"})
+        self.assertEqual([e for e, _, x in got if x == "IN"], ["p1@y.lv"])                  # a picked lead stays out
+
+    CAT = [{"letter_code": "G7", "edu_group": "cimdi", "piece": "G7", "sendable": True},
+           {"letter_code": "G1", "edu_group": "cimdi", "piece": "G1", "sendable": False},
+           {"letter_code": "D4", "edu_group": "dezinfekcija", "piece": "D4", "sendable": "true"},
+           {"letter_code": "K9", "edu_group": "visiem", "piece": "K9", "sendable": True}]
+
+    def test_pick_letter(self):
+        P = E.pick_letter
+        self.assertEqual(P("cimdi", 0, set(), self.CAT), ("G7", "own", "PICKED"))
+        self.assertEqual(P("cimdi", 0, {"G7"}, self.CAT), (None, "own", "NOTHING_UNSEEN_OWN"))     # never a seen piece
+        self.assertEqual(P("cimdi", 0, {"G7"}, self.CAT, fallback=True), ("D4", "own", "PICKED_FALLBACK"))
+        self.assertEqual(P("cimdi", 0, set(), self.CAT[1:2]), (None, "own", "NOTHING_UNSEEN_OWN"))  # not sendable
+        self.assertEqual(P("teipi", 0, set(), self.CAT), (None, "own", "NOTHING_UNSEEN_OWN"))      # group has no letter
+        self.assertEqual(P("cimdi", 2, set(), self.CAT), ("D4", "other", "PICKED"))                # the mix: 3rd week other
+        self.assertEqual(P("cimdi", 2, {"D4"}, self.CAT), ("K9", "other", "PICKED"))
+        self.assertEqual(P("cimdi", 2, {"D4", "K9"}, self.CAT), (None, "other", "NOTHING_UNSEEN_OTHER"))
+        self.assertEqual([P("cimdi", i, set(), self.CAT)[1] for i in range(8)],
+                         ["own", "own", "other", "other", "other", "own", "other", "own"])
+        self.assertEqual(P("cimdi", 0, set(), self.CAT, mix=("other",)), ("D4", "other", "PICKED"))  # the mix is a parameter
+        for grp in E.GROUPS:                                                 # at most one letter per person
+            for slot in range(9):
+                self.assertIn(P(grp, slot, set(), self.CAT)[0], (None, "G7", "D4", "K9"))
+
+    def test_alert(self):
+        cat = [dict(c, title="T-" + c["piece"]) for c in self.CAT]
+        self.assertEqual(E.render_alert("2026-10-08", [{"edu_group": "cimdi", "letter_code": "G7", "seen": ""}], cat), "")
+        a = E.render_alert("2026-10-08", [{"edu_group": "teipi", "letter_code": "", "seen": "G1,K9"},
+                                          {"edu_group": "teipi", "letter_code": None, "seen": "G1"},
+                                          {"edu_group": "papirs", "letter_code": "", "seen": ""},
+                                          {"edu_group": "cimdi", "letter_code": "G7", "seen": ""}], cat)
+        self.assertIn("nebūs ko sūtīt 3 klientiem", a)
+        self.assertIn("Grupa teipi: 2 klienti", a)
+        self.assertIn("T-G1 (2); T-K9 (1)", a)
+        self.assertIn("Grupa papirs: 1 klienti", a)
+        self.assertNotIn("Grupa cimdi", a)
+
+    def test_one_letter_per_person_and_date(self):
+        base = {"rule": "lv_edu_cimdi", "letter": {"approved_sha256": "x", "armed": True}, "inputs_stale": []}
+        self.assertTrue(any(r.startswith("OVERLAPS_ANOTHER_LETTER_OF_THE_DATE=3") for r in E.check_reasons(dict(base, overlap=3))))
+        self.assertFalse(any(r.startswith("OVERLAPS") for r in E.check_reasons(dict(base, overlap=0))))
+        self.assertTrue(any(r.startswith("EDU_ALL_INPUT_NOT_OF_TODAY") for r in E.check_reasons(dict(base, inputs_stale=None))))
+        s = {"letter": {"armed": True, "approved_sha256": "x"}, "send_date": "2026-10-08", "today": "2026-10-08",
+             "go": {"age_min": 1, "audience": 5}, "last_gate_kind": "GO", "audience": 5}
+        self.assertEqual(E.send_refusals(dict(s)), [])
+        self.assertEqual(E.send_refusals(dict(s, already_got=2)), ["RECIPIENTS_ALREADY_GOT_A_LETTER_TODAY=2"])
+        self.assertIn("letter_code != @c", E.SEEN_SQL + open(E.__file__, encoding="utf-8").read())
 
 
 if __name__ == "__main__":

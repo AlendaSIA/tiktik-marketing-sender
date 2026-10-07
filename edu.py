@@ -48,6 +48,21 @@ RULES = {"lv_glove_buyers": " AND info_track = 'cimdi'",     # LV people whose o
          "lv_all": "",                                        # every LV person the engine holds (MAIN 2026-10-07 14:21)
          "lv_edu_all": None}   # every OLD contact of the hand list minus B2B leads (Raivis 2026-10-07 15:17); own SQL
 EDU_ALL = "lv_edu_all"
+# SEVEN INTEREST GROUPS (MAIN 2026-10-07 17:19) by purchase track. Anybody without one of these tracks - no track at
+# all (old-account customers, sign-ups), 'cits', 'inventars' - is on the GLOVES line.
+GROUPS = ("cimdi", "dezinfekcija", "teipi", "papirs", "medicina", "tirisana", "apgerbs")
+DEFAULT_GROUP, GENERAL_GROUP = "cimdi", "visiem"          # 'visiem' = a letter of no group (documents, plans)
+GROUP_RULES = {"lv_edu_" + g: g for g in GROUPS}           # one audience rule per group, on top of lv_edu_all
+PICK_RULE = "lv_edu_pick"                                  # audience = whom the Tuesday selection gave THIS letter
+RULES.update({r: None for r in GROUP_RULES})
+RULES[PICK_RULE] = None
+EDU_ALL_RULES = (EDU_ALL, PICK_RULE) + tuple(GROUP_RULES)
+# THE MIX (Raivis 2026-10-07 11:02: "mostly their own group, but not the same group week after week", his example
+# gloves, gloves, disinfection, documents, cleaning plan, gloves, paper). One entry per Thursday the person has
+# already had from the engine, cycled: 'own' = a letter of the person's group, 'other' = of any other group.
+EDU_MIX = ("own", "own", "other", "other", "other", "own", "other")
+T_CAT, T_PSRC, T_PICK, T_PICKRUN = f"{M}.edu_catalog", f"{M}.edu_piece_source", f"{M}.edu_pick", f"{M}.edu_pick_run"
+T_SEENX = f"{M}.edu_seen_extra"
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
 INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
 FRESH_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # these must be of the day of the check
@@ -81,6 +96,15 @@ CREATE TABLE IF NOT EXISTS `{T_SENT}` (send_date DATE, letter_code STRING, campa
   source_campaign_id INT64, brevo_list_id INT64, master_key STRING, email STRING, sent_at TIMESTAMP,
   check_run STRING, test_only BOOL);
 CREATE TABLE IF NOT EXISTS `{T_BLIST}` (list_id INT64, email STRING, fetched_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS `{T_CAT}` (letter_code STRING, edu_group STRING, piece STRING, title STRING,
+  source_campaign_id INT64, sendable BOOL, prio INT64, note STRING, updated_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS `{T_PSRC}` (piece STRING, kind STRING, ref STRING);
+CREATE TABLE IF NOT EXISTS `{T_SEENX}` (email STRING, piece STRING, source STRING, loaded_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS `{T_PICK}` (pick_run STRING, thursday DATE, email STRING, master_key STRING,
+  track STRING, edu_group STRING, slot INT64, slot_kind STRING, letter_code STRING, reason STRING, seen STRING,
+  picked_at TIMESTAMP);
+CREATE TABLE IF NOT EXISTS `{T_PICKRUN}` (pick_run STRING, thursday DATE, mix STRING, fallback BOOL, people INT64,
+  picked INT64, nothing INT64, alert_text STRING, created_at TIMESTAMP);
 CREATE TABLE IF NOT EXISTS `{T_LOG}` (send_date DATE, letter_code STRING, logged_at TIMESTAMP, who STRING, event STRING,
   detail STRING);
 """
@@ -149,6 +173,71 @@ def edu_all_gates(rows) -> list:
     return [tuple(x) for x in out]
 
 
+def group_of(track) -> str:
+    """Every person has exactly ONE group: the track when it is one of the seven, otherwise the gloves line."""
+    t = (track or "").strip().lower()
+    return t if t in GROUPS else DEFAULT_GROUP
+
+
+def narrow(gates, tracks, rule, picked=None) -> list:
+    """lv_edu_all -> the audience of ONE rule. gates = edu_all_gates(...); tracks = {email: track}.
+    A group rule keeps the addresses of its group, the pick rule keeps the addresses the selection gave this letter
+    (picked = a set, None = no selection exists -> nobody). Nobody who is not IN in lv_edu_all can come in."""
+    if rule == EDU_ALL:
+        return list(gates)
+    out = []
+    for e, mk, g in gates:
+        if g == "IN":
+            if rule in GROUP_RULES:
+                g = "IN" if group_of(tracks.get(e)) == GROUP_RULES[rule] else "OTHER_GROUP"
+            elif rule == PICK_RULE:
+                g = "NO_SELECTION_FOR_THE_DATE" if picked is None else ("IN" if e in picked else "NOT_PICKED_FOR_THIS_LETTER")
+            else:
+                g = "UNKNOWN_RULE"
+        out.append((e, mk, g))
+    return out
+
+
+def pick_letter(group, slot, seen, catalog, mix=EDU_MIX, fallback=False):
+    """THE TUESDAY CHOICE for one person, pure. catalog = rows in catalogue order (letter_code, edu_group, piece,
+    sendable); seen = the pieces the person has had. -> (letter_code or None, 'own' | 'other', reason).
+    Only a sendable letter whose piece the person has NOT had can be chosen. Without fallback an 'own' Thursday with
+    nothing unseen in the own group is 'nothing' (and goes to the alert); with fallback it takes another group's."""
+    kind = mix[int(slot or 0) % len(mix)]
+    cands = [c for c in catalog if _b(c.get("sendable")) and c.get("piece") not in seen]
+    own = [c for c in cands if c.get("edu_group") == group]
+    other = [c for c in cands if c.get("edu_group") != group]
+    first, second = (own, other) if kind == "own" else (other, own)
+    if first:
+        return first[0]["letter_code"], kind, "PICKED"
+    if fallback and second:
+        return second[0]["letter_code"], kind, "PICKED_FALLBACK"
+    return None, kind, "NOTHING_UNSEEN_" + kind.upper()
+
+
+def render_alert(thursday, picks, catalog) -> str:
+    """The ALERT text for Raivis (Latvian), or '' when everybody has a letter. picks = [{edu_group, letter_code,
+    seen}] of one selection. Per group with people left without a letter: how many, and what they have already had."""
+    title = {c["piece"]: (c.get("title") or c["piece"]) for c in catalog}
+    left = {}
+    for p in picks:
+        if not p.get("letter_code"):
+            g = left.setdefault(p["edu_group"], {"n": 0, "seen": {}})
+            g["n"] += 1
+            for piece in [x for x in (p.get("seen") or "").split(",") if x]:
+                g["seen"][piece] = g["seen"].get(piece, 0) + 1
+    if not left:
+        return ""
+    total = sum(g["n"] for g in left.values())
+    lines = [f"ALERT: ceturtdien {thursday} nebūs ko sūtīt {total} klientiem (izglītojošā vēstule).", ""]
+    for name, g in sorted(left.items(), key=lambda kv: -kv[1]["n"]):
+        lines.append(f"Grupa {name}: {g['n']} klienti bez jaunas vēstules.")
+        had = sorted(g["seen"].items(), key=lambda kv: (-kv[1], kv[0]))
+        lines.append("  Jau saņemts: " + ("; ".join(f"{title.get(p, p)} ({n})" for p, n in had[:12]) or "nekas"))
+    lines += ["", "Vajag jaunu šablonu katrai no šīm grupām līdz ceturtdienai, citādi šie klienti vēstuli nesaņems."]
+    return "\n".join(lines)
+
+
 def stale_inputs(rows, today: str) -> list:
     """Which inputs of lv_edu_all are NOT of the day of the check. rows = [{name, day}]. Missing = stale."""
     return sorted(r["name"] for r in rows if str(r.get("day") or "")[:10] != today)
@@ -187,7 +276,9 @@ def check_reasons(s: dict) -> list:
         r.append("SALES_SWITCH_OPEN=" + str(s["sales_switch_open"])[:120])
     if s.get("tracks_enabled") not in (0, "0"):
         r.append(f"TRACK_ENABLED={s.get('tracks_enabled')}")
-    if s.get("rule") == EDU_ALL and s.get("inputs_stale") != []:
+    if s.get("overlap"):
+        r.append(f"OVERLAPS_ANOTHER_LETTER_OF_THE_DATE={s['overlap']} (one educational letter per person and date)")
+    if s.get("rule") in EDU_ALL_RULES and s.get("inputs_stale") != []:
         r.append("EDU_ALL_INPUT_NOT_OF_TODAY=" + ",".join(s.get("inputs_stale") or ["not checked"])[:200])
     if s.get("segment_age_h") is None or s["segment_age_h"] > SEGMENT_MAX_AGE_H or not s.get("segment_rows"):
         r.append(f"SEGMENT_MISSING_OR_OLD age_h={s.get('segment_age_h')}")
@@ -244,6 +335,8 @@ def send_refusals(s: dict) -> list:
             r.append(f"FROZEN_AUDIENCE_DIFFERS now={s.get('audience')} go={g.get('audience')}")
     if s.get("started"):
         r.append("ALREADY_STARTED (one send per letter and date)")
+    if s.get("already_got"):
+        r.append(f"RECIPIENTS_ALREADY_GOT_A_LETTER_TODAY={s['already_got']}")
     if L.get("test_only") and s.get("audience_emails") not in (None, [TEST_RECIPIENT]):
         r.append("TEST_AUDIENCE_IS_NOT_ONLY_THE_TEST_RECIPIENT")
     return r
@@ -458,7 +551,7 @@ def inputs(q) -> int:
                           "--update-env-vars", "^@^EDU_MODE=snapshot@EDU_SNAPSHOT_LISTS=" + ",".join(map(str, INPUT_LISTS))],
                          capture_output=True, text=True, timeout=160)
     q(LEADS_SQL)
-    r = q(f"SELECT COUNT(*) AS n, COUNTIF(is_lead) AS leads, COUNTIF(NOT is_lead) AS cold_but_bought FROM `{T_LEAD}`")[0]
+    r = q(f"SELECT COUNT(*) AS n, COUNTIF(is_lead) AS leads, COUNTIF(NOT is_lead) AS cold_source_not_lead FROM `{T_LEAD}`")[0]
     stale = edu_all_stale(q)
     print("EDU_INPUTS " + json.dumps({"snapshot_job_exit": out.returncode, "lead_table": r, "not_of_today": stale}))
     return 0 if not out.returncode and not stale and int(r["leads"]) > 0 else 1
@@ -495,7 +588,7 @@ s AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.email
 ld AS (SELECT DISTINCT email FROM `{T_LEAD}` WHERE is_lead),
 bs AS (SELECT LOWER(TRIM(email)) AS email, LOGICAL_OR(email_blocklisted OR NOT email_subscribed) AS blocked
        FROM `{P}.business_marts.brevo_contacts_snapshot` GROUP BY 1),
-sg AS (SELECT email, MIN(language) AS language FROM `{T_SEGMENT}` GROUP BY 1),
+sg AS (SELECT email, MIN(language) AS language, MIN(info_track) AS info_track FROM `{T_SEGMENT}` GROUP BY 1),
 -- B2B by e-mail, for addresses the engine holds no person for: the flow classification (its own e-mail, its Paytraq
 -- client's e-mail, the persons of its Pipedrive organisations) and Pipedrive organisation field 309 = B2B
 ex AS (SELECT p.org_id, LOWER(TRIM(e)) AS email FROM `{P}.channel_raw.pipedrive_persons` p,
@@ -516,15 +609,28 @@ x AS (SELECT email, LOGICAL_OR(list_id = 3) AS l3, LOGICAL_OR(list_id = 4) AS l4
 SELECT b.email, IFNULL(x.l3, FALSE) AS l3, IFNULL(x.l4, FALSE) AS l4, IFNULL(x.l46, FALSE) AS l46,
        IFNULL(x.l75, FALSE) AS l75,
        ld.email IS NOT NULL AS lead, s.email IS NOT NULL AS suppressed, IFNULL(bs.blocked, FALSE) AS blocked,
-       sg.language, a.email IS NOT NULL AS in_engine, a.excluded_reason, b2b.email IS NOT NULL AS b2b_email,
+       sg.language, sg.info_track AS track, a.email IS NOT NULL AS in_engine, a.excluded_reason,
+       b2b.email IS NOT NULL AS b2b_email,
        COALESCE(a.master_key, i.master_key) AS master_key, lvall.email IS NOT NULL AS in_lv_all
 FROM base b LEFT JOIN x USING (email) LEFT JOIN a USING (email) LEFT JOIN i USING (email) LEFT JOIN s USING (email)
 LEFT JOIN ld USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN lvall USING (email)
 LEFT JOIN b2b USING (email)"""
 
 
-def build_audience_edu_all(q, d, code, check_run, plan_run, test_only):
-    gates = edu_all_gates(q(edu_all_sql(), d=d, run=plan_run))
+def latest_pick(q, d, code=None):
+    """The latest selection for Thursday d -> (pick_run or None, set of addresses given `code`)."""
+    r = q(f"SELECT pick_run FROM `{T_PICKRUN}` WHERE thursday = @d ORDER BY created_at DESC LIMIT 1", d=d)
+    if not r:
+        return None, None
+    rows = q(f"SELECT email FROM `{T_PICK}` WHERE pick_run = @r AND letter_code = @c", r=r[0]["pick_run"], c=code or "")
+    return r[0]["pick_run"], {x["email"] for x in rows}
+
+
+def build_audience_edu_all(q, d, code, check_run, plan_run, test_only, rule=EDU_ALL):
+    rows = q(edu_all_sql(), d=d, run=plan_run)
+    picked = latest_pick(q, d, code)[1] if rule == PICK_RULE else None
+    gates = narrow(edu_all_gates(rows), {(r.get("email") or "").strip().lower(): r.get("track") for r in rows},
+                   rule, picked)
     funnel = {}
     for _, _, g in gates:
         funnel[g] = funnel.get(g, 0) + 1
@@ -542,8 +648,8 @@ def build_audience_edu_all(q, d, code, check_run, plan_run, test_only):
 def build_audience(q, d, code, check_run, plan_run, test_only, rule):
     """Freeze the audience of this check. -> (n, funnel). The real rule is always measured; a test_only letter
     then keeps ONE row, the test recipient - whatever the rule says about him."""
-    if rule == EDU_ALL:
-        return build_audience_edu_all(q, d, code, check_run, plan_run, test_only)
+    if rule in EDU_ALL_RULES:
+        return build_audience_edu_all(q, d, code, check_run, plan_run, test_only, rule)
     sql = audience_sql(rule)
     funnel = {r["gate"]: int(r["n"]) for r in q(f"SELECT gate, COUNT(*) AS n FROM ({sql}) GROUP BY 1", d=d, run=plan_run)}
     if test_only:
@@ -556,6 +662,80 @@ def build_audience(q, d, code, check_run, plan_run, test_only, rule):
     n = int(q(f"SELECT COUNT(*) AS n FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr",
               d=d, c=code, cr=check_run)[0]["n"])
     return n, funnel
+
+
+def overlap_other_letters(q, d, code, check_run) -> int:
+    """How many addresses of THIS frozen audience another letter of the same date already holds: in the audience of
+    its latest check when that check is a GO, or already sent to. Must be 0 - one educational letter per person."""
+    return int(q(f"""
+WITH lg AS (SELECT letter_code, ARRAY_AGG(STRUCT(kind, check_run) ORDER BY written_at DESC LIMIT 1)[OFFSET(0)] AS g
+            FROM `{T_GATE}` WHERE send_date = @d AND letter_code != @c AND kind IN ('GO', 'NO-GO') GROUP BY 1),
+o AS (SELECT a.email FROM `{T_AUD}` a JOIN lg ON lg.letter_code = a.letter_code AND lg.g.check_run = a.check_run
+      WHERE a.send_date = @d AND lg.g.kind = 'GO' AND a.email != '{TEST_RECIPIENT}'
+      UNION DISTINCT SELECT LOWER(email) FROM `{T_SENT}` WHERE send_date = @d AND letter_code != @c
+                     AND NOT IFNULL(test_only, FALSE))
+SELECT COUNT(*) AS n FROM `{T_AUD}` a JOIN o USING (email)
+WHERE a.send_date = @d AND a.letter_code = @c AND a.check_run = @cr""", d=d, c=code, cr=check_run)[0]["n"])
+
+
+SEEN_SQL = f"""
+WITH s AS (
+  SELECT LOWER(TRIM(h.email)) AS email, p.piece FROM `{M}.brevo_campaign_recipients_hist` h
+         JOIN `{T_PSRC}` p ON p.kind = 'campaign' AND SAFE_CAST(p.ref AS INT64) = h.campaign_id
+  UNION DISTINCT SELECT LOWER(TRIM(email)), piece FROM `{T_SEENX}`       -- sends outside the campaign history (04.06 catalogue letters), loaded once
+  UNION DISTINCT SELECT LOWER(TRIM(e.email)), c.piece FROM `{T_SENT}` e JOIN `{T_CAT}` c USING (letter_code)
+         WHERE NOT IFNULL(e.test_only, FALSE))
+SELECT email, STRING_AGG(piece, ',' ORDER BY piece) AS pieces FROM s WHERE email IS NOT NULL GROUP BY 1"""
+
+
+def pick(q, thursday, mix=EDU_MIX, fallback=False) -> int:
+    """THE TUESDAY SELECTION, a dry computation: for every address of lv_edu_all the letter of the coming Thursday, or
+    nothing unseen. Writes mkt_control.edu_pick + one edu_pick_run row with the ALERT text. Sends nothing, mails
+    nothing, schedules nothing. The plan run and the gates are those of TODAY."""
+    today = q("SELECT CAST(CURRENT_DATE('Europe/Riga') AS STRING) AS t")[0]["t"]
+    pr = q(f"SELECT run_id FROM `{M}.shadow_run_report` WHERE plan_date = @d ORDER BY finished_at DESC LIMIT 1", d=today)
+    stale = edu_all_stale(q)
+    if not pr or stale:
+        print("EDU_PICK " + json.dumps({"done": False, "why": "no plan run today" if not pr else "inputs not of today",
+                                        "not_of_today": stale}))
+        return 3
+    rows = q(edu_all_sql(), d=today, run=pr[0]["run_id"])
+    tracks = {(r.get("email") or "").strip().lower(): r.get("track") for r in rows}
+    people = [(e, mk) for e, mk, g in edu_all_gates(rows) if g == "IN"]
+    catalog = q(f"SELECT letter_code, edu_group, piece, title, sendable FROM `{T_CAT}` ORDER BY prio, letter_code")
+    seen = {r["email"]: r["pieces"] for r in q(SEEN_SQL)}
+    slots = {r["email"]: int(r["n"]) for r in q(
+        f"SELECT LOWER(TRIM(email)) AS email, COUNT(DISTINCT send_date) AS n FROM `{T_SENT}` "
+        f"WHERE NOT IFNULL(test_only, FALSE) GROUP BY 1")}
+    run = "pick-" + dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+    picks = []
+    for e, mk in people:
+        g, had = group_of(tracks.get(e)), seen.get(e, "")
+        code, kind, why = pick_letter(g, slots.get(e, 0), set(had.split(",")) if had else set(), catalog, mix, fallback)
+        picks.append({"e": e, "m": mk or "", "t": tracks.get(e) or "", "edu_group": g, "s": slots.get(e, 0),
+                      "k": kind, "letter_code": code or "", "r": why, "seen": had})
+    for part in chunks(picks, 2000):
+        q(f"INSERT INTO `{T_PICK}` (pick_run, thursday, email, master_key, track, edu_group, slot, slot_kind, "
+          f"letter_code, reason, seen, picked_at) SELECT @run, @d, JSON_VALUE(j, '$.e'), NULLIF(JSON_VALUE(j, '$.m'), ''), "
+          f"NULLIF(JSON_VALUE(j, '$.t'), ''), JSON_VALUE(j, '$.edu_group'), CAST(JSON_VALUE(j, '$.s') AS INT64), "
+          f"JSON_VALUE(j, '$.k'), NULLIF(JSON_VALUE(j, '$.letter_code'), ''), JSON_VALUE(j, '$.r'), "
+          f"JSON_VALUE(j, '$.seen'), CURRENT_TIMESTAMP() FROM UNNEST(@js) AS j", run=run, d=thursday,
+          js=[json.dumps(p, ensure_ascii=False) for p in part])
+    alert = render_alert(thursday, picks, catalog)
+    n_pick = sum(1 for p in picks if p["letter_code"])
+    q(f"INSERT INTO `{T_PICKRUN}` (pick_run, thursday, mix, fallback, people, picked, nothing, alert_text, created_at) "
+      f"VALUES (@run, @d, @mix, @fb, @n, @p, @z, @a, CURRENT_TIMESTAMP())", run=run, d=thursday, mix=",".join(mix),
+      fb=bool(fallback), n=len(picks), p=n_pick, z=len(picks) - n_pick, a=alert)
+    by = {}
+    for p in picks:
+        k = (p["edu_group"], p["letter_code"] or "-", p["r"])
+        by[k] = by.get(k, 0) + 1
+    print("EDU_PICK " + json.dumps({"done": True, "pick_run": run, "thursday": thursday, "mix": list(mix),
+                                    "fallback": bool(fallback), "people": len(picks), "picked": n_pick,
+                                    "nothing": len(picks) - n_pick, "alert_sent": False,
+                                    "by_group": [list(k) + [v] for k, v in sorted(by.items())]}, ensure_ascii=False))
+    print("EDU_ALERT_TEXT (rendered only, NOT sent)\n" + (alert or "(no alert: everybody has a letter)"))
+    return 0
 
 
 def sales_switches() -> dict:
@@ -637,7 +817,7 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
                                                                 else round(int(seg["age_min"]) / 60, 1))
         s["rule"] = (L or {}).get("audience_rule")
         s["rule_unknown"] = bool(L) and s["rule"] not in RULES
-        if s["rule"] == EDU_ALL:
+        if s["rule"] in EDU_ALL_RULES:
             s["inputs_stale"] = edu_all_stale(q)
         if L and s["plan_run"] and s["segment_rows"] and not s["rule_unknown"] and not s.get("inputs_stale"):
             s["audience"], s["funnel"] = build_audience(q, d, code, check_run, s["plan_run"], L["test_only"], s["rule"])
@@ -647,6 +827,8 @@ def check(q, d, code, wait_s=110, dash=True) -> int:
                     f"WHERE a.send_date = @d AND a.letter_code = @c AND a.check_run = @cr", d=d, c=code, cr=check_run)[0]
             dup, supp = int(bad["dup"]), int(bad["supp"])
             s["audience_bad"] = None if not dup and (not supp or L["test_only"]) else {"duplicates": dup, "suppressed": supp}
+            if not L["test_only"]:
+                s["overlap"] = overlap_other_letters(q, d, code, check_run)
             if L["test_only"]:
                 s["audience_emails"] = [r["email"] for r in q(
                     f"SELECT email FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr",
@@ -871,6 +1053,8 @@ def send(q, d, code, now=None) -> int:
         s["audience"] = len(aud)
         if L and L["test_only"]:
             s["audience_emails"] = [a["email"] for a in aud]
+    if s["go"] and L and not L["test_only"]:
+        s["already_got"] = overlap_other_letters(q, d, code, s["go"]["check_run"])
     refusals = send_refusals(s)
     if refusals:
         log(q, d, code, who, "SEND_REFUSED", {"reasons": refusals, "nothing_sent": True})
@@ -962,6 +1146,12 @@ def main(argv) -> int:
     code = (args.get("letter") or os.environ.get("EDU_LETTER") or "").strip()
     if mode in ("setup", "prepare", "inputs"):
         return {"setup": setup, "prepare": prepare, "inputs": inputs}[mode](query)
+    if mode == "pick":                                                     # dry: the Tuesday selection for Thursday d
+        dt.date.fromisoformat(d)
+        mix = tuple(x for x in (args.get("mix") or "").split(",") if x) or EDU_MIX
+        if any(x not in ("own", "other") for x in mix):
+            print("mix is a comma list of own|other"); return 2
+        return pick(query, d, mix, args.get("fallback", "0") == "1")
     if mode == "snapshot":                                                 # GET only: Brevo lists -> edu_brevo_list
         print("EDU_SNAPSHOT " + json.dumps(snapshot_lists(query, [int(x) for x in os.environ["EDU_SNAPSHOT_LISTS"].split(",")])))
         return 0
