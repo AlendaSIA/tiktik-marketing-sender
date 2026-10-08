@@ -457,11 +457,17 @@ class ProductSlots(unittest.TestCase):
     def test_shop_gate(self):
         v = self.vals()
         self.assertEqual(E.slot_problems(v, self.shop(), self.ok(v)), [])
-        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = 0                                  # no stock gate (Raivis 07.10 19:38)
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = 0                                  # Mozello stock 0: never shown (Raivis 08.10 13:58)
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["G1 MOZELLO_STOCK_0 sku= sku-0  stock=0"])
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = "0.000"
+        self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G1 MOZELLO_STOCK_0"))
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = -1                                 # oversold = nothing to sell
+        self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G1 MOZELLO_STOCK_0"))
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = None                               # untracked stock passes
         self.assertEqual(E.slot_problems(v, sh, self.ok(v)), [])
-        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = None
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = 1                                  # low stock is never a reason
         self.assertEqual(E.slot_problems(v, sh, self.ok(v)), [])
-        self.assertNotIn("OUT_OF_STOCK", open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read())
+        self.assertNotIn("OUT_OF_STOCK", open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read())  # no other stock rule
         sh = self.shop(); sh["SKU-1"]["mozello_sale_price"] = "8.49"
         self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G2 PRICE_DIFFERS"))
         sh = self.shop(); sh["SKU-1"]["mozello_sale_price"] = None                        # no sale price: PRICE = variant price

@@ -76,7 +76,8 @@ PARAM_KEYS = tuple(f"{a}_{b}" for a in PARAM_SLOTS for b in PARAM_FIELDS)   # th
 SKU_KEYS = tuple(f"{a}_SKU" for a in PARAM_SLOTS)
 FORM_KEYS = PARAM_KEYS + SKU_KEYS                  # 48
 # Price truth = the Mozello variant by SKU (Raivis: the variant price in Mozello admin is the true price).
-# NO stock gate: Raivis 2026-10-07 19:38 - low stock is never a reason not to send.
+# Stock (Raivis 2026-10-08 13:58, corrects 07.10 19:38): a variant with MOZELLO stock 0 is never shown in a letter;
+# low stock above 0 is never a reason to drop it; untracked stock (NULL) passes. Paytraq stock is never used.
 T_SHOP = f"{P}.business_marts.mozello_sku_handle"
 HIST_MAX_AGE_MIN = 30                              # a pick reads a history refreshed at most this long ago
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
@@ -313,7 +314,8 @@ def slot_problems(values, shop, http_ok) -> list:
     http_ok = {url: bool} for every URL and image of the letter. Per slot: the SKU is a Mozello variant, it is visible,
     STD = the variant price, PRICE = its sale price (the variant price when there is no sale price), compared as
     NUMBERS (comma or dot, euro sign - the value form is not fixed, never reject on form alone); page and image answer.
-    NO stock check (Raivis 2026-10-07 19:38). Anything unknown is a problem (fail closed)."""
+    Stock: the ONE stock check is Mozello stock of that variant <= 0 -> MOZELLO_STOCK_0 (Raivis 2026-10-08 13:58);
+    NULL (untracked) passes; any stock above 0 passes. Anything else unknown is a problem (fail closed)."""
     out = []
     for sl in PARAM_SLOTS:
         url, img = values.get(sl + "_URL"), values.get(sl + "_IMG")
@@ -323,6 +325,9 @@ def slot_problems(values, shop, http_ok) -> list:
         elif p.get("visible") is not True:
             out.append(f"{sl} NOT_VISIBLE sku={values.get(sl + '_SKU')}")
         else:
+            st = p.get("mozello_stock")
+            if st is not None and float(st) <= 0:
+                out.append(f"{sl} MOZELLO_STOCK_0 sku={values.get(sl + '_SKU')} stock={st}")
             std = p.get("mozello_price")
             eff = p.get("mozello_sale_price") if p.get("mozello_sale_price") is not None else std
             for fld, want in (("PRICE", eff), ("STD", std)):
@@ -874,7 +879,7 @@ def param_gate(q, d, code, fetch=http_answers):
     if problems:
         return problems, None, None
     values = {r["param_key"]: r["param_value"] for r in rows}
-    shop = {r["sku_key"]: r for r in q(f"SELECT sku_key, visible, mozello_price, mozello_sale_price FROM `{T_SHOP}` "
+    shop = {r["sku_key"]: r for r in q(f"SELECT sku_key, visible, mozello_price, mozello_sale_price, mozello_stock FROM `{T_SHOP}` "
                                          f"WHERE sku_key IS NOT NULL")}
     urls = sorted({values[f"{sl}_{f}"] for sl in PARAM_SLOTS for f in ("URL", "IMG")})
     problems = slot_problems(values, shop, {u: fetch(u) for u in urls})
