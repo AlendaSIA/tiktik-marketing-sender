@@ -64,10 +64,17 @@ EXCLUDED = "WRITER_EXCLUDED"
 # only status 'written'. No row for the person, a priced slot without its row, a row of another price role, or another
 # price -> the letter is held. No fallback to block/LQXS or to an older day. xs_intro stays out.
 CAB_MISSING = "CABINET_PRICE_MISSING"
-CAB_ROLES = {"winback_1": {"r1"}, "lost_quarterly": {"lq1_floor", "lq2_minus13"}, "reorder_1": {"negotiated"}}
+# Roles per PLAN letter type (MAIN 2026-10-08 16:40, identical for NS8's reader). E2 = every winback_*_e2.
+CAB_ROLES = {"winback_1": {"r1"}, "winback_2": {"r2"}, "winback_3": {"r3"},
+             "winback_1_e2": {"r2"}, "winback_2_e2": {"r2"}, "winback_3_e2": {"r2"},
+             "lost_quarterly": {"lq1_floor", "lq2_minus13", "negotiated"}, "reorder_1": {"negotiated"}}
+NO_ROW_SENDS = {"reorder_1"}     # MAIN 16:40: reorder_1 with no row is not held - it goes with no personal price
+# "Nakts sinhronizacija 8" marks a letter_fields row it held (would_send false / hold_reason CAB1_NO_ROW,
+# CAB1_RUN_NOT_OK, ...). A row the writer held is never sent: gate WRITER_HELD (MAIN 16:40).
+WRITER_HELD = "WRITER_HELD"
 _UNSET = object()
 ALL = (T_PROVISIONAL, T_NOT_APPROVED, PRICE_STALE, NO_OVU, NO_PRICE, NO_SLOT_ROW, NO_PRICED, XS4, XS_NOTHING_NEW, XS_REPEAT,
-       NO_ANKETA, RCAB, DATE_MISMATCH, EXCLUDED, NO_LF, CAB_MISSING)
+       NO_ANKETA, RCAB, DATE_MISMATCH, EXCLUDED, NO_LF, CAB_MISSING, WRITER_HELD)
 
 # Templates that print R1..R4 (grep "R1_NAME" over templates/ on feat/v2.8-price-fields @ 48dac94, 2026-10-05):
 # every lifecycle letter except 244. R-CAB applies to all of them.
@@ -97,6 +104,7 @@ class Ctx:
     letter_p: tuple = ()                                # CAB-1: the letter's priced P slots ((sku, price text), ...)
     cab: dict | None = None                             # CAB-1: {sku_key: (price_role, gross)} of today's ok run; None = none
     cab_checked: bool = False                           # the caller read CAB-1 (both production callers do)
+    writer_hold: str | None = None                      # the writer's own hold on this row (would_send false)
 
 
 def _dmy(v) -> str | None:
@@ -153,6 +161,8 @@ def cab_problem(email_type, letter_p, cab) -> bool:
     roles = CAB_ROLES.get(email_type)
     if roles is None:
         return False
+    if email_type in NO_ROW_SENDS and not letter_p:
+        return False                 # reorder_1 without a personal price: nothing to check
     if not cab:                      # no ok run today, or no row at all for this person
         return True
     for sku, price in letter_p:
@@ -163,6 +173,17 @@ def cab_problem(email_type, letter_p, cab) -> bool:
         if a is None or b is None or abs(a - b) > 0.005:
             return True
     return False
+
+
+def writer_hold_of(row):
+    """The writer's hold on its row: hold_reason when would_send is false (or 'held' when it gives none); None when
+    the row is sendable or carries no would_send column (older rows)."""
+    if not row or "would_send" not in row or row.get("would_send") is None:
+        return None
+    ws = row.get("would_send")
+    if ws is True or str(ws).lower() == "true":
+        return None
+    return (row.get("hold_reason") or "held")
 
 
 def build_ctx(*, email_type, template_id, template_approved, offer_valid_until, xsell_valid_until, has_price,
@@ -183,7 +204,8 @@ def build_ctx(*, email_type, template_id, template_approved, offer_valid_until, 
         letter_fields=row is not None, writer_excluded=excluded,
         row_offer_valid_until=use.get("OFFER_VALID_UNTIL") if use else None,
         row_xsell_valid_until=use.get("XSELL_VALID_UNTIL") if use else None,
-        letter_p=letter_priced_slots(use), cab=None if cab is _UNSET else cab, cab_checked=cab is not _UNSET)
+        letter_p=letter_priced_slots(use), cab=None if cab is _UNSET else cab, cab_checked=cab is not _UNSET,
+        writer_hold=writer_hold_of(row))
 
 
 def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
@@ -226,6 +248,8 @@ def gates(email_type: str | None, offer_rung, c: Ctx) -> list:
         out.append(RCAB)
     if c.cab_checked and row and cab_problem(email_type, c.letter_p, c.cab):
         out.append(CAB_MISSING)
+    if c.writer_hold:
+        out.append(WRITER_HELD)
     if c.writer_excluded:
         out.append(EXCLUDED)
     elif not c.letter_fields:

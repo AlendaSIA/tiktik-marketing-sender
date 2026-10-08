@@ -73,6 +73,28 @@ class EarlyStep(unittest.TestCase):
         self.assertFalse(A.recheck_ok(boom))
 
 
+class SevenThirtyCatchUp(unittest.TestCase):
+    def test_ok_early_build_is_not_repeated(self):
+        q = Q(log_ok=1)
+        self.assertEqual(A.ensure_early(q), "ok")
+        self.assertFalse(any(c.startswith("CALL") for c in q.calls))
+
+    def test_missing_build_runs_once_and_then_refuses_with_a_dash_row(self):
+        class Q2(Q):
+            def __call__(self, sql):
+                r = Q.__call__(self, sql)
+                if sql == A.RECHECK_SQL:
+                    return [{"ok": 1 if any(c.startswith("CALL") for c in self.calls) else 0}]
+                return r
+        self.assertEqual(A.ensure_early(Q2(log_ok=0)), "caught_up")
+        q = Q(log_ok=0, orders_today=False)
+        with self.assertRaises(RuntimeError):
+            A.ensure_early(q)
+        self.assertEqual(sum(1 for c in q.calls if c == A.FRESH_SQL), 1)             # one catch-up, not a loop
+        self.assertTrue(any(A.T_CHECK in c and "'assign_early_ok', 'hard', FALSE" in c for c in q.calls))
+        self.assertTrue(any(A.T_LOG in c and "FALSE" in c and "catchup" in c for c in q.calls))
+
+
 class SpPatch(unittest.TestCase):
     BODY = "BEGIN\n  CREATE OR REPLACE TABLE x AS\n  SELECT 1\n" + O.OLD + "\n    AND master_key IN (1);\nEND"
 
@@ -116,8 +138,7 @@ class SevenThirty(unittest.TestCase):
         src = open(os.path.join(ROOT, "bq.py"), encoding="utf-8").read()
         i = src.index('if os.environ.get("ASSIGN_MODE") == "recheck":')
         block = src[i:src.index('query(f"CALL {C.SP_ASSIGNMENT}()")')]
-        self.assertIn("recheck_ok", block)
-        self.assertIn("raise RuntimeError", block)
+        self.assertIn("ensure_early", block)
         self.assertIn("else:", block)                              # the CALL is only in the default branch
 
 

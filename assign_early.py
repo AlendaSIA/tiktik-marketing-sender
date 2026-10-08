@@ -14,7 +14,9 @@ does not move the person between LISTS (assignment, PAP audience, Brevo lists) -
   2. mkt_control.buyer_override rows of today = masters with a PAID Mozello order newer than last_order;
   3. CALL the assignment procedure config.SP_ASSIGNMENT (patched: today's override rows read as stage 'active');
   4. one mkt_control.assignment_build_log row (build_on, built_at, mode, override_rows, ok, detail).
-07:30 (bq.build_assignment with ASSIGN_MODE=recheck): no rebuild; refuses unless today's log row is ok.
+07:30 (bq.build_assignment with ASSIGN_MODE=recheck; MAIN 2026-10-08 16:40): today's early build ok -> no rebuild.
+No ok early build -> ONE catch-up run of the same step (same freshness gate, mode 'catchup'); still not ok ->
+refuse, log ok=false, and one hard row in mkt_control.shadow_selfcheck (check assign_early_ok) for the dash.
 
 Usage: python3 assign_early.py early | dry     (dry = steps 1-2 counted, nothing written)
 """
@@ -92,8 +94,9 @@ def run(q, mode="early") -> int:
     return 0 if viol == 0 else 3
 
 
-RECHECK_SQL = f"""SELECT COUNTIF(ok AND mode = 'early') AS ok FROM `{T_LOG}`
+RECHECK_SQL = f"""SELECT COUNTIF(ok AND mode IN ('early', 'catchup')) AS ok FROM `{T_LOG}`
 WHERE build_on = CURRENT_DATE('Europe/Riga')"""
+T_CHECK = f"{P}.mkt_control.shadow_selfcheck"
 
 
 def recheck_ok(q) -> bool:
@@ -102,6 +105,20 @@ def recheck_ok(q) -> bool:
         return int((q(RECHECK_SQL) or [{"ok": 0}])[0]["ok"] or 0) > 0
     except Exception:  # noqa: BLE001 - no table yet = no early build
         return False
+
+
+def ensure_early(q) -> str:
+    """07:30. 'ok' = today's early build is there; 'caught_up' = it was not, the catch-up run built it now.
+    Raises when the catch-up is not ok either (after logging ok=false and the dash row) - no plan on old lists."""
+    if recheck_ok(q):
+        return "ok"
+    rc = run(q, "catchup")
+    if rc == 0 and recheck_ok(q):
+        return "caught_up"
+    q(f"INSERT INTO `{T_CHECK}` (plan_date, run_id, check_name, level, ok, value, detail, checked_at) VALUES ("
+      f"CURRENT_DATE('Europe/Riga'), 'assign-0730', 'assign_early_ok', 'hard', FALSE, '{int(rc)}', "
+      f"'no ok early assignment build today; catch-up rc={int(rc)}', CURRENT_TIMESTAMP())")
+    raise RuntimeError(f"ASSIGN_EARLY_MISSING: no ok early assignment build today, catch-up rc={rc} - refusing")
 
 
 def _client_q():

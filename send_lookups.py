@@ -117,9 +117,9 @@ class Warehouse:
     """The four send_path lookups on real tables. One instance = one moment: every table is read once."""
 
     def __init__(self, query, paid_orders=None):
-        """paid_orders(since: datetime) -> [{email, paid_at}] = PAID Mozello orders created after `since`, read LIVE
-        (the BigQuery mirror refreshes once a night at ~04:21). None = no live source: every reactivation letter is
-        held with PAID_ORDERS_SOURCE_MISSING (no answer is never "nobody bought")."""
+        """paid_orders(since: datetime) -> [{email, paid_at}] = PAID Mozello orders created after `since` (production:
+        mirror_paid_since - the mirror re-fetched before the send window, max 60 min old). None or a raise = no
+        answer: every reactivation letter is held with PAID_ORDERS_SOURCE_MISSING (never "nobody bought")."""
         self._q, self._c, self._paid = query, {}, paid_orders
 
     def _rows(self, key, sql):
@@ -160,7 +160,7 @@ FROM `{T_PLAN}` WHERE plan_date = DATE '{d}' AND run_id = '{run}'""")
         if ("lf_by", d) not in self._c:
             rows = self._rows(("lf", d), f"""
 SELECT LOWER(TRIM(email)) AS email, email_type, letter, rung, g15_zero_priced, R1_REF_PRICE, OFFER_VALID_UNTIL,
-  XSELL_VALID_UNTIL, ANKETA_URL, ORDER_NR, plan_run_id, run_id, p_audit,
+  XSELL_VALID_UNTIL, ANKETA_URL, ORDER_NR, plan_run_id, run_id, p_audit, would_send, hold_reason,
   P1_PRICE, P2_PRICE, P3_PRICE, P4_PRICE, P5_PRICE, P6_PRICE, P7_PRICE, P8_PRICE
 FROM `{T_LF}` WHERE plan_date = DATE '{d}'
 QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
@@ -343,46 +343,32 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
         return out
 
 
-MOZELLO_ORDERS_URL = os.environ.get("MOZELLO_ORDERS_URL", "https://api.mozello.com/v1/store/orders/")
+MIRROR_MAX_AGE_MIN = 60      # MAIN 2026-10-08 16:40: an older mirror (or none) = PAID_ORDERS_SOURCE_MISSING
+T_MOZ = f"{P}.business_marts.mozello_orders"
 
 
-def mozello_paid_since(since, key=None, fetch=None, max_pages=20):
-    """LIVE paid Mozello orders created after `since` -> [{email, paid_at}]. The BigQuery mirror is a nightly copy
-    (~04:21), too old at send time. Raises on any error: the caller turns that into "unknown" (held), never "none".
-    UNVERIFIED (not run from this code yet): URL, auth header and field names follow the existing ingest job
-    (paytraq-daily-sync image, dist/jobs/mozelloOrdersProbe.js); check before wiring: run that job's probe."""
-    key = key or os.environ.get("MOZELLO_API_KEY")
-    if not key:
-        raise RuntimeError("MOZELLO_API_KEY not set")
-
-    def _get(url):
-        req = urllib.request.Request(url, headers={"Authorization": f"ApiKey {key}", "Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read())
-    fetch = fetch or _get
-    url = MOZELLO_ORDERS_URL + "?" + urllib.parse.urlencode({"created_after": since.astimezone(dt.timezone.utc)
-                                                             .strftime("%Y-%m-%d %H:%M:%S")})
-    out = []
-    for _ in range(max_pages):
-        page = fetch(url)
-        if not isinstance(page, dict) or page.get("error"):
-            raise RuntimeError(f"Mozello orders: {str(page)[:200]}")
-        for o in page.get("orders") or []:
-            if str(o.get("payment_status") or "").lower() == "paid" and o.get("email"):
-                out.append({"email": o["email"], "paid_at": o.get("created_at")})
-        url = page.get("next_page_uri") or page.get("next")
-        if not url:
-            return out
-    raise RuntimeError("Mozello orders: more pages than max_pages - refusing to answer on a partial list")
+def mirror_paid_since(q, since, now=None, max_age_min=MIRROR_MAX_AGE_MIN):
+    """PAID Mozello orders created after `since`, from the nightly mirror re-fetched before the send window.
+    Raises when the mirror's last fetch is missing or older than max_age_min: the caller turns that into
+    "unknown" (held), never into "nobody bought"."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    f = [dict(r) for r in q(f"SELECT CAST(MAX(source_fetched_at) AS STRING) AS f FROM `{T_MOZ}`")]
+    last = _ts(f[0].get("f")) if f else None
+    if last is None or (now - last).total_seconds() / 60 > max_age_min:
+        raise RuntimeError(f"Mozello orders mirror too old: last fetch {last}")
+    s = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return [{"email": r["email"], "paid_at": r["created_at"]} for r in (dict(x) for x in q(f"""
+SELECT LOWER(TRIM(email)) AS email, CAST(created_at AS STRING) AS created_at FROM `{T_MOZ}`
+WHERE payment_status = 'paid' AND email IS NOT NULL AND created_at > TIMESTAMP '{s}'"""))]
 
 
 def warehouse():
-    """Production transport (Cloud Run): a bigquery.Client. Read-only queries. The live paid-order source is wired
-    only when the job has MOZELLO_API_KEY; without it every reactivation letter is held (PAID_ORDERS_SOURCE_MISSING)."""
+    """Production transport (Cloud Run): a bigquery.Client. Read-only queries. Paid orders come from the mirror
+    business_marts.mozello_orders with the 60-minute freshness rule (MAIN 2026-10-08 16:40, no live key)."""
     from google.cloud import bigquery
     c = bigquery.Client(project=P)
-    return Warehouse(lambda sql: c.query(sql).result(),
-                     mozello_paid_since if os.environ.get("MOZELLO_API_KEY") else None)
+    q = lambda sql: c.query(sql).result()  # noqa: E731
+    return Warehouse(q, lambda since: mirror_paid_since(q, since))
 
 
 def cli_query(sql):

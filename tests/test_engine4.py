@@ -286,7 +286,7 @@ class PreSendGates(unittest.TestCase):
         self.assertEqual(G.gates("reorder_1", 0, G.Ctx(letter_fields=True, writer_excluded=True)),
                          [G.T_NOT_APPROVED, G.EXCLUDED])
         self.assertEqual(G.gates(None, 0, G.Ctx()), [])
-        self.assertEqual(len(set(G.ALL)), 16)
+        self.assertEqual(len(set(G.ALL)), 17)
 
     def test_job_stores_the_gate_next_to_the_plan_and_never_changes_would_send(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()

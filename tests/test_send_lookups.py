@@ -389,18 +389,27 @@ class BuyerOverrideAtSend(unittest.TestCase):
                                 person_blocks=lambda *a: self.wh(None).person_blocks(*a, NOW))
         self.assertEqual(closed, [("L9", "person re-check: PAID_ORDERS_SOURCE_MISSING 1")])
 
-    def test_mozello_reader_pages_and_refuses_errors(self):
-        pages = {"u1": {"orders": [{"email": "a@x.lv", "created_at": "2026-10-06 08:00:00", "payment_status": "paid"},
-                                   {"email": "b@x.lv", "created_at": "2026-10-06 08:01:00", "payment_status": "pending"}],
-                        "next_page_uri": "u2"},
-                 "u2": {"orders": [{"email": "c@x.lv", "created_at": "2026-10-06 08:02:00", "payment_status": "PAID"}]}}
+    def test_mirror_reader_60_minute_rule(self):
+        now = dt.datetime(2026, 10, 6, 9, 0, tzinfo=dt.timezone.utc)
         since = dt.datetime(2026, 10, 6, 5, 0, tzinfo=dt.timezone.utc)
-        got = L.mozello_paid_since(since, key="k", fetch=lambda u: pages["u1" if "created_after" in u else u])
-        self.assertEqual([o["email"] for o in got], ["a@x.lv", "c@x.lv"])
-        with self.assertRaises(RuntimeError):
-            L.mozello_paid_since(since, key="k", fetch=lambda u: {"error": True, "error_code": 403})
-        with self.assertRaises(RuntimeError):
-            L.mozello_paid_since(since, key="k", fetch=lambda u: {"orders": [], "next_page_uri": "again"})
+        calls = []
+
+        def q(fetched):
+            def f(sql):
+                calls.append(sql)
+                if "MAX(source_fetched_at)" in sql:
+                    return [{"f": fetched}]
+                return [{"email": "a@x.lv", "created_at": "2026-10-06 08:00:00"}]
+            return f
+        got = L.mirror_paid_since(q("2026-10-06 08:20:00"), since, now)
+        self.assertEqual(got, [{"email": "a@x.lv", "paid_at": "2026-10-06 08:00:00"}])
+        self.assertIn("payment_status = 'paid'", calls[-1])
+        self.assertIn("created_at > TIMESTAMP '2026-10-06 05:00:00'", calls[-1])
+        for stale in ("2026-10-06 07:59:00", None):                       # 61 min old / never fetched
+            with self.assertRaises(RuntimeError):
+                L.mirror_paid_since(q(stale), since, now)
+        held = self.wh(lambda since: L.mirror_paid_since(q("2026-10-06 07:00:00"), since, now))
+        self.assertEqual(held.person_blocks(D, ["m1"], NOW), {"m1": S.HOLD_PAID_SOURCE_MISSING})
 
 
 class Cab1AtSend(unittest.TestCase):
@@ -441,3 +450,20 @@ class Cab1AtSend(unittest.TestCase):
                                                 "P2_PRICE": "6,90 €", "P3_PRICE": ""}),
                          (("FM26656M", "18,00 €"), ("77-640", "6,90 €")))
         self.assertEqual(G.letter_priced_slots({"p_audit": "", "P1_PRICE": "1 €"}), ((None, "1 €"),))
+        # MAIN 16:40 roles
+        row = {"X": ("r2", "5.00")}
+        self.assertFalse(G.cab_problem("winback_2", (("X", "5,00 €"),), row))
+        self.assertFalse(G.cab_problem("winback_3_e2", (("X", "5,00 €"),), row))
+        self.assertTrue(G.cab_problem("winback_1", (("X", "5,00 €"),), row))            # PAP label defect -> held
+        self.assertTrue(G.cab_problem("winback_3", (("X", "5,00 €"),), row))
+        self.assertFalse(G.cab_problem("lost_quarterly", (("X", "5,00 €"),), {"X": ("negotiated", "5")}))
+        self.assertFalse(G.cab_problem("reorder_1", (), None))                         # no price, no row: goes
+        self.assertFalse(G.cab_problem("reorder_1", (), {}))
+        self.assertTrue(G.cab_problem("reorder_1", (("X", "5,00 €"),), None))            # prints a price nobody wrote
+
+    def test_writer_held_row_is_never_sent(self):
+        for ws, hr in (("false", "CAB1_NO_ROW"), ("false", "CAB1_RUN_NOT_OK"), (False, None)):
+            lf = [dict(r, would_send=ws, hold_reason=hr) if r["email"] == "a@x.lv" else r for r in LF]
+            self.assertIn(G.WRITER_HELD, gates_of(WH(Fake(lf=lf)), "m1", "winback_1", 1))
+        lf = [dict(r, would_send="true", hold_reason=None) if r["email"] == "a@x.lv" else r for r in LF]
+        self.assertNotIn(G.WRITER_HELD, gates_of(WH(Fake(lf=lf)), "m1", "winback_1", 1))
