@@ -251,6 +251,16 @@ SELECT m.master_key,
                  ORDER BY x.order_on DESC, x.id DESC LIMIT 1)[OFFSET(0)] AS o
 FROM m JOIN x USING (id) GROUP BY 1
 """
+# BUYER OVERRIDE (b, planner side; MAIN 2026-10-08 14:00): the P6 deal is not the only trace of a fresh purchase -
+# measured 04.10: a paid Mozello order with no P6 deal slipped past ORDER_AFTER_LAST_PURCHASE. The newest PAID Mozello
+# order per master (nightly ingest, ~04:21) is a second source for that hold.
+MOZ_PAID_SQL = f"""
+WITH idn AS (SELECT DISTINCT email_norm, master_key FROM `{P}.business_marts.customer_identity`
+             WHERE master_key IS NOT NULL AND email_norm IS NOT NULL)
+SELECT i.master_key, MAX(mo.created_date) AS paid_on
+FROM `{P}.business_marts.mozello_orders` mo JOIN idn i ON i.email_norm = LOWER(TRIM(mo.email))
+WHERE mo.payment_status = 'paid' AND mo.created_date >= DATE_SUB(CURRENT_DATE('Europe/Riga'), INTERVAL 180 DAY)
+GROUP BY 1"""
 PP_ORDER_MATCH_DAYS = 7      # the P6 deal belongs to THIS purchase when it is not older than last_order - 7 d
 ORDER_NR_OK = r"[A-Z0-9 _./-]{1,40}"     # FS8: what anketa_url() accepts as an order number (upper-cased)
 
@@ -536,6 +546,7 @@ def main():
     if not flow_src["classification_b2b"]:
         raise RuntimeError("B2B guard source empty - refusing to plan without the B2B / LEAD guard")
     pp_orders = {r["master_key"]: dict(r["o"]) for r in bq.query(PP_SQL).result()}
+    moz_paid = {r["master_key"]: r["paid_on"] for r in bq.query(MOZ_PAID_SQL).result()}
     lqxs = {r["master_key"]: r for r in bq.query(LQXS_SQL).result()}
     lqxs_built_at = next(iter(bq.query(LQXS_BUILT_SQL).result()))["built_at"]
     r_goods = {r["email"]: (tuple(r["r"]), tuple(r["r_cab"])) for r in bq.query(R_SQL).result()}
@@ -615,7 +626,9 @@ def main():
         if g15 in (S.HOLD_NO_PRICED, S.HOLD_NO_SLOT_ROW) and g15 != hold:
             g15_report[g15] = g15_report.get(g15, 0) + 1
         shop_order = pp_orders.get(mk)
-        hold = S.recent_order_hold(d.next_email_type, hold, shop_order and _d(shop_order.get("order_on")),
+        hold = S.recent_order_hold(d.next_email_type, hold,
+                                   S.latest_shop_order(shop_order and _d(shop_order.get("order_on")),
+                                                       _d(moz_paid.get(mk))),
                                    _d(f["last_order"]))                      # K6 / L5 on orders the stage cannot see yet
         flow, flow_from = flows.get(mk, (None, None))
         hold = S.flow_hold(d.next_email_type, hold, flow)                            # B2B / LEAD guard

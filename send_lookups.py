@@ -44,6 +44,10 @@ SFX = os.environ.get("SHADOW_TABLE_SUFFIX", "")
 T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
 T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
 PERSONAL = "PERSONAL_LETTER_THIS_WEEK"
+# CAB-1 (interface fixed by MAIN 2026-10-08 13:52 - same wording to "PAP cenu bloks 7" and "Nakts sinhronizacija 8").
+T_CAB = f"{P}.mkt_control.cabinet_price_current"
+T_CABLOG = f"{P}.mkt_control.cabinet_price_log"
+T_IDN = f"{P}.business_marts.customer_identity"
 # Daily shadow sample (CF5, MAIN 2026-10-06): the picks. Mailed by job tiktik-shadow-sample (shadow_sample.py).
 T_SAMPLE = f"{P}.mkt_control.shadow_sample{SFX}"
 SAMPLE_JOB = "tiktik-shadow-sample"
@@ -112,8 +116,11 @@ def _day(v) -> str:
 class Warehouse:
     """The four send_path lookups on real tables. One instance = one moment: every table is read once."""
 
-    def __init__(self, query):
-        self._q, self._c = query, {}
+    def __init__(self, query, paid_orders=None):
+        """paid_orders(since: datetime) -> [{email, paid_at}] = PAID Mozello orders created after `since`, read LIVE
+        (the BigQuery mirror refreshes once a night at ~04:21). None = no live source: every reactivation letter is
+        held with PAID_ORDERS_SOURCE_MISSING (no answer is never "nobody bought")."""
+        self._q, self._c, self._paid = query, {}, paid_orders
 
     def _rows(self, key, sql):
         if key not in self._c:
@@ -144,7 +151,7 @@ class Warehouse:
 SELECT master_key, LOWER(TRIM(email)) AS email, email_type, template_id, offer_rung,
   CAST(planned_send_date AS STRING) AS planned_send_date, CAST(offer_valid_until AS STRING) AS offer_valid_until,
   CAST(xsell_valid_until AS STRING) AS xsell_valid_until, trigger_order_nr, would_send, hold_reason, lost_capped,
-  run_id
+  run_id, CAST(planned_at AS STRING) AS planned_at
 FROM `{T_PLAN}` WHERE plan_date = DATE '{d}' AND run_id = '{run}'""")
         return {r["master_key"]: r for r in rows}
 
@@ -153,7 +160,8 @@ FROM `{T_PLAN}` WHERE plan_date = DATE '{d}' AND run_id = '{run}'""")
         if ("lf_by", d) not in self._c:
             rows = self._rows(("lf", d), f"""
 SELECT LOWER(TRIM(email)) AS email, email_type, letter, rung, g15_zero_priced, R1_REF_PRICE, OFFER_VALID_UNTIL,
-  XSELL_VALID_UNTIL, ANKETA_URL, ORDER_NR, plan_run_id, run_id
+  XSELL_VALID_UNTIL, ANKETA_URL, ORDER_NR, plan_run_id, run_id, p_audit,
+  P1_PRICE, P2_PRICE, P3_PRICE, P4_PRICE, P5_PRICE, P6_PRICE, P7_PRICE, P8_PRICE
 FROM `{T_LF}` WHERE plan_date = DATE '{d}'
 QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
             for r in rows:
@@ -190,20 +198,39 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
         self._c["shared"] = sh
         return sh
 
+    # ---- CAB-1 reader rule: only today's run_id with log ok = true, only status = 'written'
+    def cab(self, send_date):
+        """{email: {sku_key: (price_role, cabinet_price_gross)}} of run 'cab-YYYYMMDD' of the send date, or None when
+        that run has no ok log row. Never another day, never a dry run (cab-dry-...), never a fallback."""
+        d = _date(send_date)
+        run = "cab-" + d.strftime("%Y%m%d")
+        if ("cab", run) not in self._c:
+            ok = self._rows(("cablog", run), f"SELECT COUNTIF(ok) AS ok FROM `{T_CABLOG}` WHERE run_id = '{run}'")
+            if not ok or not _i(ok[0].get("ok")):
+                self._c[("cab", run)] = None
+            else:
+                m = {}
+                for r in self._rows(("cabrows", run), f"""
+SELECT LOWER(TRIM(email)) AS email, sku, price_role, CAST(cabinet_price_gross AS STRING) AS gross
+FROM `{T_CAB}` WHERE run_id = '{run}' AND status = 'written'"""):
+                    m.setdefault(r["email"], {})[G.sku_key(r["sku"])] = (r["price_role"], r["gross"])
+                self._c[("cab", run)] = m
+        return self._c[("cab", run)]
+
     # ---- L8
     def presend_ctx(self, campaign, send_date, master_keys, now=None) -> dict:
         d = _date(send_date)
         sh, plan, lf = self._shared(now or dt.datetime.now(dt.timezone.utc)), self.plan_rows(d), self.lf_rows(d)
-        et, out = campaign.get("email_type"), {}
+        et, out, cab = campaign.get("email_type"), {}, self.cab(d)
         for mk in master_keys:
             p = plan.get(mk)
             if not p or p["email_type"] != et or not _b(p["would_send"]) or _date(p["planned_send_date"]) != d:
                 continue          # not this letter today: no Ctx, and presend_lock refuses an empty Ctx
-            out[mk] = self._ctx(p, d, sh, lf)
+            out[mk] = self._ctx(p, d, sh, lf, None if cab is None else cab.get(p["email"]))
         return out
 
     @staticmethod
-    def _ctx(p, d, sh, lf):
+    def _ctx(p, d, sh, lf, cab):
         et, rung, mk = p["email_type"], _i(p["offer_rung"]) or 0, p["master_key"]
         ovu, xvu = _date(p["offer_valid_until"]), _date(p["xsell_valid_until"])
         lx = sh["lqxs"].get(mk)
@@ -226,7 +253,8 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
             xsell_valid_until=xvu, has_price=has,
             price_stale=sh["lqxs_stale"] if et in (S.LOST, S.XSELL) else sh["rung_stale"],
             row=row if row and row["email_type"] == et else None, trigger_order_nr=p.get("trigger_order_nr"),
-            r_handles=r, r_cabinet=r_cab, xsell_offered=sh["offered"].get(mk, frozenset()), xs_price_holds=xs_holds)
+            r_handles=r, r_cabinet=r_cab, xsell_offered=sh["offered"].get(mk, frozenset()), xs_price_holds=xs_holds,
+            cab=cab)
 
     # ---- L4 (TC4)
     def template_content(self, now=None) -> list:
@@ -276,14 +304,85 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
                 out[mk] = S.HOLD_NOT_BUYER
             elif p and p["email_type"] in S.RULE8A_TYPES and p["email"] not in sh["kab"]:
                 out[mk] = S.HOLD_RULE8A
+        # BUYER OVERRIDE (c): a paid Mozello order after the plan was made cancels a reactivation letter.
+        react = {mk: plan[mk] for mk in master_keys if mk not in out and plan.get(mk)
+                 and plan[mk]["email_type"] in S.REACTIVATION_TYPES}
+        if react:
+            bought = self.bought_since(min((_ts(p.get("planned_at")) or dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc))
+                                           for p in react.values()))
+            for mk, p in react.items():
+                if bought is None:
+                    out[mk] = S.HOLD_PAID_SOURCE_MISSING
+                elif S.bought_since_plan(p["email_type"], _ts(p.get("planned_at")), bought.get(mk)):
+                    out[mk] = S.HOLD_BOUGHT_SINCE_PLAN
+        return out
+
+    def bought_since(self, since):
+        """{master_key: [paid_at, ...]} of PAID Mozello orders after `since`, or None when there is no live source or
+        it failed. The e-mail of the order is mapped to the person through business_marts.customer_identity."""
+        if self._paid is None:
+            return None
+        try:
+            orders = [o for o in (self._paid(since) or []) if o.get("email") and o.get("paid_at")]
+        except Exception:  # noqa: BLE001 - an unreadable source is "unknown", which holds; never "nobody bought"
+            return None
+        if not orders:
+            return {}
+        emails = sorted({o["email"].strip().lower() for o in orders})
+        if any("'" in e or "\\" in e for e in emails):
+            return None
+        idn = self._q(f"SELECT DISTINCT email_norm, master_key FROM `{T_IDN}` WHERE master_key IS NOT NULL "
+                      f"AND email_norm IN ({', '.join(repr(e) for e in emails)})")
+        mk_of = {}
+        for r in idn:
+            mk_of.setdefault(dict(r)["email_norm"], set()).add(dict(r)["master_key"])
+        out = {}
+        for o in orders:
+            for mk in mk_of.get(o["email"].strip().lower(), ()):
+                out.setdefault(mk, []).append(_ts(o["paid_at"]))
         return out
 
 
+MOZELLO_ORDERS_URL = os.environ.get("MOZELLO_ORDERS_URL", "https://api.mozello.com/v1/store/orders/")
+
+
+def mozello_paid_since(since, key=None, fetch=None, max_pages=20):
+    """LIVE paid Mozello orders created after `since` -> [{email, paid_at}]. The BigQuery mirror is a nightly copy
+    (~04:21), too old at send time. Raises on any error: the caller turns that into "unknown" (held), never "none".
+    UNVERIFIED (not run from this code yet): URL, auth header and field names follow the existing ingest job
+    (paytraq-daily-sync image, dist/jobs/mozelloOrdersProbe.js); check before wiring: run that job's probe."""
+    key = key or os.environ.get("MOZELLO_API_KEY")
+    if not key:
+        raise RuntimeError("MOZELLO_API_KEY not set")
+
+    def _get(url):
+        req = urllib.request.Request(url, headers={"Authorization": f"ApiKey {key}", "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    fetch = fetch or _get
+    url = MOZELLO_ORDERS_URL + "?" + urllib.parse.urlencode({"created_after": since.astimezone(dt.timezone.utc)
+                                                             .strftime("%Y-%m-%d %H:%M:%S")})
+    out = []
+    for _ in range(max_pages):
+        page = fetch(url)
+        if not isinstance(page, dict) or page.get("error"):
+            raise RuntimeError(f"Mozello orders: {str(page)[:200]}")
+        for o in page.get("orders") or []:
+            if str(o.get("payment_status") or "").lower() == "paid" and o.get("email"):
+                out.append({"email": o["email"], "paid_at": o.get("created_at")})
+        url = page.get("next_page_uri") or page.get("next")
+        if not url:
+            return out
+    raise RuntimeError("Mozello orders: more pages than max_pages - refusing to answer on a partial list")
+
+
 def warehouse():
-    """Production transport (Cloud Run): a bigquery.Client. Read-only queries."""
+    """Production transport (Cloud Run): a bigquery.Client. Read-only queries. The live paid-order source is wired
+    only when the job has MOZELLO_API_KEY; without it every reactivation letter is held (PAID_ORDERS_SOURCE_MISSING)."""
     from google.cloud import bigquery
     c = bigquery.Client(project=P)
-    return Warehouse(lambda sql: c.query(sql).result())
+    return Warehouse(lambda sql: c.query(sql).result(),
+                     mozello_paid_since if os.environ.get("MOZELLO_API_KEY") else None)
 
 
 def cli_query(sql):
@@ -392,7 +491,7 @@ def personal_this_week(wh, send_date, now) -> dict:
     The week and the letter set are the planner's (sequence_job.akcija_week, sequence.SALES_TYPES)."""
     d = _date(send_date)
     _tue, _label, mon, sun = _job().akcija_week(d)
-    sh, lf = wh._shared(now), wh.lf_rows(d)
+    sh, lf, cab = wh._shared(now), wh.lf_rows(d), wh.cab(d)
     rows = [p for p in wh.plan_rows(d).values() if _b(p["would_send"]) and p["email_type"] in S.SALES_TYPES
             and p.get("planned_send_date") and mon <= _date(p["planned_send_date"]) <= sun]
     blocks = wh.person_blocks(d, [p["master_key"] for p in rows], now)
@@ -403,7 +502,8 @@ def personal_this_week(wh, send_date, now) -> dict:
             continue
         if due > d:
             out[p["master_key"]] = (p["email_type"], due.isoformat(), "planned_later_this_week")           # SG7a
-        elif due == d and not G.gates(p["email_type"], _i(p["offer_rung"]) or 0, wh._ctx(p, d, sh, lf)):
+        elif due == d and not G.gates(p["email_type"], _i(p["offer_rung"]) or 0,
+                                      wh._ctx(p, d, sh, lf, None if cab is None else cab.get(p["email"]))):
             out[p["master_key"]] = (p["email_type"], due.isoformat(), "deliverable_today")                 # SG7
     return out
 

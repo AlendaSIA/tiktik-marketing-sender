@@ -76,6 +76,16 @@ TC = [{"template_id": "180", "email_type": "winback_1", "approved": "true", "app
       {"template_id": "9180", "email_type": "winback_1_e2", "approved": "true", "approved_sha256": None, "approved_commit": None, "html_sha256": None, "error": None, "checked_at": None}]
 
 
+# CAB-1 default: today's ok run holds a row for every person whose letter type has a CAB price role
+CAB = [{"email": p["email"], "sku": "SKU-1", "price_role": sorted(G.CAB_ROLES[p["email_type"]])[0], "gross": "5.49"}
+       for p in PLAN if p["email_type"] in G.CAB_ROLES]
+
+
+def WH(q, paid=lambda since: []):
+    """A Warehouse with a live paid-order source that saw no order (the default of these tests)."""
+    return L.Warehouse(q, paid)
+
+
 class Fake:
     """query(sql) -> rows, matched on the SQL TEXT the engine really sends."""
 
@@ -97,6 +107,12 @@ class Fake:
             return [dict(r) for r in o.get("tc", TC)]
         if f"FROM `{L.T_LF}`" in sql:
             return [dict(r) for r in o.get("lf", LF)]
+        if f"FROM `{L.T_CABLOG}`" in sql:
+            return o.get("cablog", [{"ok": "1"}])
+        if f"FROM `{L.T_CAB}`" in sql:
+            return [dict(r) for r in o.get("cab", CAB)]
+        if f"FROM `{L.T_IDN}`" in sql and "email_norm IN (" in sql:
+            return [dict(r) for r in o.get("idn", [{"email_norm": p["email"], "master_key": p["master_key"]} for p in PLAN])]
         fresh = (NOW - dt.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
         answers = {
             J.RUNG_BUILT_SQL: [{"built_at": o.get("rung_built", fresh)}],
@@ -128,7 +144,7 @@ def gates_of(wh, mk, et, rung=0):
 
 class L8OnTables(unittest.TestCase):
     def test_each_gate_from_the_rows(self):
-        wh = L.Warehouse(Fake())
+        wh = WH(Fake())
         self.assertEqual(gates_of(wh, "m1", "winback_1", 1), [])                       # priced row, dates equal
         self.assertEqual(gates_of(wh, "m2", "winback_1", 1), [G.NO_PRICED])            # G15 from the row
         self.assertEqual(gates_of(wh, "m3", "winback_1", 1), [G.NO_LF])                # no row: only that
@@ -139,7 +155,7 @@ class L8OnTables(unittest.TestCase):
         self.assertEqual(gates_of(wh, "m8", S.PP1), [G.NO_ANKETA])                     # WO3: link of another order
 
     def test_no_ctx_for_another_letter_a_later_day_or_a_held_row_and_the_lock_refuses(self):
-        wh = L.Warehouse(Fake())
+        wh = WH(Fake())
         self.assertEqual(wh.presend_ctx({"email_type": "winback_2"}, D, ["m1"], NOW), {})
         self.assertEqual(wh.presend_ctx({"email_type": "reorder_1"}, D, ["m9", "m12", "nobody"], NOW), {})
         closed = SP.presend_lock(campaign={"email_type": "winback_2", "rung": 2}, send_date=D,
@@ -148,7 +164,7 @@ class L8OnTables(unittest.TestCase):
 
     def test_stale_price_table_is_no_price(self):
         old = (NOW - dt.timedelta(hours=40)).strftime("%Y-%m-%d %H:%M:%S")
-        wh = L.Warehouse(Fake(rung_built=old))
+        wh = WH(Fake(rung_built=old))
         self.assertTrue(wh._shared(NOW)["rung_stale"])
 
     def test_one_builder_for_planner_and_send_path(self):
@@ -169,7 +185,7 @@ class TemplateContentTC4(unittest.TestCase):
         self.assertNotIn("LEFT JOIN", sql)
 
     def test_l4_from_the_mirror_and_live(self):
-        wh = L.Warehouse(Fake())
+        wh = WH(Fake())
         tc = {t["template_id"]: t for t in wh.template_content(NOW)}
         self.assertEqual({k: v["content_approved"] for k, v in tc.items()},
                          {180: True, 234: False, 179: False, 235: False, 9180: False})   # mismatch, NULL, stale mirror
@@ -182,15 +198,15 @@ class TemplateContentTC4(unittest.TestCase):
         self.assertFalse(wh.template_approved(179, live_hash=lambda i: H2))           # NULL stays closed
 
     def test_nothing_approved_closes_every_letter_first(self):
-        wh = L.Warehouse(Fake(approved=[]))
+        wh = WH(Fake(approved=[]))
         self.assertEqual(gates_of(wh, "m1", "winback_1", 1), [G.T_NOT_APPROVED])
         self.assertEqual(gates_of(wh, "m3", "winback_1", 1), [G.T_NOT_APPROVED, G.NO_LF])
         res = L.evaluate(wh, D, NOW)
         self.assertEqual(sum(r["deliverable"] for r in res["rows"]), 0)
 
     def test_mirror_checks(self):
-        res = L.evaluate(L.Warehouse(Fake()), D, NOW)
-        res["template_content"] = {"refresh_error": None, "refreshed": True, "rows": L.Warehouse(Fake()).template_content(NOW)}
+        res = L.evaluate(WH(Fake()), D, NOW)
+        res["template_content"] = {"refresh_error": None, "refreshed": True, "rows": WH(Fake()).template_content(NOW)}
         cs = {c["check_name"]: c for c in L.checks(res)}
         self.assertFalse(cs["sendtime_template_hash_mirror_fresh"]["ok"])              # 235's mirror row is 30 h old
         self.assertEqual(cs["sendtime_template_content"]["value"], "1")
@@ -203,7 +219,7 @@ class TemplateContentTC4(unittest.TestCase):
 
 class L9OnTables(unittest.TestCase):
     def test_b2b_and_en(self):
-        wh = L.Warehouse(Fake())
+        wh = WH(Fake())
         self.assertEqual(wh.person_blocks(D, ["m1", "m10", "m11"], NOW), {"m10": S.HOLD_B2B, "m11": S.HOLD_EN})
         closed = SP.person_lock(send_date=D, audience=[{"master_key": "m10"}],
                                 person_blocks=lambda *a: wh.person_blocks(*a, NOW))
@@ -211,7 +227,7 @@ class L9OnTables(unittest.TestCase):
 
     def test_pa1_pa2_rechecked_at_send(self):
         # m1 is not a tiktik buyer; m5 (winback_1) and m6 (235) have no cabinet products; m10 stays B2B, m11 stays EN
-        wh = L.Warehouse(Fake(buyers=[{"master_key": p["master_key"]} for p in PLAN if p["master_key"] != "m1"],
+        wh = WH(Fake(buyers=[{"master_key": p["master_key"]} for p in PLAN if p["master_key"] != "m1"],
                               kab=[{"email": p["email"]} for p in PLAN if p["master_key"] not in ("m5", "m6")]))
         self.assertEqual(wh.person_blocks(D, ["m1", "m2", "m5", "m6", "m10", "m11"], NOW),
                          {"m1": S.HOLD_NOT_BUYER, "m5": S.HOLD_RULE8A, "m10": S.HOLD_B2B, "m11": S.HOLD_EN})   # 235 has no rule 8a
@@ -221,16 +237,16 @@ class L9OnTables(unittest.TestCase):
         self.assertFalse(by["m5"]["deliverable"])
         self.assertTrue(by["m6"]["deliverable"])
         with self.assertRaises(RuntimeError):
-            L.Warehouse(Fake(buyers=[])).person_blocks(D, ["m1"], NOW)
+            WH(Fake(buyers=[])).person_blocks(D, ["m1"], NOW)
 
     def test_empty_guard_source_is_no_answer(self):
         with self.assertRaises(RuntimeError):
-            L.Warehouse(Fake(flows=[])).person_blocks(D, ["m1"], NOW)
+            WH(Fake(flows=[])).person_blocks(D, ["m1"], NOW)
 
 
 class L10OnTables(unittest.TestCase):
     def lock(self, now=NOW, **over):
-        wh = L.Warehouse(Fake(**over))
+        wh = WH(Fake(**over))
         return SP.window_lock(send_date=D, now=now, letter_fields=wh.letter_fields, plan_run=wh.plan_run)
 
     def test_open_refused_and_why(self):
@@ -252,12 +268,12 @@ class L10OnTables(unittest.TestCase):
         self.assertIn("plan_date = DATE '2026-10-06' GROUP BY", q.calls[0])
         self.assertNotIn("1=1", q.calls[0])
         with self.assertRaises(ValueError):
-            L.Warehouse(Fake()).plan_run("tomorrow")
+            WH(Fake()).plan_run("tomorrow")
 
 
 class EvaluateAndRecord(unittest.TestCase):
     def test_send_time_answer(self):
-        res = L.evaluate(L.Warehouse(Fake()), D, NOW)
+        res = L.evaluate(WH(Fake()), D, NOW)
         self.assertEqual((res["L10"], res["would_send"], res["due_today"], res["planned_later"]),
                          ([], 11, 10, {"reorder_1": 1}))
         by = {r["master_key"]: r for r in res["rows"]}
@@ -274,7 +290,7 @@ class EvaluateAndRecord(unittest.TestCase):
         self.assertEqual({c["level"] for c in cs.values()}, {"hard", "info"})
 
     def test_writer_missing_is_a_hard_failure(self):
-        res = L.evaluate(L.Warehouse(Fake(log=[], lf=[])), D, NOW)
+        res = L.evaluate(WH(Fake(log=[], lf=[])), D, NOW)
         cs = {c["check_name"]: c for c in L.checks(res)}
         self.assertFalse(cs["sendtime_l10_writer_ok_on_latest_plan"]["ok"])
         self.assertEqual(cs["sendtime_deliverable_by_type"]["value"], "0")
@@ -294,7 +310,7 @@ class EvaluateAndRecord(unittest.TestCase):
         # (not a sales letter); m2 is gated; m9 (179, due 07.10) is PLANNED later this week (SG7a); m10 / m11 keep the
         # planner's own reason; m14 was PERSONAL by an older evaluation and has no deliverable letter now -> back in.
         q = Fake()
-        wh = L.Warehouse(q)
+        wh = WH(q)
         personal = L.personal_this_week(wh, D, NOW)
         self.assertEqual(personal, {"m1": ("winback_1", "2026-10-06", "deliverable_today"),
                                     "m6": (S.XSELL, "2026-10-06", "deliverable_today"),
@@ -314,7 +330,7 @@ class EvaluateAndRecord(unittest.TestCase):
             if p["master_key"] == "m12":
                 p["planned_send_date"] = "2026-10-08"
         with unittest.mock.patch(__name__ + ".PLAN", later):
-            p2 = L.personal_this_week(L.Warehouse(Fake(approved=[], lf=[])), D, NOW)
+            p2 = L.personal_this_week(WH(Fake(approved=[], lf=[])), D, NOW)
         self.assertEqual(p2, {"m9": ("reorder_1", "2026-10-12", "planned_later_this_week")})   # the Monday is inside
         q.calls.clear()
         L.akcija_record(q, D, plan)
@@ -335,3 +351,93 @@ class EvaluateAndRecord(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuyerOverrideAtSend(unittest.TestCase):
+    """Raivis 2026-10-08 13:29 / MAIN 14:00 (b): BOUGHT_SINCE_PLAN and PAID_ORDERS_SOURCE_MISSING at send time (L9)."""
+    PLANNED = "2026-10-06 05:05:00"
+
+    def plan_with_time(self):
+        return [dict(p, planned_at=self.PLANNED) for p in PLAN]
+
+    def wh(self, paid, **over):
+        f = Fake(**over)
+        plan_rows = self.plan_with_time()
+        orig = f.__call__
+
+        class F:
+            def __call__(_, sql):
+                if f"FROM `{L.T_PLAN}`" in sql and "GROUP BY run_id" not in sql:
+                    return [dict(r) for r in plan_rows]
+                return orig(sql)
+        return L.Warehouse(F(), paid)
+
+    def test_paid_after_plan_holds_only_reactivation_letters(self):
+        after = "2026-10-06 07:10:00"
+        paid = lambda since: [{"email": "a@x.lv", "paid_at": after}, {"email": "f@x.lv", "paid_at": after},   # noqa: E731
+                              {"email": "i@x.lv", "paid_at": "2026-10-06 04:00:00"}]                         # m9: before the plan
+        got = self.wh(paid).person_blocks(D, ["m1", "m6", "m9", "m2"], NOW)
+        self.assertEqual(got, {"m1": S.HOLD_BOUGHT_SINCE_PLAN})       # m6 = 235 (not reactivation), m9 bought BEFORE the plan
+
+    def test_no_or_failing_source_holds_every_reactivation_letter(self):
+        def boom(since):
+            raise RuntimeError("down")
+        for paid in (None, boom):
+            got = self.wh(paid).person_blocks(D, ["m1", "m6", "m9"], NOW)
+            self.assertEqual(got, {"m1": S.HOLD_PAID_SOURCE_MISSING, "m9": S.HOLD_PAID_SOURCE_MISSING})
+        closed = SP.person_lock(send_date=D, audience=[{"master_key": "m1"}],
+                                person_blocks=lambda *a: self.wh(None).person_blocks(*a, NOW))
+        self.assertEqual(closed, [("L9", "person re-check: PAID_ORDERS_SOURCE_MISSING 1")])
+
+    def test_mozello_reader_pages_and_refuses_errors(self):
+        pages = {"u1": {"orders": [{"email": "a@x.lv", "created_at": "2026-10-06 08:00:00", "payment_status": "paid"},
+                                   {"email": "b@x.lv", "created_at": "2026-10-06 08:01:00", "payment_status": "pending"}],
+                        "next_page_uri": "u2"},
+                 "u2": {"orders": [{"email": "c@x.lv", "created_at": "2026-10-06 08:02:00", "payment_status": "PAID"}]}}
+        since = dt.datetime(2026, 10, 6, 5, 0, tzinfo=dt.timezone.utc)
+        got = L.mozello_paid_since(since, key="k", fetch=lambda u: pages["u1" if "created_after" in u else u])
+        self.assertEqual([o["email"] for o in got], ["a@x.lv", "c@x.lv"])
+        with self.assertRaises(RuntimeError):
+            L.mozello_paid_since(since, key="k", fetch=lambda u: {"error": True, "error_code": 403})
+        with self.assertRaises(RuntimeError):
+            L.mozello_paid_since(since, key="k", fetch=lambda u: {"orders": [], "next_page_uri": "again"})
+
+
+class Cab1AtSend(unittest.TestCase):
+    """CAB-1 (MAIN 2026-10-08 13:52): reader rule and CABINET_PRICE_MISSING (L8)."""
+
+    def lf_priced(self, price="5,49 €", sku="SKU-1"):
+        rows = [dict(r) for r in LF]
+        for r in rows:
+            if r["email"] == "a@x.lv":
+                r.update(P1_PRICE=price, p_audit=f'"1:{sku}:u"')
+        return rows
+
+    def test_price_must_equal_the_cabinet(self):
+        self.assertNotIn(G.CAB_MISSING, gates_of(WH(Fake(lf=self.lf_priced())), "m1", "winback_1", 1))
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(lf=self.lf_priced("5,99 €"))), "m1", "winback_1", 1))
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(lf=self.lf_priced(sku="OTHER"))), "m1", "winback_1", 1))
+
+    def test_no_ok_run_or_no_row_holds(self):
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(cablog=[{"ok": "0"}])), "m1", "winback_1", 1))
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(cablog=[])), "m1", "winback_1", 1))
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(cab=[c for c in CAB if c["email"] != "a@x.lv"])), "m1", "winback_1", 1))
+        wrong_role = [dict(c, price_role="r2") if c["email"] == "a@x.lv" else c for c in CAB]
+        self.assertIn(G.CAB_MISSING, gates_of(WH(Fake(cab=wrong_role, lf=self.lf_priced())), "m1", "winback_1", 1))
+
+    def test_reader_reads_only_todays_run(self):
+        q = Fake()
+        WH(q).cab(D)
+        sqls = [s for s in q.calls if L.T_CAB in s or L.T_CABLOG in s]
+        self.assertTrue(sqls and all("'cab-20261006'" in s for s in sqls))
+        self.assertTrue(any("status = 'written'" in s for s in sqls))
+
+    def test_pure_rule(self):
+        self.assertFalse(G.cab_problem("active_xsell", (("X", "1"),), None))                  # xs stays out
+        self.assertTrue(G.cab_problem("lost_quarterly", (), {}))                              # no row for the person
+        self.assertFalse(G.cab_problem("lost_quarterly", (("x-1", "7,90 €"),), {"X-1": ("lq2_minus13", "7.9")}))
+        self.assertTrue(G.cab_problem("reorder_1", (("X", "7,90 €"),), {"X": ("r1", "7.90")}))  # reorder_1 = negotiated only
+        self.assertEqual(G.letter_priced_slots({"p_audit": '"1:FM26656M:u 2:77-640:u"', "P1_PRICE": "18,00 €",
+                                                "P2_PRICE": "6,90 €", "P3_PRICE": ""}),
+                         (("FM26656M", "18,00 €"), ("77-640", "6,90 €")))
+        self.assertEqual(G.letter_priced_slots({"p_audit": "", "P1_PRICE": "1 €"}), ((None, "1 €"),))

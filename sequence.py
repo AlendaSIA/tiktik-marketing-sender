@@ -171,6 +171,30 @@ def recent_order_hold(email_type, hold, shop_order_on, last_order_on):
     return hold
 
 
+# BUYER OVERRIDE (Raivis 2026-10-08 13:29, MAIN 14:00; Sūtīšanas dzinējs 7): a client who bought today must not get a
+# reactivation letter tomorrow. customer_lifecycle.last_order comes from Paytraq documents 1-2 days late, so a paid
+# Mozello order is read directly: (a) at ~04:55 into mkt_control.buyer_override before the weekly assignment is built
+# (assign_early.py), (b) by the planner as a second source next to the P6 deal (latest_shop_order), and (c) at SEND
+# time: a paid Mozello order after the plan's planned_at refuses the letter (send_lookups, L9).
+REACTIVATION_TYPES = None                 # filled below (needs LADDER_TYPES): reorder / winback E1+E2 / lost
+HOLD_BOUGHT_SINCE_PLAN = "BOUGHT_SINCE_PLAN"
+HOLD_PAID_SOURCE_MISSING = "PAID_ORDERS_SOURCE_MISSING"   # the live order source could not be read: no answer, no send
+
+
+def latest_shop_order(*dates):
+    """The newest of the shop-order dates the sources know (P6 deal, paid Mozello order); None when none."""
+    ds = [d for d in dates if d is not None]
+    return max(ds) if ds else None
+
+
+def bought_since_plan(email_type, planned_at, paid_at) -> bool:
+    """paid_at = the times of this person's PAID Mozello orders. True = a reactivation letter planned before one of
+    them must not go out. Unknown planned_at with any paid order = bought (fail closed)."""
+    if email_type not in REACTIVATION_TYPES or not paid_at:
+        return False
+    return planned_at is None or any(t > planned_at for t in paid_at)
+
+
 def language_hold(email_type, hold, is_en: bool):
     """G-EN guard: the hold reason after the language check (hold None = would send)."""
     if is_en and email_type and hold not in EN_KEEPS:
@@ -257,6 +281,7 @@ LADDER_TYPES = E1_TYPES | E2_TYPES | {"lost_quarterly"}
 # SALES letters; 244 asks about an order and sells nothing, so it does not take the week's akcija away
 # (interpretation of Sūtīšanas dzinējs 4, reported).
 SALES_TYPES = {"reorder_1", XSELL} | LADDER_TYPES
+REACTIVATION_TYPES = {"reorder_1"} | LADDER_TYPES   # BUYER OVERRIDE: the letters a fresh purchase cancels
 RULE8A_TYPES = {"reorder_1"} | LADDER_TYPES          # PA2: 179 / 180-233 (E1 and E2) / 234; never 235 or 244
 PA3_TYPES = ("reorder_1", "winback_1", "lost_quarterly")   # the stage audiences the weekly assignment names
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}
