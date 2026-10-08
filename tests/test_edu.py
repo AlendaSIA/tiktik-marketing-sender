@@ -403,7 +403,8 @@ class ProductSlots(unittest.TestCase):
         v = {}
         for i, sl in enumerate(E.PARAM_SLOTS):
             v.update({sl + "_NAME": "Prece " + sl, sl + "_URL": f"https://www.tiktik.lv/veikals/item/p{i}/",
-                      sl + "_IMG": f"https://img.example/p{i}.jpg", sl + "_STD": "9,99 €", sl + "_PRICE": "7.99"})
+                      sl + "_IMG": f"https://img.example/p{i}.jpg", sl + "_STD": "9,99 €", sl + "_PRICE": "7.99",
+                      sl + "_SKU": f" sku-{i} "})
         v.update(over)
         return v
 
@@ -411,7 +412,7 @@ class ProductSlots(unittest.TestCase):
         return [{"param_key": k, "param_value": x, "set_day": day} for k, x in v.items()]
 
     def shop(self):
-        return {f"https://www.tiktik.lv/veikals/item/p{i}": {"std_price": "9.99", "eff_price": "7.99", "stock": "5"}
+        return {f"SKU-{i}": {"visible": True, "mozello_price": "9.99", "mozello_sale_price": "7.99", "mozello_stock": 5}
                 for i in range(8)}
 
     def ok(self, v):
@@ -419,17 +420,25 @@ class ProductSlots(unittest.TestCase):
 
     def test_the_forty_keys(self):
         self.assertEqual(len(E.PARAM_KEYS), 40)
+        self.assertEqual(len(E.FORM_KEYS), 48)
+        self.assertEqual(E.SKU_KEYS, tuple(sl + "_SKU" for sl in E.PARAM_SLOTS))
+        self.assertFalse(set(E.SKU_KEYS) & set(E.PARAM_KEYS))
         self.assertEqual(E.PARAM_KEYS[:5], ("G1_NAME", "G1_URL", "G1_IMG", "G1_STD", "G1_PRICE"))
         self.assertEqual(E.PARAM_KEYS[-1], "T4_PRICE")
 
     def test_complete_for_the_date(self):
         v = self.vals()
         self.assertEqual(E.param_problems(self.rows(v), "2026-10-08"), [])
-        self.assertTrue(E.param_problems([], "2026-10-08")[0].startswith("MISSING 40 of 40"))
+        self.assertTrue(E.param_problems([], "2026-10-08")[0].startswith("MISSING 48 of 48"))
         r = [x for x in self.rows(v) if x["param_key"] != "T3_PRICE"]
-        self.assertEqual(E.param_problems(r, "2026-10-08"), ["MISSING 1 of 40: T3_PRICE"])
+        self.assertEqual(E.param_problems(r, "2026-10-08"), ["MISSING 1 of 48: T3_PRICE"])
+        r = [x for x in self.rows(v) if x["param_key"] != "G2_SKU"]
+        self.assertEqual(E.param_problems(r, "2026-10-08"), ["MISSING 1 of 48: G2_SKU"])
+        forty = [x for x in self.rows(v) if not x["param_key"].endswith("_SKU")]           # yesterday's 40-key form
+        self.assertTrue(E.param_problems(forty, "2026-10-08")[0].startswith("MISSING 8 of 48"))
+        self.assertIn("EMPTY T4_SKU", E.param_problems(self.rows(self.vals(T4_SKU="")), "2026-10-08"))
         self.assertIn("EMPTY G2_NAME", E.param_problems(self.rows(self.vals(G2_NAME="  ")), "2026-10-08"))
-        self.assertEqual(len(E.param_problems(self.rows(v, "2026-10-07"), "2026-10-08")), 40)       # yesterday's values
+        self.assertEqual(len(E.param_problems(self.rows(v, "2026-10-07"), "2026-10-08")), 48)       # yesterday's values
         self.assertIn("DUPLICATE G1_URL", E.param_problems(self.rows(v) + self.rows(v)[1:2], "2026-10-08"))
         self.assertIn("UNKNOWN_KEY G9_NAME", E.param_problems(self.rows(dict(v, G9_NAME="x")), "2026-10-08"))
 
@@ -439,6 +448,7 @@ class ProductSlots(unittest.TestCase):
         self.assertEqual(len(h), 64)
         self.assertEqual(h, E.params_sha(dict(reversed(list(v.items())))))               # order of rows does not matter
         self.assertNotEqual(h, E.params_sha(dict(v, T2_PRICE="8.99")))                    # one price does
+        self.assertNotEqual(h, E.params_sha(dict(v, T2_SKU="other")))                     # one SKU does too
         self.assertEqual(E.send_refusals_params(h, v), [])
         self.assertTrue(E.send_refusals_params(h, dict(v, G1_PRICE="1.00"))[0].startswith("PARAM_VALUES_NOT_THOSE_OF_THE_GO"))
         self.assertTrue(E.send_refusals_params(None, v)[0].startswith("PARAM_VALUES_NOT_THOSE_OF_THE_GO"))
@@ -447,12 +457,24 @@ class ProductSlots(unittest.TestCase):
     def test_shop_gate(self):
         v = self.vals()
         self.assertEqual(E.slot_problems(v, self.shop(), self.ok(v)), [])
-        sh = self.shop(); sh["https://www.tiktik.lv/veikals/item/p0"]["stock"] = "0"
-        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["G1 OUT_OF_STOCK"])
-        sh = self.shop(); sh["https://www.tiktik.lv/veikals/item/p1"]["eff_price"] = "8.49"
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = 0                                  # no stock gate (Raivis 07.10 19:38)
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), [])
+        sh = self.shop(); sh["SKU-0"]["mozello_stock"] = None
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), [])
+        self.assertNotIn("OUT_OF_STOCK", open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read())
+        sh = self.shop(); sh["SKU-1"]["mozello_sale_price"] = "8.49"
         self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G2 PRICE_DIFFERS"))
-        sh = self.shop(); del sh["https://www.tiktik.lv/veikals/item/p7"]                 # hidden or gone
-        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["T4 NOT_A_VISIBLE_SHOP_PRODUCT"])
+        sh = self.shop(); sh["SKU-1"]["mozello_sale_price"] = None                        # no sale price: PRICE = variant price
+        self.assertTrue(E.slot_problems(v, sh, self.ok(v))[0].startswith("G2 PRICE_DIFFERS"))
+        self.assertEqual(E.slot_problems(self.vals(G2_PRICE="9.99"), sh, self.ok(v)), [])
+        sh = self.shop(); sh["SKU-7"]["visible"] = False
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["T4 NOT_VISIBLE sku= sku-7 "])
+        sh = self.shop(); del sh["SKU-7"]
+        self.assertEqual(E.slot_problems(v, sh, self.ok(v)), ["T4 SKU_NOT_IN_MOZELLO sku= sku-7 "])
+        self.assertEqual(E.slot_problems(self.vals(G1_PRICE="7,99 €", G1_STD="9.99 EUR"), self.shop(), self.ok(v)), [])  # numbers, not form
+        sh = self.shop(); sh["SKU-0"].update(mozello_price=9, mozello_sale_price=None)
+        self.assertEqual(E.slot_problems(self.vals(G1_PRICE="9", G1_STD="9,00"), sh, self.ok(v)), [])
+        self.assertEqual(E.sku_key("\tab-1\u00a0"), "AB-1")
         ok = self.ok(v); ok[v["T1_IMG"]] = False; del ok[v["G3_URL"]]
         self.assertEqual(E.slot_problems(v, self.shop(), ok), ["G3 URL_DOES_NOT_ANSWER", "T1 IMAGE_DOES_NOT_ANSWER"])
         self.assertTrue(E.slot_problems(self.vals(G4_STD="n/a"), self.shop(), self.ok(v))[0].startswith("G4 STD_DIFFERS"))
@@ -468,6 +490,7 @@ class ProductSlots(unittest.TestCase):
         p = E.campaign_payload(src, "E", 9, [4], v)
         self.assertEqual(list(p["params"]), list(E.PARAM_KEYS))
         self.assertEqual(p["params"]["T4_PRICE"], "7.99")
+        self.assertFalse([k for k in p["params"] if k.endswith("_SKU")])                   # _SKU never goes to Brevo
         self.assertNotIn("params", E.campaign_payload(src, "E", 9, [4]))
         self.assertNotIn("params", E.campaign_payload(src, "E", 9, [4], None))
         base = {"rule": "lv_all", "letter": {"approved_sha256": "x", "armed": True}}

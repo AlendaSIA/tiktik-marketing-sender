@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import os
 import subprocess
 import sys
@@ -69,8 +70,14 @@ T_HIST, T_HSTATE = f"{M}.brevo_campaign_recipients_hist", f"{M}.edu_hist_state" 
 # engine's copy sets them from the table and the read-back cannot prove them - the values hash logged at GO does.
 T_PARAM = f"{M}.edu_letter_param"
 PARAM_SLOTS, PARAM_FIELDS = ("G1", "G2", "G3", "G4", "T1", "T2", "T3", "T4"), ("NAME", "URL", "IMG", "STD", "PRICE")
-PARAM_KEYS = tuple(f"{a}_{b}" for a in PARAM_SLOTS for b in PARAM_FIELDS)
-T_SHOP = f"{P}.business_marts.product_catalog"      # the shop as the letter must match it: visible products only
+PARAM_KEYS = tuple(f"{a}_{b}" for a in PARAM_SLOTS for b in PARAM_FIELDS)   # the 40 sent to Brevo
+# MAIN 2026-10-08 10:06: the form is 48 keys per letter and date = the 40 + one _SKU per slot. The _SKU keys are NEVER
+# sent to Brevo; they name the Mozello VARIANT the slot's prices are checked against. params_sha covers all 48.
+SKU_KEYS = tuple(f"{a}_SKU" for a in PARAM_SLOTS)
+FORM_KEYS = PARAM_KEYS + SKU_KEYS                  # 48
+# Price truth = the Mozello variant by SKU (Raivis: the variant price in Mozello admin is the true price).
+# NO stock gate: Raivis 2026-10-07 19:38 - low stock is never a reason not to send.
+T_SHOP = f"{P}.business_marts.mozello_sku_handle"
 HIST_MAX_AGE_MIN = 30                              # a pick reads a history refreshed at most this long ago
 T_LEAD, T_REG = f"{M}.b2b_lead_email", f"{M}.b2b_cold_register"     # who is a B2B cold lead; the GP / dental registers
 INPUT_LISTS = (3, 4, 46, 75, 52, 53, 55, 56, 57, 58)                 # Brevo lists the snapshot job reads for this rule
@@ -255,15 +262,16 @@ def render_alert(thursday, picks, catalog) -> str:
 
 def param_problems(rows, today) -> list:
     """Is the letter complete for the date? rows = [{param_key, param_value, set_day}] of one date + letter.
-    All 40 keys, each once, each non-empty, each set TODAY; no key outside the 40. -> [] or every problem."""
+    All 48 keys (40 params + 8 _SKU), each once, each non-empty, each set TODAY; no key outside the 48.
+    -> [] or every problem."""
     out, seen = [], {}
     for r in rows:
         seen.setdefault(r.get("param_key"), []).append(r)
-    missing = [k for k in PARAM_KEYS if k not in seen]
+    missing = [k for k in FORM_KEYS if k not in seen]
     if missing:
-        out.append(f"MISSING {len(missing)} of 40: " + ",".join(missing[:8]))
+        out.append(f"MISSING {len(missing)} of {len(FORM_KEYS)}: " + ",".join(missing[:8]))
     for k, rs in seen.items():
-        if k not in PARAM_KEYS:
+        if k not in FORM_KEYS:
             out.append(f"UNKNOWN_KEY {k}")
         elif len(rs) > 1:
             out.append(f"DUPLICATE {k}")
@@ -275,9 +283,9 @@ def param_problems(rows, today) -> list:
 
 
 def params_sha(values) -> str:
-    """THE hash of the 40 slot values: sha256 of compact JSON, keys in the fixed order. Logged at GO, recomputed by
-    the send - one changed price between the two and the send refuses."""
-    return hashlib.sha256(json.dumps([[k, values[k]] for k in PARAM_KEYS], ensure_ascii=False,
+    """THE hash of the 48 form values (40 params + 8 _SKU): sha256 of compact JSON, keys in the fixed order. Logged at
+    GO, recomputed by the send - one changed price or SKU between the two and the send refuses."""
+    return hashlib.sha256(json.dumps([[k, values[k]] for k in FORM_KEYS], ensure_ascii=False,
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -295,23 +303,32 @@ def norm_url(u) -> str:
     return u.replace("http://", "https://").replace("https://tiktik.lv", "https://www.tiktik.lv").rstrip("/")
 
 
+def sku_key(v) -> str:
+    """The key business_marts.mozello_sku_handle uses: tabs/newlines/nbsp -> space, trimmed, upper case."""
+    return re.sub(r"[\t\r\n\u00a0]", " ", str(v or "")).strip().upper()
+
+
 def slot_problems(values, shop, http_ok) -> list:
-    """The shop gate, pure. shop = {norm_url: {std_price, eff_price, stock}} of VISIBLE products; http_ok = {url: bool}
-    for every URL and image of the letter. Per slot: the product is visible and in stock, PRICE and STD equal the
-    shop's, the page and the image answer. Anything unknown is a problem (fail closed)."""
+    """The shop gate, pure. shop = {sku_key: {visible, mozello_price, mozello_sale_price}} - Mozello VARIANT rows;
+    http_ok = {url: bool} for every URL and image of the letter. Per slot: the SKU is a Mozello variant, it is visible,
+    STD = the variant price, PRICE = its sale price (the variant price when there is no sale price), compared as
+    NUMBERS (comma or dot, euro sign - the value form is not fixed, never reject on form alone); page and image answer.
+    NO stock check (Raivis 2026-10-07 19:38). Anything unknown is a problem (fail closed)."""
     out = []
     for sl in PARAM_SLOTS:
         url, img = values.get(sl + "_URL"), values.get(sl + "_IMG")
-        p = shop.get(norm_url(url))
+        p = shop.get(sku_key(values.get(sl + "_SKU")))
         if not p:
-            out.append(f"{sl} NOT_A_VISIBLE_SHOP_PRODUCT")
+            out.append(f"{sl} SKU_NOT_IN_MOZELLO sku={values.get(sl + '_SKU')}")
+        elif p.get("visible") is not True:
+            out.append(f"{sl} NOT_VISIBLE sku={values.get(sl + '_SKU')}")
         else:
-            if not (p.get("stock") is not None and float(p["stock"]) > 0):
-                out.append(f"{sl} OUT_OF_STOCK")
-            for fld, col in (("PRICE", "eff_price"), ("STD", "std_price")):
-                a, b = money(values.get(f"{sl}_{fld}")), money(p.get(col))
+            std = p.get("mozello_price")
+            eff = p.get("mozello_sale_price") if p.get("mozello_sale_price") is not None else std
+            for fld, want in (("PRICE", eff), ("STD", std)):
+                a, b = money(values.get(f"{sl}_{fld}")), money(want)
                 if a is None or b is None or abs(a - b) > 0.005:
-                    out.append(f"{sl} {fld}_DIFFERS letter={values.get(sl + '_' + fld)} shop={p.get(col)}")
+                    out.append(f"{sl} {fld}_DIFFERS letter={values.get(sl + '_' + fld)} mozello={want}")
         if http_ok.get(url) is not True:
             out.append(f"{sl} URL_DOES_NOT_ANSWER")
         if http_ok.get(img) is not True:
@@ -857,7 +874,8 @@ def param_gate(q, d, code, fetch=http_answers):
     if problems:
         return problems, None, None
     values = {r["param_key"]: r["param_value"] for r in rows}
-    shop = {norm_url(r["url"]): r for r in q(f"SELECT url, std_price, eff_price, stock FROM `{T_SHOP}` WHERE url IS NOT NULL")}
+    shop = {r["sku_key"]: r for r in q(f"SELECT sku_key, visible, mozello_price, mozello_sale_price FROM `{T_SHOP}` "
+                                         f"WHERE sku_key IS NOT NULL")}
     urls = sorted({values[f"{sl}_{f}"] for sl in PARAM_SLOTS for f in ("URL", "IMG")})
     problems = slot_problems(values, shop, {u: fetch(u) for u in urls})
     return problems, params_sha(values), values
