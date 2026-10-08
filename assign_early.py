@@ -13,7 +13,8 @@ does not move the person between LISTS (assignment, PAP audience, Brevo lists) -
   1. freshness: mozello_orders fetched today AND customer_identity built today - else NOTHING is built (loud);
   2. mkt_control.buyer_override rows of today = masters with a PAID Mozello order newer than last_order;
   3. CALL the assignment procedure config.SP_ASSIGNMENT (patched: today's override rows read as stage 'active');
-  4. one mkt_control.assignment_build_log row (build_on, built_at, mode, override_rows, ok, detail).
+  4. one mkt_control.assign_early_log row (build_on, built_at, mode, override_rows, ok, detail). NOT the sender's
+     mkt_control.assignment_build_log (its own rebuild trace, other columns) - a separate table on purpose.
 07:30 (bq.build_assignment with ASSIGN_MODE=recheck; MAIN 2026-10-08 16:40): today's early build ok -> no rebuild.
 No ok early build -> ONE catch-up run of the same step (same freshness gate, mode 'catchup'); still not ok ->
 refuse, log ok=false, and one hard row in mkt_control.shadow_selfcheck (check assign_early_ok) for the dash.
@@ -29,7 +30,7 @@ import config as C
 
 P = "jaunais-za-aizv04022026"
 T_OVR = f"{P}.mkt_control.buyer_override"
-T_LOG = f"{P}.mkt_control.assignment_build_log"
+T_LOG = f"{P}.mkt_control.assign_early_log"
 SP = C.SP_ASSIGNMENT                             # the one name of the assignment procedure
 T_GRAIN = f"`{P}.mkt_control.assignment_grain_violation`"   # = config.T_GRAIN_GUARD
 

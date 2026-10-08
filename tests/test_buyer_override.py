@@ -144,3 +144,10 @@ class SevenThirty(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnLogTable(unittest.TestCase):
+    def test_never_the_senders_build_log(self):
+        self.assertTrue(A.T_LOG.endswith("mkt_control.assign_early_log"))
+        src = open(os.path.join(ROOT, "assign_early.py"), encoding="utf-8").read()
+        self.assertNotIn('"{P}.mkt_control.assignment_build_log"', src)
