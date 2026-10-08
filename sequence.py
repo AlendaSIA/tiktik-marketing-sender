@@ -282,6 +282,30 @@ LADDER_TYPES = E1_TYPES | E2_TYPES | {"lost_quarterly"}
 # (interpretation of Sūtīšanas dzinējs 4, reported).
 SALES_TYPES = {"reorder_1", XSELL} | LADDER_TYPES
 REACTIVATION_TYPES = {"reorder_1"} | LADDER_TYPES   # BUYER OVERRIDE: the letters a fresh purchase cancels
+
+# SEND_LOG FRESHNESS (MAIN 2026-10-08 17:10 + 17:45, Sūtīšanas dzinējs 7): the contact history is send_log, filled each
+# night by sendlog_sync.py (EDU_MODE=sendlog, ~04:30). A reactivation letter is planned only when (a) the latest OK
+# import is dated yesterday or today and (b) no campaign of the last 30 days that reached this person is still
+# unreviewed (brevo_campaign_class missing or reviewed_by NULL). Other letters are not held.
+HOLD_SEND_LOG_STALE = "SEND_LOG_STALE"
+HOLD_CAMPAIGN_UNREVIEWED = "CAMPAIGN_UNREVIEWED"
+SEND_LOG_MAX_LAG_DAYS = 1
+
+
+def send_log_stale(last_ok_sync_on, today) -> bool:
+    """last_ok_sync_on = Riga date of the newest ok send_log_sync_state row (None = never)."""
+    return last_ok_sync_on is None or last_ok_sync_on < today - dt.timedelta(days=SEND_LOG_MAX_LAG_DAYS)
+
+
+def sendlog_hold(email_type, hold, stale: bool, unreviewed: bool):
+    """Only a reactivation letter that would otherwise go (hold None) is held; an existing hold stays as it is."""
+    if hold is not None or email_type not in REACTIVATION_TYPES:
+        return hold
+    if stale:
+        return HOLD_SEND_LOG_STALE
+    if unreviewed:
+        return HOLD_CAMPAIGN_UNREVIEWED
+    return hold
 RULE8A_TYPES = {"reorder_1"} | LADDER_TYPES          # PA2: 179 / 180-233 (E1 and E2) / 234; never 235 or 244
 PA3_TYPES = ("reorder_1", "winback_1", "lost_quarterly")   # the stage audiences the weekly assignment names
 NO_LADDER_TYPES = {"reorder_1", "reorder_2", "reorder_3"}

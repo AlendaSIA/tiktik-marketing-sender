@@ -66,6 +66,27 @@ RUN_ID = os.environ.get("CLOUD_RUN_EXECUTION") or f"local-{uuid.uuid4().hex[:12]
 HORIZON_DAYS = int(os.environ.get("HORIZON_DAYS", "7"))
 LADDER_POLICY = ("ladder-policy-v1 (Raivis 2026-09-28, contract 326480dce080) + " + S.CADENCE +
                  " + post-purchase-v1.2 + gates (MAIN 2026-10-05 16:10, contract 682ad015f0ab)")
+SENDLOG_STATE_SQL = f"""SELECT DATE(MAX(synced_at), 'Europe/Riga') AS last_ok_on
+FROM `{P}.mkt_control.send_log_sync_state` WHERE ok"""
+UNREVIEWED_SQL = f"""SELECT DISTINCT l.master_key FROM `{P}.mkt_control.send_log` l
+LEFT JOIN `{P}.mkt_control.brevo_campaign_class` c ON c.campaign_id = l.campaign_id
+WHERE l.master_key IS NOT NULL AND l.source != 'engine_live'
+  AND l.sent_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 30 DAY)
+  AND (c.campaign_id IS NULL OR c.reviewed_by IS NULL)"""
+
+
+def sendlog_facts(bq):
+    """-> (last ok import date or None, set of master_keys reached by an unreviewed campaign). An unreadable state
+    table = never imported (stale: every reactivation letter held), never a silent pass."""
+    try:
+        last = next(iter(bq.query(SENDLOG_STATE_SQL).result()), None)
+        last = last and last["last_ok_on"]
+    except Exception:  # noqa: BLE001 - no table yet = no ok import
+        last = None
+    unrev = {r["master_key"] for r in bq.query(UNREVIEWED_SQL).result()}
+    return last, unrev
+
+
 HISTORY_SQL = f"""
 SELECT l.master_key, l.email_type, l.track, l.rung, DATE(l.sent_at, 'Europe/Riga') AS sent_on,
        l.campaign_id, l.source
@@ -547,6 +568,9 @@ def main():
         raise RuntimeError("B2B guard source empty - refusing to plan without the B2B / LEAD guard")
     pp_orders = {r["master_key"]: dict(r["o"]) for r in bq.query(PP_SQL).result()}
     moz_paid = {r["master_key"]: r["paid_on"] for r in bq.query(MOZ_PAID_SQL).result()}
+    sl_last_ok, sl_unreviewed = sendlog_facts(bq)
+    sl_stale = S.send_log_stale(_d(sl_last_ok), today)
+    log.info("SENDLOG_GATE last_ok_on=%s stale=%s unreviewed_people=%s", sl_last_ok, sl_stale, len(sl_unreviewed))
     lqxs = {r["master_key"]: r for r in bq.query(LQXS_SQL).result()}
     lqxs_built_at = next(iter(bq.query(LQXS_BUILT_SQL).result()))["built_at"]
     r_goods = {r["email"]: (tuple(r["r"]), tuple(r["r_cab"])) for r in bq.query(R_SQL).result()}
@@ -636,6 +660,7 @@ def main():
         hold = S.buyer_hold(d.next_email_type, hold, mk in buyers)                   # PA1
         hold = S.rule8a_hold(d.next_email_type, hold,
                              (f["send_email"] or "").strip().lower() in kab_ok)       # PA2
+        hold = S.sendlog_hold(d.next_email_type, hold, sl_stale, mk in sl_unreviewed)  # SEND_LOG_STALE / CAMPAIGN_UNREVIEWED
         s = d.state
         states.append({
             "master_key": mk, "send_email": f["send_email"], "lifecycle_stage": f["lifecycle_stage"],
