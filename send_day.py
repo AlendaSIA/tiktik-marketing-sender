@@ -32,8 +32,15 @@ DRY (DRY_RUN=true or ALLOW_SEND!=true or GLOBAL_SEND_ENABLED!=false... i.e. L1 c
 computed and recorded (send_day_run + send_day_audience with mode 'dry'); NOTHING is written to Brevo or Pipedrive
 (Brevo is only READ: template HTML for the hash, contact attributes for L11).
 
-PROOF (three mails to raivis@alenda.lv) is NOT built here: raivis@alenda.lv has no letter_fields row, so what his
-test letters would carry is a decision (see the Block 1 report), and the job's account cannot read the Pipedrive token.
+PROOF (MAIN 2026-10-09 14:24, decision 2; `--proof=<email_type> --pd-person=<id>`): one mail of one type to
+raivis@alenda.lv ONLY. The content is the letter_fields row of ONE real member of that type's plan of today who passes
+every member gate (L5 L7 L8 L9) - copied onto raivis@alenda.lv's Brevo attributes (his previous values are recorded in
+mkt_control.send_day_proof and put back by `--proof-restore`). The list holds that one address and nothing else
+(checked before the campaign is created). send_log and send_state_advance carry master_key 'TEST:raivis@alenda.lv',
+so no customer's sequence moves; the Pipedrive activity goes to Raivis' own person. D1 (b)+(c) (approval row by Raivis
+and the LIVE Brevo hash) are enforced; D1 (a) track, D2 day and D3 cap are not (no track is enabled - that is
+Raivis' act); L1 is opened by the EXECUTION's env only. The run waits until Brevo reports the campaign 'sent'.
+MIRROR (decision 3): a LIVE type with a cap whose members are held for PAID_ORDERS_SOURCE_MISSING posts a KĻŪDA row.
 D1 KĻŪDA dash row: posted for a type that has a cap > 0 (meant to go today) and fails D1; a type without a cap is off on
 purpose (D3) and posts nothing. A whole-day refusal (no plan, a closed send_path lock) always posts.
 """
@@ -68,6 +75,9 @@ SUPPRESSION_LIST_ID = 4
 LIST_FOLDER_ID = 1
 ADD_CHUNK = 150
 DUE_LOOKBACK_DAYS = 90
+TEST_RECIPIENT = "raivis@alenda.lv"
+TEST_KEY = "TEST:" + TEST_RECIPIENT
+T_PROOF = f"{M}.send_day_proof"
 
 DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRING, cap INT64, set_by STRING,
   set_at TIMESTAMP, note STRING)""",
@@ -79,7 +89,10 @@ DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRI
   type_refusal STRING, batch_id STRING, list_id INT64, campaign_id INT64, sent INT64, pd_writes INT64,
   detail STRING, finished_at TIMESTAMP)""",
        f"""CREATE TABLE IF NOT EXISTS `{T_ADV}` (master_key STRING, email_type STRING, sent_on DATE, rung INT64,
-  batch_id STRING, campaign_id INT64, sent_at TIMESTAMP)"""]
+  batch_id STRING, campaign_id INT64, sent_at TIMESTAMP)""",
+       f"""CREATE TABLE IF NOT EXISTS `{T_PROOF}` (run_id STRING, email_type STRING, source_master_key STRING,
+  source_email STRING, raivis_before STRING, written STRING, campaign_id INT64, list_id INT64, created_at TIMESTAMP,
+  restored_at TIMESTAMP)"""]
 
 
 # ------------------------------------------------------------------------------------------------ pure rules
@@ -201,6 +214,12 @@ class Day:
         self.q, self.wh, self.brevo, self.pd_post, self.dash, self.env = q, wh, brevo, pd_post, dash, env
         self.now = now or dt.datetime.now(dt.timezone.utc)
         self.run_id = f"sd-{self.now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
+        self.pd_ids = []
+
+    def _pd(self, record):
+        r = self.pd_post(record)
+        self.pd_ids.append(r)
+        return r
 
     # -- reads
     def live_hash(self, template_id):
@@ -232,7 +251,7 @@ class Day:
                                        f"WHERE LOWER(TRIM(email)) IN ({lst})")}
 
     # -- member gates (L5 L7 L8 L9 L11), on the data date (= the plan's date)
-    def member_refusal_fn(self, et, rung_of, data_date, cands):
+    def member_refusal_fn(self, et, rung_of, data_date, cands, l11=True):
         mks = [c["master_key"] for c in cands]
         supp = self.suppressed([c["email"] for c in cands])
         ctx = self.wh.presend_ctx({"email_type": et}, data_date, mks)
@@ -258,6 +277,8 @@ class Day:
             frow = full.get(c["email"])
             if not frow:
                 return "L11_NO_LETTER_FIELDS_ROW"
+            if not l11:
+                return None
             attrs = self.contact_attrs(c["email"])
             if attrs is None:
                 return "L11_CONTACT_UNREADABLE"
@@ -331,15 +352,20 @@ class Day:
                 res["refused"][k] = res["refused"].get(k, 0) + 1
         res["would_get"] = [{"master_key": c["master_key"], "email": c["email"], "due_since": c["due_since"]}
                             for c in chosen]
+        if live and cap > 0 and res["refused"].get("L9_" + S.HOLD_PAID_SOURCE_MISSING):
+            self.dash("KĻŪDA", f"Sūtīšanas diena {d}: {et} - Mozello pasūtījumu spogulis vecāks par 60 min, "
+                               f"{res['refused']['L9_' + S.HOLD_PAID_SOURCE_MISSING]} vēstules aizturētas")
         if live and chosen and not res["type_refusal"]:
             res.update(self._send(et, tid, track, d, chosen, plan_run))
         return self._record(res, d, live, cands, decisions)
 
     # -- LIVE: list, campaign, dispatch
-    def _send(self, et, tid, track, d, chosen, plan_run):
+    def _send(self, et, tid, track, d, chosen, plan_run, alias=None):
         batch = f"{self.run_id}-{et}"
         emails = [c["email"] for c in chosen]
         lst = self.fill_list(f"SD {d} {et} {batch}", emails)
+        if alias is not None and self.list_members(lst["list_id"]) != {TEST_RECIPIENT}:
+            raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {TEST_RECIPIENT}")])
         if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
@@ -351,18 +377,115 @@ class Day:
             raise SP.SendLocked([("CONTENT", f"campaign {camp}: unfilled marks {hits[:5]}")])
         audience = [{"master_key": c["master_key"], "email": c["email"],
                      "person_id": c.get("person_id"), "reason": c.get("reason") or ""} for c in chosen]
-        lookups = _DayLookups(self, et, track, tid, plan_run, audience)
+        lookups = _DayLookups(self, et, track, tid, plan_run, audience, alias)
         out = SP.dispatch({"campaign_id": camp, "email_type": et, "track": track, "template_id": tid,
                            "rung": int(chosen[0].get("rung") or 0),
                            "utm_campaign": f"sd-{d}-{et}", "brevo_list_id": lst["list_id"]},
                           send_date=str(d), batch_id=batch, build_id=plan_run, config=_Cfg(self.env),
                           lookups=lookups,
                           brevo_send=lambda cid: self.brevo("POST", f"/emailCampaigns/{int(cid)}/sendNow", None),
-                          log_sink=self.write_send_log, pd_writer=self.pd_post,
+                          log_sink=self.write_send_log, pd_writer=self._pd,
                           state_advance=lambda mk, e, on, rung: self.advance(mk, e, on, rung, batch, camp),
                           offered_sink=None, now=self.now)
         return {"batch_id": batch, "list_id": lst["list_id"], "campaign_id": camp, "sent": out["sent"],
-                "pd_writes": out["pd_writes"]}
+                "pd_writes": out["pd_writes"], "pd_activity_ids": list(self.pd_ids)}
+
+    # -- PROOF (decision 2)
+    def attr_types(self):
+        r = self.brevo("GET", "/contacts/attributes", None) or {}
+        return {a["name"]: a.get("type") for a in r.get("attributes") or [] if a.get("category") == "normal"}
+
+    @staticmethod
+    def typed(values, types):
+        """letter_fields values -> Brevo attribute values of the attribute's own type. None: '' for text; a number or
+        a boolean without a value is left out (Brevo keeps none)."""
+        out = {}
+        for k, v in values.items():
+            t = types.get(k)
+            if t is None:
+                continue                                  # not an attribute in Brevo: nothing to write
+            if t == "boolean":
+                if v is not None:
+                    out[k] = v is True or str(v).strip().lower() == "true"
+            elif t == "float":
+                if v not in (None, ""):
+                    out[k] = float(v)
+            else:
+                out[k] = "" if v is None else str(v)
+        return out
+
+    def proof(self, et, d, pd_person, wait_s=600) -> dict:
+        if not l1_open(self.env):
+            raise SP.SendLocked([("L1", "a proof sends one real mail: open L1 on the execution only")])
+        for ddl in DDL:
+            self.q(ddl)
+        plan_run, plan_date = self.plan_run_of(d)
+        if str(plan_date) != str(d):
+            raise SP.SendLocked([("PROOF", f"no plan of {d} (latest {plan_date})")])
+        tpl = next((t for t in self.types_of(plan_run, d) if t["email_type"] == et), None)
+        if tpl is None:
+            raise SP.SendLocked([("PROOF", f"no {et} in plan {plan_run}")])
+        tid, track = _i(tpl["template_id"]), tpl["track"]
+        tr = [dict(r) for r in self.q(f"SELECT track, enabled, enabled_by FROM `{T_TRACK}`")]
+        ap = [dict(r) for r in self.q(f"SELECT template_id, email_type, approved, approved_by, approved_sha256 "
+                                      f"FROM `{T_APPROVAL}`")]
+        d1 = [r for r in standing_approval(et, track, tid, tr, ap, self.live_hash) if not r.startswith("TRACK_")]
+        if d1:
+            raise SP.SendLocked([("D1", "; ".join(d1))])
+        cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
+        gate = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands, l11=False)
+        src = next((c for c in cands if gate(c) is None), None)
+        if src is None:
+            raise SP.SendLocked([("PROOF", f"no member of {et} passes the member gates today")])
+        frow = self.full_lf_rows(plan_date, [src["email"]]).get(src["email"])
+        if not frow:
+            raise SP.SendLocked([("PROOF", f"no letter_fields row for the source member of {et}")])
+        want = SP.letter_params(frow)
+        types = self.attr_types()
+        before = {k: v for k, v in (self.contact_attrs(TEST_RECIPIENT) or {}).items() if k in want}
+        payload = self.typed(want, types)
+        self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": payload})
+        self.q(f"INSERT INTO `{T_PROOF}` (run_id, email_type, source_master_key, source_email, raivis_before, written, "
+               f"created_at) VALUES ({_s(self.run_id)}, {_s(et)}, {_s(src['master_key'])}, {_s(src['email'])}, "
+               f"{_s(json.dumps(before, default=str))}, {_s(json.dumps(payload, default=str))}, CURRENT_TIMESTAMP())")
+        time.sleep(5)
+        diff = attrs_equal({k: v for k, v in want.items() if k in types}, self.contact_attrs(TEST_RECIPIENT) or {})
+        if diff:
+            raise SP.SendLocked([("L11", f"{TEST_RECIPIENT} attributes differ after the write: {diff[:8]}")])
+        me = {"master_key": TEST_KEY, "email": TEST_RECIPIENT, "person_id": int(pd_person), "rung": src.get("rung"),
+              "reason": f"PROOF of {et} with the letter of {src['master_key']}"}
+        out = self._send(et, tid, track, d, [me], plan_run, alias={TEST_KEY: src["master_key"]})
+        t0, camp = time.time(), {}
+        while time.time() - t0 < wait_s:
+            camp = self.brevo("GET", f"/emailCampaigns/{out['campaign_id']}", None) or {}
+            if camp.get("status") == "sent":
+                break
+            time.sleep(15)
+        self.q(f"UPDATE `{T_PROOF}` SET campaign_id = {int(out['campaign_id'])}, list_id = {int(out['list_id'])} "
+               f"WHERE run_id = {_s(self.run_id)}")
+        html = camp.get("htmlContent") or ""
+        attrs = self.contact_attrs(TEST_RECIPIENT) or {}
+        return {**out, "email_type": et, "template_id": tid, "source_master_key": src["master_key"],
+                "brevo_status": camp.get("status"), "subject": camp.get("subject"),
+                "unfilled": unfilled_marks(html + " " + (camp.get("subject") or ""), attrs),
+                "stats": ((camp.get("statistics") or {}).get("globalStats") or {})}
+
+    def proof_restore(self, run_ids):
+        """Put raivis@alenda.lv's attributes back to what they were before the FIRST proof of these runs."""
+        rows = self.q(f"SELECT run_id, raivis_before, written FROM `{T_PROOF}` WHERE run_id IN "
+                      f"({','.join(_s(r) for r in run_ids)}) ORDER BY created_at")
+        before, keys = {}, set()
+        for r in rows:
+            for k, v in json.loads(r["raivis_before"] or "{}").items():
+                before.setdefault(k, v)
+            keys |= set(json.loads(r["written"] or "{}"))
+        types = self.attr_types()
+        restore = {k: before.get(k, "" if types.get(k) == "text" else None) for k in keys}
+        restore = {k: v for k, v in restore.items() if v is not None}
+        self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": restore})
+        self.q(f"UPDATE `{T_PROOF}` SET restored_at = CURRENT_TIMESTAMP() WHERE run_id IN "
+               f"({','.join(_s(r) for r in run_ids)})")
+        return {"restored": sorted(restore), "left_numeric_or_boolean": sorted(keys - set(restore))}
 
     def fill_list(self, name, emails, rounds=3, pause=6, settle_s=300):
         lid = int(self.brevo("POST", "/contacts/lists", {"name": name[:120], "folderId": LIST_FOLDER_ID})["id"])
@@ -458,9 +581,16 @@ class _Cfg:
 class _DayLookups:
     """send_path.dispatch's lookups for ONE frozen audience of this run. L3 / L4 = D1 re-read at dispatch time;
     everything else answers from the warehouse on the send date (= today, L10)."""
-    def __init__(self, day, et, track, tid, plan_run, audience):
+    def __init__(self, day, et, track, tid, plan_run, audience, alias=None):
         self.day, self.et, self.track, self.tid, self._plan_run, self.aud = day, et, track, tid, plan_run, audience
-        self._ok = None
+        self._ok, self.alias = None, alias or {}
+        self.back = {v: k for k, v in self.alias.items()}
+
+    def _src(self, mks):
+        return [self.alias.get(m, m) for m in mks]
+
+    def _mine(self, d):
+        return {self.back.get(k, k): v for k, v in d.items()}
 
     def _d1(self):
         if self._ok is None:
@@ -470,8 +600,8 @@ class _DayLookups:
             self._ok = standing_approval(self.et, self.track, self.tid, tr, ap, self.day.live_hash)
         return self._ok
 
-    def track_enabled(self, track):                                  # L3 = D1 (a)
-        return not any(r.startswith("TRACK_") for r in self._d1())
+    def track_enabled(self, track):                                  # L3 = D1 (a); a PROOF batch skips it
+        return bool(self.alias) or not any(r.startswith("TRACK_") for r in self._d1())
 
     def template_approved(self, template_id):                        # L4 = D1 (b) + (c)
         return not any(not r.startswith("TRACK_") for r in self._d1())
@@ -496,7 +626,7 @@ class _DayLookups:
         d = self.day.now.astimezone(RIGA).date()
         lf, plan, out = self.day.wh.lf_rows(d), self.day.wh.plan_rows(d), {}
         for mk in master_keys:
-            p = plan.get(mk)
+            p = plan.get(self.alias.get(mk, mk))
             row = lf.get(p["email"]) if p else None
             g = G.row_goods(row if row and row.get("email_type") == self.et else None)
             if g is not None:
@@ -504,10 +634,21 @@ class _DayLookups:
         return out
 
     def presend_ctx(self, campaign, send_date, master_keys):
-        return self.day.wh.presend_ctx(campaign, send_date, master_keys)
+        return self._mine(self.day.wh.presend_ctx(campaign, send_date, self._src(master_keys)))
 
     def person_blocks(self, send_date, master_keys):
-        return self.day.wh.person_blocks(send_date, master_keys)
+        return self._mine(self.day.wh.person_blocks(send_date, self._src(master_keys)))
+
+
+_ATTR_REF = __import__("re").compile(r"\{\{\s*contact\.([A-Z0-9_]+)\s*(\|[^}]*)?\}\}")
+
+
+def unfilled_marks(text, attrs) -> list:
+    """The {{ contact.X }} references of a letter that would print EMPTY for this contact (no value and no default
+    filter), plus any ⟦ left. Brevo renders at send time; this reads what the contact holds after the send."""
+    out = sorted({m.group(1) for m in _ATTR_REF.finditer(text or "")
+                  if _norm((attrs or {}).get(m.group(1))) == "" and "default" not in (m.group(2) or "")})
+    return out + (["⟦"] if "⟦" in (text or "") else [])
 
 
 def _s(v):
@@ -559,6 +700,21 @@ def main(argv) -> int:
                               or dt.datetime.now(RIGA).date().isoformat())
     mode = args.get("mode") or os.environ.get("SEND_MODE") or "auto"
     caps = json.loads(args["caps"]) if args.get("caps") else None
+    if args.get("proof-restore"):
+        q, wh, brevo, pd_post, dash = _prod()
+        print("PROOF_RESTORE " + json.dumps(Day(q, wh, brevo, pd_post, dash, os.environ)
+                                            .proof_restore(args["proof-restore"].split(",")), default=str))
+        return 0
+    if args.get("proof"):
+        q, wh, brevo, pd_post, dash = _prod()
+        day = Day(q, wh, brevo, pd_post, dash, os.environ)
+        try:
+            res = day.proof(args["proof"], d, int(args["pd-person"]))
+        except SP.SendLocked as e:
+            print("PROOF_REFUSED " + str(e)[:800])
+            return 3
+        print("PROOF " + json.dumps({"run_id": day.run_id, **res}, ensure_ascii=False, default=str)[:20000])
+        return 0
     only = set(args["only"].split(",")) if args.get("only") else None
     q, wh, brevo, pd_post, dash = _prod()
     day = Day(q, wh, brevo, pd_post, dash, os.environ)

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import dataclasses as dc
 import datetime as dt
+import re
 
 import sequence as S
 
@@ -124,22 +125,27 @@ def row_goods(row):
     return (row.get("rung"), bool(row.get("g15_zero_priced")))
 
 
+_AUDIT = re.compile(r"(\d+):(.+?):([A-Za-z]+)(?=\s+\d+:|\s*$)")
+
+
 def letter_priced_slots(row) -> tuple:
-    """CAB-1: the letter's priced P slots as ((sku, price text), ...). The SKU of slot i comes from p_audit
-    ('1:FM26656M:u 2:77-640:u'), the price from P{i}_PRICE. A priced slot whose SKU is unknown keeps sku None and
-    so can never match a cabinet row (held)."""
+    """CAB-1: the letter's PERSONAL-price P slots as ((sku, price text), ...). MAIN 2026-10-09 14:24 (decision 4):
+    CABINET_PRICE_MISSING applies ONLY to slots that carry a personal price; a slot that prints the plain shop price
+    (p_audit code 'u') needs no cabinet row - a cabinet price equal to the shop price cannot exist (Raivis 13:58).
+    p_audit is '<slot>:<sku>:<code> ...' where the SKU may itself hold spaces ('7:DL-4011 / 9:P'); code 'u' = shop
+    price, any other code (today 'P') = personal. A printed price whose slot has no audit entry is treated as
+    personal (fail closed: it must have its cabinet row)."""
     if not row:
         return ()
-    sku_of = {}
-    for part in str(row.get("p_audit") or "").strip().strip('"').split():
-        bits = part.split(":")
-        if len(bits) >= 2 and bits[0].isdigit():
-            sku_of[int(bits[0])] = ":".join(bits[1:-1]) if len(bits) > 2 else bits[1]
+    audit = {}
+    for m in _AUDIT.finditer(str(row.get("p_audit") or "").strip().strip('"')):
+        audit[int(m.group(1))] = (m.group(2).strip(), m.group(3))
     out = []
     for i in range(1, 9):
         price = (row.get(f"P{i}_PRICE") or "").strip()
-        if price:
-            out.append((sku_of.get(i), price))
+        sku, code = audit.get(i, (None, None))
+        if price and code != "u":
+            out.append((sku, price))
     return tuple(out)
 
 

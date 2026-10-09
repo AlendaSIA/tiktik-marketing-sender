@@ -421,7 +421,7 @@ class Cab1AtSend(unittest.TestCase):
         rows = [dict(r) for r in LF]
         for r in rows:
             if r["email"] == "a@x.lv":
-                r.update(P1_PRICE=price, p_audit=f'"1:{sku}:u"')
+                r.update(P1_PRICE=price, p_audit=f'"1:{sku}:P"')
         return rows
 
     def test_price_must_equal_the_cabinet(self):
@@ -448,9 +448,17 @@ class Cab1AtSend(unittest.TestCase):
         self.assertTrue(G.cab_problem("lost_quarterly", (), {}))                              # no row for the person
         self.assertFalse(G.cab_problem("lost_quarterly", (("x-1", "7,90 €"),), {"X-1": ("lq2_minus13", "7.9")}))
         self.assertTrue(G.cab_problem("reorder_1", (("X", "7,90 €"),), {"X": ("r1", "7.90")}))  # reorder_1 = negotiated only
-        self.assertEqual(G.letter_priced_slots({"p_audit": '"1:FM26656M:u 2:77-640:u"', "P1_PRICE": "18,00 €",
+        self.assertEqual(G.letter_priced_slots({"p_audit": '"1:FM26656M:P 2:77-640:P"', "P1_PRICE": "18,00 €",
                                                 "P2_PRICE": "6,90 €", "P3_PRICE": ""}),
                          (("FM26656M", "18,00 €"), ("77-640", "6,90 €")))
+        # MAIN 2026-10-09 decision 4: a shop-price slot (':u') needs no cabinet row; SKUs may hold spaces
+        self.assertEqual(G.letter_priced_slots({"p_audit": '"1:FM26656M:u 2:77-640:u"', "P1_PRICE": "18,00 €",
+                                                "P2_PRICE": "6,90 €"}), ())
+        self.assertEqual(G.letter_priced_slots({"p_audit": "1:DL-4011 / 9:P 2:2826 / 9:u 3:A B:P",
+                                                "P1_PRICE": "1 €", "P2_PRICE": "2 €", "P3_PRICE": "3 €"}),
+                         (("DL-4011 / 9", "1 €"), ("A B", "3 €")))
+        self.assertFalse(G.cab_problem("reorder_1", G.letter_priced_slots(
+            {"p_audit": "1:65-334:u 2:RNBWM10003:u", "P1_PRICE": "14,99 €", "P2_PRICE": "5,49 €"}), {}))
         self.assertEqual(G.letter_priced_slots({"p_audit": "", "P1_PRICE": "1 €"}), ((None, "1 €"),))
         # MAIN 16:40 roles
         row = {"X": ("r2", "5.00")}

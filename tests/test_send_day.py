@@ -94,6 +94,9 @@ class Brevo:
 
     def __call__(self, method, path, payload):
         self.calls.append((method, path))
+        if method == "GET" and path == "/contacts/attributes":
+            return {"attributes": [{"name": "P1_NAME", "category": "normal", "type": "text"},
+                                   {"name": "OFFER_RUNG", "category": "normal", "type": "float"}]}
         if method == "GET" and path.startswith("/smtp/templates/"):
             return {"htmlContent": self.html, "subject": "Laiks papildināt krājumus?"}
         if method == "GET" and path.startswith("/contacts/lists/") and "/contacts?" in path:
@@ -112,7 +115,12 @@ class Brevo:
             self.campaign = payload
             return {"id": 900}
         if method == "GET" and path.startswith("/emailCampaigns/"):
-            return {"subject": self.campaign["subject"], "htmlContent": self.campaign["htmlContent"]}
+            return {"subject": self.campaign["subject"], "htmlContent": self.campaign["htmlContent"], "status": "sent",
+                    "statistics": {"globalStats": {"sent": 1}}}
+        if method == "PUT" and path.startswith("/contacts/"):
+            self.attrs = dict(self.attrs or {}, **payload["attributes"])
+            self.puts = getattr(self, "puts", []) + [(path, payload)]
+            return {}
         if method == "POST" and path.endswith("/sendNow"):
             return {}
         raise AssertionError((method, path))
@@ -273,6 +281,43 @@ class Live(unittest.TestCase):
         with mock.patch.object(SD.time, "sleep"), self.assertRaises(SP.SendLocked):
             day(q, b, env=LIVE_ENV).run(TUE)
         self.assertNotIn(("POST", "/emailCampaigns/900/sendNow"), b.calls)
+
+
+class Proof(unittest.TestCase):
+    def test_proof_sends_one_mail_to_raivis_only_with_a_real_members_letter(self):
+        q = Q([cand(1), cand(2)], tracks=[])                          # no track enabled: a proof does not need one
+        b, pd = Brevo(attrs={}), mock.Mock(return_value=4711)
+        with mock.patch.object(SD.time, "sleep"):
+            res = day(q, b, env=LIVE_ENV, pd=pd).proof("reorder_1", TUE, 99)
+        self.assertEqual(b.lists[77], ["raivis@alenda.lv"])
+        self.assertEqual(b.puts[0], ("/contacts/raivis@alenda.lv", {"attributes": {"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}}))
+        self.assertEqual(res["source_master_key"], "m1")
+        self.assertEqual((res["sent"], res["pd_activity_ids"], res["brevo_status"]), (1, [4711], "sent"))
+        self.assertEqual(pd.call_args[0][0]["target_person_id"], 99)
+        log = q.inserts(SD.T_LOG)[0]
+        self.assertIn("'TEST:raivis@alenda.lv'", log)
+        self.assertNotIn("'m1'", log)                                  # no customer's history moves
+        self.assertIn("'TEST:raivis@alenda.lv'", q.inserts(SD.T_ADV)[0])
+        self.assertEqual(res["unfilled"], [])
+
+    def test_proof_needs_l1_and_the_approved_hash(self):
+        with self.assertRaises(SP.SendLocked):
+            day(Q([cand(1)]), env=DRY_ENV).proof("reorder_1", TUE, 99)
+        with mock.patch.object(SD.time, "sleep"), self.assertRaises(SP.SendLocked) as e:
+            day(Q([cand(1)]), Brevo(html="<p>other</p>"), env=LIVE_ENV).proof("reorder_1", TUE, 99)
+        self.assertIn("TEMPLATE_HASH_CHANGED", str(e.exception))
+
+    def test_unfilled_marks(self):
+        self.assertEqual(SD.unfilled_marks("{{ contact.P1_NAME }} {{ contact.UZRUNA | default : 'Sveiki' }}",
+                                           {"P1_NAME": ""}), ["P1_NAME"])
+        self.assertEqual(SD.unfilled_marks("{{ contact.P1_NAME }} ⟦X⟧", {"P1_NAME": "a"}), ["⟦"])
+
+    def test_live_stale_mirror_posts_kluda(self):
+        q = Q([cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 2, "set_at": "x"}])
+        dash = mock.Mock()
+        day(q, Brevo(), env=LIVE_ENV, wh=WH(blocks={"m1": "PAID_ORDERS_SOURCE_MISSING"}), dash=dash).run(TUE)
+        self.assertEqual(dash.call_args[0][0], "KĻŪDA")
+        self.assertIn("60 min", dash.call_args[0][1])
 
 
 class BrevoWritesRefusedWhileL1Closed(unittest.TestCase):
