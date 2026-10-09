@@ -309,16 +309,19 @@ class Proof(unittest.TestCase):
             day(Q([cand(1)]), Brevo(html="<p>other</p>"), env=LIVE_ENV).proof("reorder_1", TUE, 99)
         self.assertIn("TEMPLATE_HASH_CHANGED", str(e.exception))
 
-    def test_proof_campaign_drops_the_suppression_exclusion_real_batch_keeps_it(self):
+    def test_proof_campaign_carries_the_suppression_exclusion(self):
         b = Brevo(attrs={})
         with mock.patch.object(SD.time, "sleep"):
             day(Q([cand(1)], tracks=[]), b, env=LIVE_ENV, pd=mock.Mock(return_value=1)).proof("reorder_1", TUE, 99)
-        self.assertEqual(b.campaign["recipients"], {"listIds": [77]})
+        self.assertEqual(b.campaign["recipients"], {"listIds": [77], "exclusionListIds": [4]})
         self.assertTrue(b.campaign["name"].startswith("TEST proof reorder_1"))
-        b2 = Brevo()
-        day(Q([cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 2, "set_at": "x"}]),
-            b2, env=LIVE_ENV).run(TUE)
-        self.assertEqual(b2.campaign["recipients"]["exclusionListIds"], [4])
+
+    def test_proof_dry_makes_no_brevo_write_and_reports_l5(self):
+        b = Brevo(attrs={})
+        res = day(Q([cand(1)], tracks=[]), b, env=DRY_ENV).proof_dry("reorder_1", TUE)
+        self.assertEqual((res["L5"], res["brevo_writes"], b.writes()), ("PASS", 0, []))
+        self.assertEqual(res["planned_campaign"]["recipients"]["exclusionListIds"], [4])
+        self.assertEqual(res["source_master_key"], "m1")
 
     def test_restore_clears_keys_that_had_no_value_with_empty_string(self):
         q = Q([cand(1)])

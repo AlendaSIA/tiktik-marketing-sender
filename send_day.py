@@ -369,13 +369,11 @@ class Day:
         if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
-        # PROOF only: raivis@alenda.lv sits in suppression list 4 (measured 2026-10-09: listIds hold 4), so
-        # exclusionListIds=[4] leaves NO recipient and Brevo answers 400 "There are no contacts associated with the
-        # given recipients info". The proof list was just read back as exactly that one address, so it goes without
-        # the exclusion. A real batch always carries it.
+        # A proof runs the REAL path: list-4 exclusion and L5 included (MAIN 2026-10-09 18:20 removed the proof-only
+        # exception of 9f87d90). If the test address sits in list 4, Brevo answers 400 "There are no contacts
+        # associated with the given recipients info" - the fix is the address' suppression, not this request.
         camp = self.create_campaign(et, tid, d, lst["list_id"], batch,
-                                    name=(f"TEST proof {et} {batch}" if alias is not None else None),
-                                    exclude_suppression=alias is None)
+                                    name=(f"TEST proof {et} {batch}" if alias is not None else None))
         content = self.brevo("GET", f"/emailCampaigns/{camp}", None) or {}
         import campaign as CAMP
         hits = CAMP.placeholder_hits(content.get("subject"), content.get("previewText"), content.get("htmlContent") or "")
@@ -475,6 +473,31 @@ class Day:
                 "brevo_status": camp.get("status"), "subject": camp.get("subject"),
                 "unfilled": unfilled_marks(html + " " + (camp.get("subject") or ""), attrs),
                 "stats": ((camp.get("statistics") or {}).get("globalStats") or {})}
+
+    def proof_dry(self, et, d) -> dict:
+        """MAIN 2026-10-09 18:20 (4): the proof up to, NOT including, any Brevo write - which member's letter it would
+        carry, what L5 says for the test address, and the campaign request it would make (recipients included)."""
+        plan_run, plan_date = self.plan_run_of(d)
+        tpl = next((t for t in self.types_of(plan_run, d) if t["email_type"] == et), None)
+        if tpl is None:
+            raise SP.SendLocked([("PROOF", f"no {et} in plan {plan_run}")])
+        tid, track = _i(tpl["template_id"]), tpl["track"]
+        tr = [dict(r) for r in self.q(f"SELECT track, enabled, enabled_by FROM `{T_TRACK}`")]
+        ap = [dict(r) for r in self.q(f"SELECT template_id, email_type, approved, approved_by, approved_sha256 "
+                                      f"FROM `{T_APPROVAL}`")]
+        d1 = standing_approval(et, track, tid, tr, ap, self.live_hash)
+        cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
+        gate = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands, l11=False)
+        src = next((c for c in cands if gate(c) is None), None)
+        supp = self.suppressed([TEST_RECIPIENT])
+        return {"email_type": et, "template_id": tid, "plan_run": plan_run, "d1_other_than_track":
+                [r for r in d1 if not r.startswith("TRACK_")], "source_master_key": src and src["master_key"],
+                "L5_suppressed": sorted(supp), "L5": "PASS" if not supp else "CLOSED",
+                "raivis_brevo_list_ids": sorted(self.contact_lists(TEST_RECIPIENT)),
+                "planned_campaign": {"name": f"TEST proof {et} <run>", "recipients":
+                                     {"listIds": ["<new list of exactly raivis@alenda.lv>"],
+                                      "exclusionListIds": [SUPPRESSION_LIST_ID]}},
+                "brevo_writes": 0}
 
     def contact_lists(self, email):
         return set((self.brevo("GET", f"/contacts/{email}", None) or {}).get("listIds") or [])
@@ -743,6 +766,12 @@ def main(argv) -> int:
         q, wh, brevo, pd_post, dash = _prod()
         print("PROOF_RESTORE " + json.dumps(Day(q, wh, brevo, pd_post, dash, os.environ)
                                             .proof_restore(args["proof-restore"].split(",")), default=str))
+        return 0
+    if args.get("proof-dry"):
+        q, wh, brevo, pd_post, dash = _prod()
+        day = Day(q, wh, brevo, pd_post, dash, os.environ)
+        print("PROOF_DRY " + json.dumps({"run_id": day.run_id, **day.proof_dry(args["proof-dry"], d)},
+                                        ensure_ascii=False, default=str)[:6000])
         return 0
     if args.get("draft-test"):
         q, wh, brevo, pd_post, dash = _prod()
