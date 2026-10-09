@@ -33,10 +33,10 @@ computed and recorded (send_day_run + send_day_audience with mode 'dry'); NOTHIN
 (Brevo is only READ: template HTML for the hash, contact attributes for L11).
 
 PROOF (MAIN 2026-10-09 14:24, decision 2; `--proof=<email_type> --pd-person=<id>`): one mail of one type to
-raivis@alenda.lv ONLY. The content is the letter_fields row of ONE real member of that type's plan of today who passes
-every member gate (L5 L7 L8 L9) - copied onto raivis@alenda.lv's Brevo attributes (his previous values are recorded in
+the PROOF_RECIPIENT address ONLY. The content is the letter_fields row of ONE real member of that type's plan of today who passes
+every member gate (L5 L7 L8 L9) - copied onto that address' Brevo attributes (its previous values are recorded in
 mkt_control.send_day_proof and put back by `--proof-restore`). The list holds that one address and nothing else
-(checked before the campaign is created). send_log and send_state_advance carry master_key 'TEST:raivis@alenda.lv',
+(checked before the campaign is created). send_log and send_state_advance carry master_key 'TEST:<PROOF_RECIPIENT>',
 so no customer's sequence moves; the Pipedrive activity goes to Raivis' own person. D1 (b)+(c) (approval row by Raivis
 and the LIVE Brevo hash) are enforced; D1 (a) track, D2 day and D3 cap are not (no track is enabled - that is
 Raivis' act); L1 is opened by the EXECUTION's env only. The run waits until Brevo reports the campaign 'sent'.
@@ -75,8 +75,22 @@ SUPPRESSION_LIST_ID = 4
 LIST_FOLDER_ID = 1
 ADD_CHUNK = 150
 DUE_LOOKBACK_DAYS = 90
-TEST_RECIPIENT = "raivis@alenda.lv"
-TEST_KEY = "TEST:" + TEST_RECIPIENT
+# THE PROOF RECIPIENT is ONE configured value: env PROOF_RECIPIENT on the Cloud Run job tiktik-send-day (MAIN
+# 2026-10-09 18:49: alenda.jurmala@gmail.com). Unset or not one address -> every proof path refuses. A proof's rows
+# are written under 'TEST:<recipient>' only - never under the recipient's own master_key.
+LEGACY_PROOF_RECIPIENT = "raivis@alenda.lv"      # proof rows written before the column existed (09.10 only)
+_ONE_ADDRESS = __import__("re").compile(r"[^@\s,;]+@[^@\s,;]+\.[a-z]{2,}")
+
+
+def proof_recipient(env) -> str:
+    r = (env.get("PROOF_RECIPIENT") or "").strip().lower()
+    if not _ONE_ADDRESS.fullmatch(r):
+        raise SP.SendLocked([("PROOF", "PROOF_RECIPIENT is not set to exactly one address on this job")])
+    return r
+
+
+def test_key(recipient) -> str:
+    return "TEST:" + recipient
 T_PROOF = f"{M}.send_day_proof"
 
 DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRING, cap INT64, set_by STRING,
@@ -92,7 +106,8 @@ DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRI
   batch_id STRING, campaign_id INT64, sent_at TIMESTAMP)""",
        f"""CREATE TABLE IF NOT EXISTS `{T_PROOF}` (run_id STRING, email_type STRING, source_master_key STRING,
   source_email STRING, raivis_before STRING, written STRING, campaign_id INT64, list_id INT64, created_at TIMESTAMP,
-  restored_at TIMESTAMP)"""]
+  restored_at TIMESTAMP)""",
+       f"ALTER TABLE `{T_PROOF}` ADD COLUMN IF NOT EXISTS recipient STRING"]
 
 
 # ------------------------------------------------------------------------------------------------ pure rules
@@ -363,9 +378,13 @@ class Day:
     def _send(self, et, tid, track, d, chosen, plan_run, alias=None):
         batch = f"{self.run_id}-{et}"
         emails = [c["email"] for c in chosen]
-        lst = self.fill_list(f"SD {d} {et} {batch}", emails)
-        if alias is not None and self.list_members(lst["list_id"]) != {TEST_RECIPIENT}:
-            raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {TEST_RECIPIENT}")])
+        lst = self.fill_list((f"TEST proof {d} {et} {batch}" if alias is not None else f"SD {d} {et} {batch}"), emails)
+        if alias is not None:
+            rcpt = proof_recipient(self.env)
+            if self.list_members(lst["list_id"]) != {rcpt}:
+                raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {rcpt}")])
+            if any(c["master_key"] != test_key(rcpt) for c in chosen):
+                raise SP.SendLocked([("PROOF", "a proof writes under its TEST key only")])
         if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
@@ -419,6 +438,7 @@ class Day:
         return out
 
     def proof(self, et, d, pd_person, wait_s=600) -> dict:
+        rcpt = proof_recipient(self.env)
         if not l1_open(self.env):
             raise SP.SendLocked([("L1", "a proof sends one real mail: open L1 on the execution only")])
         for ddl in DDL:
@@ -446,19 +466,20 @@ class Day:
             raise SP.SendLocked([("PROOF", f"no letter_fields row for the source member of {et}")])
         want = SP.letter_params(frow)
         types = self.attr_types()
-        before = {k: v for k, v in (self.contact_attrs(TEST_RECIPIENT) or {}).items() if k in want}
+        before = {k: v for k, v in (self.contact_attrs(rcpt) or {}).items() if k in want}
         payload = self.typed(want, types)
-        self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": payload})
+        self.brevo("PUT", f"/contacts/{rcpt}", {"attributes": payload})
         self.q(f"INSERT INTO `{T_PROOF}` (run_id, email_type, source_master_key, source_email, raivis_before, written, "
-               f"created_at) VALUES ({_s(self.run_id)}, {_s(et)}, {_s(src['master_key'])}, {_s(src['email'])}, "
-               f"{_s(json.dumps(before, default=str))}, {_s(json.dumps(payload, default=str))}, CURRENT_TIMESTAMP())")
+               f"created_at, recipient) VALUES ({_s(self.run_id)}, {_s(et)}, {_s(src['master_key'])}, "
+               f"{_s(src['email'])}, {_s(json.dumps(before, default=str))}, {_s(json.dumps(payload, default=str))}, "
+               f"CURRENT_TIMESTAMP(), {_s(rcpt)})")
         time.sleep(5)
-        diff = attrs_equal({k: v for k, v in want.items() if k in types}, self.contact_attrs(TEST_RECIPIENT) or {})
+        diff = attrs_equal({k: v for k, v in want.items() if k in types}, self.contact_attrs(rcpt) or {})
         if diff:
-            raise SP.SendLocked([("L11", f"{TEST_RECIPIENT} attributes differ after the write: {diff[:8]}")])
-        me = {"master_key": TEST_KEY, "email": TEST_RECIPIENT, "person_id": int(pd_person), "rung": src.get("rung"),
+            raise SP.SendLocked([("L11", f"{rcpt} attributes differ after the write: {diff[:8]}")])
+        me = {"master_key": test_key(rcpt), "email": rcpt, "person_id": int(pd_person), "rung": src.get("rung"),
               "reason": f"PROOF of {et} with the letter of {src['master_key']}"}
-        out = self._send(et, tid, track, d, [me], plan_run, alias={TEST_KEY: src["master_key"]})
+        out = self._send(et, tid, track, d, [me], plan_run, alias={test_key(rcpt): src["master_key"]})
         t0, camp = time.time(), {}
         while time.time() - t0 < wait_s:
             camp = self.brevo("GET", f"/emailCampaigns/{out['campaign_id']}", None) or {}
@@ -468,7 +489,7 @@ class Day:
         self.q(f"UPDATE `{T_PROOF}` SET campaign_id = {int(out['campaign_id'])}, list_id = {int(out['list_id'])} "
                f"WHERE run_id = {_s(self.run_id)}")
         html = camp.get("htmlContent") or ""
-        attrs = self.contact_attrs(TEST_RECIPIENT) or {}
+        attrs = self.contact_attrs(rcpt) or {}
         return {**out, "email_type": et, "template_id": tid, "source_master_key": src["master_key"],
                 "brevo_status": camp.get("status"), "subject": camp.get("subject"),
                 "unfilled": unfilled_marks(html + " " + (camp.get("subject") or ""), attrs),
@@ -477,6 +498,7 @@ class Day:
     def proof_dry(self, et, d) -> dict:
         """MAIN 2026-10-09 18:20 (4): the proof up to, NOT including, any Brevo write - which member's letter it would
         carry, what L5 says for the test address, and the campaign request it would make (recipients included)."""
+        rcpt = proof_recipient(self.env)
         plan_run, plan_date = self.plan_run_of(d)
         tpl = next((t for t in self.types_of(plan_run, d) if t["email_type"] == et), None)
         if tpl is None:
@@ -489,13 +511,17 @@ class Day:
         cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
         gate = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands, l11=False)
         src = next((c for c in cands if gate(c) is None), None)
-        supp = self.suppressed([TEST_RECIPIENT])
+        supp = self.suppressed([rcpt])
+        attrs = self.contact_attrs(rcpt) or {}
         return {"email_type": et, "template_id": tid, "plan_run": plan_run, "d1_other_than_track":
                 [r for r in d1 if not r.startswith("TRACK_")], "source_master_key": src and src["master_key"],
                 "L5_suppressed": sorted(supp), "L5": "PASS" if not supp else "CLOSED",
-                "raivis_brevo_list_ids": sorted(self.contact_lists(TEST_RECIPIENT)),
+                "recipient": rcpt, "test_key": test_key(rcpt),
+                "recipient_brevo_list_ids": sorted(self.contact_lists(rcpt)),
+                "recipient_attrs_count": len(attrs),
+                "recipient_attrs_nonempty": sum(1 for v in attrs.values() if _norm(v) != ""),
                 "planned_campaign": {"name": f"TEST proof {et} <run>", "recipients":
-                                     {"listIds": ["<new list of exactly raivis@alenda.lv>"],
+                                     {"listIds": [f"<new list of exactly {rcpt}>"],
                                       "exclusionListIds": [SUPPRESSION_LIST_ID]}},
                 "brevo_writes": 0}
 
@@ -504,18 +530,19 @@ class Day:
 
     def draft_test(self, et, d, list_id) -> dict:
         """MAIN 2026-10-09 17:50 (2): ONE campaign create that is NEVER sent - the exact request of create_campaign,
-        to a list holding exactly raivis@alenda.lv, named TEST. Returns Brevo's answer or its error body."""
+        to a list holding exactly the PROOF_RECIPIENT address, named TEST. Returns Brevo's answer or its error body."""
+        rcpt = proof_recipient(self.env)
         if not l1_open(self.env):
             raise SP.SendLocked([("L1", "a draft create is a Brevo write: open L1 on the execution only")])
-        if self.list_members(int(list_id)) != {TEST_RECIPIENT}:
-            raise SP.SendLocked([("PROOF", f"list {list_id} does not hold exactly {TEST_RECIPIENT}")])
+        if self.list_members(int(list_id)) != {rcpt}:
+            raise SP.SendLocked([("PROOF", f"list {list_id} does not hold exactly {rcpt}")])
         plan_run, _pd = self.plan_run_of(d)
         tpl = next((t for t in self.types_of(plan_run, d) if t["email_type"] == et), None)
         if tpl is None:
             raise SP.SendLocked([("PROOF", f"no {et} in plan {plan_run}")])
         tid = _i(tpl["template_id"])
         out = {"email_type": et, "template_id": tid, "list_id": int(list_id),
-               "raivis_list_ids": sorted(self.contact_lists(TEST_RECIPIENT))}
+               "recipient_list_ids": sorted(self.contact_lists(rcpt))}
         try:
             cid = self.create_campaign(et, tid, d, int(list_id), self.run_id,
                                        name=f"TEST draft {et} {self.run_id} - never sent")
@@ -526,9 +553,13 @@ class Day:
                 "name": camp.get("name")}
 
     def proof_restore(self, run_ids):
-        """Put raivis@alenda.lv's attributes back to what they were before the FIRST proof of these runs."""
-        rows = self.q(f"SELECT run_id, raivis_before, written FROM `{T_PROOF}` WHERE run_id IN "
+        """Put the PROOF_RECIPIENT's attributes back to what they were before the FIRST proof of these runs."""
+        rcpt = proof_recipient(self.env)
+        rows = self.q(f"SELECT run_id, raivis_before, written, recipient FROM `{T_PROOF}` WHERE run_id IN "
                       f"({','.join(_s(r) for r in run_ids)}) ORDER BY created_at")
+        other = sorted({(r.get("recipient") or LEGACY_PROOF_RECIPIENT) for r in rows} - {rcpt})
+        if other:
+            raise SP.SendLocked([("PROOF", f"these runs wrote to {other}, not to the configured {rcpt}")])
         before, keys = {}, set()
         for r in rows:
             for k, v in json.loads(r["raivis_before"] or "{}").items():
@@ -539,10 +570,10 @@ class Day:
         # left OFFER_HAS_STD / OFFER_RUNG / P1_FRESH unchanged) and clears any type with '' (measured: the same three
         # disappeared from the contact after one PUT with '').
         restore = {k: before[k] if k in before else "" for k in keys}
-        self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": restore})
+        self.brevo("PUT", f"/contacts/{rcpt}", {"attributes": restore})
         self.q(f"UPDATE `{T_PROOF}` SET restored_at = CURRENT_TIMESTAMP() WHERE run_id IN "
                f"({','.join(_s(r) for r in run_ids)})")
-        now = self.contact_attrs(TEST_RECIPIENT) or {}
+        now = self.contact_attrs(rcpt) or {}
         differ = sorted(k for k, v in restore.items() if _norm(now.get(k)) != _norm(v))
         cleared = sorted(k for k in restore if k not in before)
         return {"restored": sorted(restore), "cleared": cleared, "differ_after": differ,

@@ -21,8 +21,8 @@ HTML = "<p>Laiks papildināt {{ contact.P1_NAME }}</p>"
 SHA = hashlib.sha256(HTML.encode()).hexdigest()
 TRACKS = [{"track": "reorder", "enabled": True, "enabled_by": "Raivis"}]
 APPR = [{"template_id": 179, "email_type": "reorder_1", "approved": True, "approved_by": "Raivis", "approved_sha256": SHA}]
-LIVE_ENV = {"DRY_RUN": "false", "ALLOW_SEND": "true", "GLOBAL_SEND_ENABLED": "true"}
-DRY_ENV = {"DRY_RUN": "true", "ALLOW_SEND": "false", "GLOBAL_SEND_ENABLED": "false"}
+LIVE_ENV = {"PROOF_RECIPIENT": "alenda.jurmala@gmail.com", "DRY_RUN": "false", "ALLOW_SEND": "true", "GLOBAL_SEND_ENABLED": "true"}
+DRY_ENV = {"PROOF_RECIPIENT": "alenda.jurmala@gmail.com", "DRY_RUN": "true", "ALLOW_SEND": "false", "GLOBAL_SEND_ENABLED": "false"}
 
 
 def cand(i, due="2026-10-01"):
@@ -291,15 +291,15 @@ class Proof(unittest.TestCase):
         b, pd = Brevo(attrs={}), mock.Mock(return_value=4711)
         with mock.patch.object(SD.time, "sleep"):
             res = day(q, b, env=LIVE_ENV, pd=pd).proof("reorder_1", TUE, 99)
-        self.assertEqual(b.lists[77], ["raivis@alenda.lv"])
-        self.assertEqual(b.puts[0], ("/contacts/raivis@alenda.lv", {"attributes": {"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}}))
+        self.assertEqual(b.lists[77], ["alenda.jurmala@gmail.com"])
+        self.assertEqual(b.puts[0], ("/contacts/alenda.jurmala@gmail.com", {"attributes": {"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}}))
         self.assertEqual(res["source_master_key"], "m1")
         self.assertEqual((res["sent"], res["pd_activity_ids"], res["brevo_status"]), (1, [4711], "sent"))
         self.assertEqual(pd.call_args[0][0]["target_person_id"], 99)
         log = q.inserts(SD.T_LOG)[0]
-        self.assertIn("'TEST:raivis@alenda.lv'", log)
+        self.assertIn("'TEST:alenda.jurmala@gmail.com'", log)
         self.assertNotIn("'m1'", log)                                  # no customer's history moves
-        self.assertIn("'TEST:raivis@alenda.lv'", q.inserts(SD.T_ADV)[0])
+        self.assertIn("'TEST:alenda.jurmala@gmail.com'", q.inserts(SD.T_ADV)[0])
         self.assertEqual(res["unfilled"], [])
 
     def test_proof_needs_l1_and_the_approved_hash(self):
@@ -326,7 +326,8 @@ class Proof(unittest.TestCase):
     def test_restore_clears_keys_that_had_no_value_with_empty_string(self):
         q = Q([cand(1)])
         q.proof_rows = [{"run_id": "r1", "raivis_before": '{"P1_NAME": "Vecais"}',
-                         "written": '{"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}'}]
+                         "written": '{"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}',
+                         "recipient": "alenda.jurmala@gmail.com"}]
         b = Brevo(attrs={"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0})
         res = day(q, b, env=LIVE_ENV).proof_restore(["r1"])
         self.assertEqual(b.puts[-1][1], {"attributes": {"P1_NAME": "Vecais", "OFFER_RUNG": ""}})
@@ -334,13 +335,43 @@ class Proof(unittest.TestCase):
 
     def test_draft_test_creates_and_never_sends(self):
         b = Brevo()
-        b.lists[90] = ["raivis@alenda.lv"]
+        b.lists[90] = ["alenda.jurmala@gmail.com"]
         res = day(Q([cand(1)]), b, env=LIVE_ENV).draft_test("reorder_1", TUE, 90)
         self.assertEqual(res["campaign_id"], 900)
         self.assertTrue(b.campaign["name"].startswith("TEST draft reorder_1"))
         self.assertFalse(any(p.endswith("/sendNow") for _m, p in b.calls))
         with self.assertRaises(SP.SendLocked):
             day(Q([cand(1)]), b, env=DRY_ENV).draft_test("reorder_1", TUE, 90)
+
+    def test_proof_refuses_without_one_configured_recipient(self):
+        for bad in ({}, {"PROOF_RECIPIENT": ""}, {"PROOF_RECIPIENT": "a@x.lv,b@x.lv"}):
+            env = {k: v for k, v in LIVE_ENV.items() if k != "PROOF_RECIPIENT"}
+            env.update(bad)
+            b = Brevo(attrs={})
+            with mock.patch.object(SD.time, "sleep"), self.assertRaises(SP.SendLocked):
+                day(Q([cand(1)], tracks=[]), b, env=env).proof("reorder_1", TUE, 99)
+            self.assertEqual(b.writes(), [])
+
+    def test_proof_never_writes_under_the_recipients_own_master_key(self):
+        own = dict(cand(2), master_key="cid:1256385", email="alenda.jurmala@gmail.com")
+        q, b, pd = Q([own, cand(1)], tracks=[]), Brevo(attrs={}), mock.Mock(return_value=4711)
+        with mock.patch.object(SD.time, "sleep"):
+            res = day(q, b, env=LIVE_ENV, pd=pd).proof("reorder_1", TUE, 99)
+        writes = [c for c in q.calls if c.lstrip().startswith(("INSERT", "UPDATE")) and "send_day_audience" not in c]
+        self.assertTrue(writes)
+        self.assertFalse([w for w in writes if "cid:1256385" in w and "send_day_proof" not in w])
+        self.assertIn("'TEST:alenda.jurmala@gmail.com'", q.inserts(SD.T_LOG)[0])
+        self.assertIn("WHERE master_key = 'TEST:alenda.jurmala@gmail.com'",
+                      [c for c in q.calls if c.startswith(f"UPDATE `{SD.T_STATE}`")][0])
+        self.assertEqual(pd.call_args[0][0]["target_person_id"], 99)
+        self.assertIn("master_key: TEST:alenda.jurmala@gmail.com", pd.call_args[0][0]["note"])
+        self.assertEqual(res["sent"], 1)
+
+    def test_restore_refuses_runs_of_another_recipient(self):
+        q = Q([cand(1)])
+        q.proof_rows = [{"run_id": "old", "raivis_before": "{}", "written": "{}", "recipient": None}]
+        with self.assertRaises(SP.SendLocked):
+            day(q, Brevo(), env=LIVE_ENV).proof_restore(["old"])
 
     def test_unfilled_marks(self):
         self.assertEqual(SD.unfilled_marks("{{ contact.P1_NAME }} {{ contact.UZRUNA | default : 'Sveiki' }}",
