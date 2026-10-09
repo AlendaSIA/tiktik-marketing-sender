@@ -94,10 +94,15 @@ class Locks(unittest.TestCase):
         self.assertEqual(lk.touched, [], "a config lock must refuse before any lookup")
         self.assertIn("SEND PATH LOCKED", str(e))
 
-    def test_L2_word_must_be_raivis_today(self):
-        for word in (None, "RAIVIS-2026-10-05", "MAIN-2026-10-06", "raivis-2026-10-06"):
+    def test_L2_daily_word_is_retired_standing_approval_is_L3_L4(self):
+        # MAIN D1 2026-10-09: no SEND_UNLOCKED_BY word is needed or read; the standing approval (L3/L4) decides
+        for word in (None, "RAIVIS-2026-10-05", "x"):
             out, e, brevo, log, pd, st, lk = run(unlocked=word)
-            self.assertLockedBeforeAnything(e, brevo, log, pd, st, "L2")
+            self.assertIsNone(e)
+            self.assertEqual(brevo.calls, [(501,)])
+        for lk in (Lookups(track=False), Lookups(tpl=False)):
+            out, e, brevo, log, pd, st, _ = run(lookups=lk, unlocked=None)
+            self.assertIsNotNone(e); self.assertEqual(brevo.calls, [])
 
     def test_L6_pd_type_unresolved(self):
         out, e, brevo, log, pd, st, lk = run(type_key=None)

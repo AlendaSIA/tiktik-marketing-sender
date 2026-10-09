@@ -6,9 +6,11 @@ unless EVERY lock is open. ABSOLUTE RULE (Raivis 2026-09-25): nothing is sent to
 Raivis himself says so. Today every lock is closed by design:
 
   L1  config.ALLOW_SEND is True and config.DRY_RUN is False        (env; both default closed)
-  L2  SEND_UNLOCKED_BY == "RAIVIS-<today, Europe/Riga>"              (a human-dated word, expires daily)
-  L3  the variant's track is enabled in mkt_control.track_enabled    (Raivis' switch; 0/9 today)
-  L4  the template has an approved row in mkt_control.template_approval
+  L2  RETIRED 2026-10-09 (MAIN D1, Raivis 13:07): the daily SEND_UNLOCKED_BY word and the per-batch press are
+      replaced by the STANDING APPROVAL, which is L3 + L4 below (send_day.standing_approval).
+  L3  D1(a): the track_enabled row is enabled AND enabled_by = 'Raivis'           (Raivis' switch; 0/9 today)
+  L4  D1(b)+(c): an approved template_approval row by 'Raivis' for (email_type, template_id) whose approved_sha256
+      equals the sha256 of the template's htmlContent in Brevo read at send time
   L5  the frozen audience for (batch_id, build_id) is non-empty and has 0 suppressed addresses
   L6  pd_record type configured (PD_ACTIVITY_TYPE_KEY) - no customer send without its PD record
   L7  G15 (contract G15.1/G15.2): a PRICE letter needs that send date's goods run
@@ -62,13 +64,11 @@ class SendLocked(_Base):
                          "viss lidz galam gatavs'; opening a lock is his call, not a code change.")
 
 
-def config_locks(*, allow_send, dry_run, unlocked_by, today) -> list:
-    """L1, L2, L6 - checked FIRST, before any lookup or network call."""
+def config_locks(*, allow_send, dry_run, today=None) -> list:
+    """L1, L6 - checked FIRST, before any lookup or network call. (L2 retired 2026-10-09: standing approval = L3/L4.)"""
     closed = []
     if not allow_send or dry_run:
         closed.append(("L1", f"ALLOW_SEND={allow_send} DRY_RUN={dry_run}"))
-    if unlocked_by != f"RAIVIS-{today.isoformat()}":
-        closed.append(("L2", f"SEND_UNLOCKED_BY={unlocked_by!r} (needs RAIVIS-{today.isoformat()})"))
     if not pd_record.PD_ACTIVITY_TYPE_KEY:
         closed.append(("L6", "PD_ACTIVITY_TYPE_KEY unresolved"))
     return closed
@@ -175,8 +175,7 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
     Raises SendLocked before ANY external call when a lock is closed."""
     now = now or dt.datetime.now(dt.timezone.utc)
     today = now.astimezone(RIGA).date()
-    closed = config_locks(allow_send=config.ALLOW_SEND, dry_run=config.DRY_RUN,
-                          unlocked_by=os.environ.get("SEND_UNLOCKED_BY"), today=today)
+    closed = config_locks(allow_send=config.ALLOW_SEND, dry_run=config.DRY_RUN, today=today)
     if closed:
         raise SendLocked(closed)                              # no lookup, no network
     closed = window_lock(send_date=send_date, now=now, letter_fields=lookups.letter_fields,
