@@ -135,7 +135,7 @@ class CampaignLayerStillRefuses(unittest.TestCase):
             import config as C
             with mock.patch.object(C, "ALLOW_SEND", True), mock.patch.object(C, "DRY_RUN", False):
                 with self.assertRaises(SP.SendLocked) as e:
-                    SP.production_dispatch(1, "2026-10-06", "B", "b")
+                    SP.production_dispatch(1, dt.datetime.now(SP.RIGA).date().isoformat(), "B", "b")   # today: past L10
         self.assertTrue("not wired" in str(e.exception) or "refused" in str(e.exception))
 
     def test_production_lookups_fail_closed_and_only_four_are_wired(self):

@@ -189,6 +189,8 @@ class TemplateContentTC4(unittest.TestCase):
         tc = {t["template_id"]: t for t in wh.template_content(NOW)}
         self.assertEqual({k: v["content_approved"] for k, v in tc.items()},
                          {180: True, 234: False, 179: False, 235: False, 9180: False})   # mismatch, NULL, stale mirror
+        _tc = wh.template_content
+        wh.template_content = lambda now=None: _tc(now or NOW)                     # the fixture's clock, not today's
         self.assertTrue(wh.template_approved(180))
         for tid in (234, 179, 235, 9180, 999):
             self.assertFalse(wh.template_approved(tid), tid)
