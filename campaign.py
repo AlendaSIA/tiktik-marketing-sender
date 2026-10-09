@@ -31,10 +31,12 @@ any ⟦ left in the subject, preheader or HTML of the campaign as it stands rais
 SendRefused. Drafts may carry the tokens; see send_now.
 """
 import html as _html
+import io
 import json
 import logging
 import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -231,8 +233,17 @@ def _call(method: str, path: str, payload=None, timeout: int = 30):
     req.add_header("accept", "application/json")
     if body:
         req.add_header("content-type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        raw = r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        # MAIN 2026-10-09 17:50: on any non-2xx log status, endpoint and Brevo's body (never the key - it travels
+        # in a header, the URL carries none). The 400 of the first proof was undiagnosable without this.
+        detail = (e.read() or b"")[:2000]
+        msg = f"BREVO_HTTP_ERROR {e.code} {method} {path}: {detail.decode('utf-8', 'replace')}"
+        log.error(msg)
+        print(msg, file=sys.stderr, flush=True)
+        raise urllib.error.HTTPError(e.url, e.code, msg, e.hdrs, io.BytesIO(detail)) from None
     return json.loads(raw) if raw else {}
 
 

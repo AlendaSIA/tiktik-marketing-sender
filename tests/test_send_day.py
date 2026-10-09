@@ -58,6 +58,8 @@ class Q:
             return []
         if f"`{SD.T_LF}`" in s:
             return list(self.lf.values())
+        if f"`{SD.T_PROOF}`" in s:
+            return getattr(self, "proof_rows", [])
         raise AssertionError("unexpected SQL " + s[:80])
 
     def inserts(self, table):
@@ -307,6 +309,38 @@ class Proof(unittest.TestCase):
             day(Q([cand(1)]), Brevo(html="<p>other</p>"), env=LIVE_ENV).proof("reorder_1", TUE, 99)
         self.assertIn("TEMPLATE_HASH_CHANGED", str(e.exception))
 
+    def test_proof_refused_when_raivis_sits_in_the_suppression_list(self):
+        class B(Brevo):
+            def __call__(self, method, path, payload):
+                if method == "GET" and path == "/contacts/raivis@alenda.lv":
+                    self.calls.append((method, path))
+                    return {"attributes": self.attrs or {}, "listIds": [4, 62]}
+                return super().__call__(method, path, payload)
+        b = B(attrs={})
+        with mock.patch.object(SD.time, "sleep"), self.assertRaises(SP.SendLocked) as e:
+            day(Q([cand(1)], tracks=[]), b, env=LIVE_ENV).proof("reorder_1", TUE, 99)
+        self.assertIn("suppression list 4", str(e.exception))
+        self.assertNotIn(("POST", "/emailCampaigns"), b.calls)
+
+    def test_restore_nulls_numbers_and_booleans_that_had_no_value(self):
+        q = Q([cand(1)])
+        q.proof_rows = [{"run_id": "r1", "raivis_before": '{"P1_NAME": "Vecais"}',
+                         "written": '{"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}'}]
+        b = Brevo(attrs={"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0})
+        res = day(q, b, env=LIVE_ENV).proof_restore(["r1"])
+        self.assertEqual(b.puts[-1][1], {"attributes": {"P1_NAME": "Vecais", "OFFER_RUNG": None}})
+        self.assertEqual(res["nulled"], ["OFFER_RUNG"])
+
+    def test_draft_test_creates_and_never_sends(self):
+        b = Brevo()
+        b.lists[90] = ["raivis@alenda.lv"]
+        res = day(Q([cand(1)]), b, env=LIVE_ENV).draft_test("reorder_1", TUE, 90)
+        self.assertEqual(res["campaign_id"], 900)
+        self.assertTrue(b.campaign["name"].startswith("TEST draft reorder_1"))
+        self.assertFalse(any(p.endswith("/sendNow") for _m, p in b.calls))
+        with self.assertRaises(SP.SendLocked):
+            day(Q([cand(1)]), b, env=DRY_ENV).draft_test("reorder_1", TUE, 90)
+
     def test_unfilled_marks(self):
         self.assertEqual(SD.unfilled_marks("{{ contact.P1_NAME }} {{ contact.UZRUNA | default : 'Sveiki' }}",
                                            {"P1_NAME": ""}), ["P1_NAME"])
@@ -318,6 +352,24 @@ class Proof(unittest.TestCase):
         day(q, Brevo(), env=LIVE_ENV, wh=WH(blocks={"m1": "PAID_ORDERS_SOURCE_MISSING"}), dash=dash).run(TUE)
         self.assertEqual(dash.call_args[0][0], "KĻŪDA")
         self.assertIn("60 min", dash.call_args[0][1])
+
+
+class BrevoErrorBodyIsLogged(unittest.TestCase):
+    def test_non_2xx_carries_status_endpoint_and_body_never_the_key(self):
+        import io
+        import urllib.error
+        import campaign
+        err = urllib.error.HTTPError("https://api.brevo.com/v3/emailCampaigns", 400, "Bad Request", {},
+                                     io.BytesIO(b'{"code":"invalid_parameter","message":"sender is invalid"}'))
+        with mock.patch.object(campaign, "api_key", return_value="SECRETKEY"), \
+                mock.patch.object(campaign.urllib.request, "urlopen", side_effect=err), \
+                mock.patch("sys.stderr", new_callable=io.StringIO) as se, self.assertRaises(urllib.error.HTTPError) as e:
+            campaign._call("POST", "/emailCampaigns", {"name": "x"})
+        self.assertEqual(e.exception.code, 400)
+        for text in (str(e.exception), se.getvalue()):
+            self.assertIn("400 POST /emailCampaigns", text)
+            self.assertIn("sender is invalid", text)
+            self.assertNotIn("SECRETKEY", text)
 
 
 class BrevoWritesRefusedWhileL1Closed(unittest.TestCase):

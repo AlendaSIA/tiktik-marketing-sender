@@ -366,6 +366,9 @@ class Day:
         lst = self.fill_list(f"SD {d} {et} {batch}", emails)
         if alias is not None and self.list_members(lst["list_id"]) != {TEST_RECIPIENT}:
             raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {TEST_RECIPIENT}")])
+        if alias is not None and SUPPRESSION_LIST_ID in self.contact_lists(TEST_RECIPIENT):
+            raise SP.SendLocked([("PROOF", f"{TEST_RECIPIENT} is in suppression list {SUPPRESSION_LIST_ID}: the "
+                                           f"campaign excludes that list and would reach nobody")])
         if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
@@ -470,6 +473,32 @@ class Day:
                 "unfilled": unfilled_marks(html + " " + (camp.get("subject") or ""), attrs),
                 "stats": ((camp.get("statistics") or {}).get("globalStats") or {})}
 
+    def contact_lists(self, email):
+        return set((self.brevo("GET", f"/contacts/{email}", None) or {}).get("listIds") or [])
+
+    def draft_test(self, et, d, list_id) -> dict:
+        """MAIN 2026-10-09 17:50 (2): ONE campaign create that is NEVER sent - the exact request of create_campaign,
+        to a list holding exactly raivis@alenda.lv, named TEST. Returns Brevo's answer or its error body."""
+        if not l1_open(self.env):
+            raise SP.SendLocked([("L1", "a draft create is a Brevo write: open L1 on the execution only")])
+        if self.list_members(int(list_id)) != {TEST_RECIPIENT}:
+            raise SP.SendLocked([("PROOF", f"list {list_id} does not hold exactly {TEST_RECIPIENT}")])
+        plan_run, _pd = self.plan_run_of(d)
+        tpl = next((t for t in self.types_of(plan_run, d) if t["email_type"] == et), None)
+        if tpl is None:
+            raise SP.SendLocked([("PROOF", f"no {et} in plan {plan_run}")])
+        tid = _i(tpl["template_id"])
+        out = {"email_type": et, "template_id": tid, "list_id": int(list_id),
+               "raivis_list_ids": sorted(self.contact_lists(TEST_RECIPIENT))}
+        try:
+            cid = self.create_campaign(et, tid, d, int(list_id), self.run_id,
+                                       name=f"TEST draft {et} {self.run_id} - never sent")
+        except Exception as e:  # noqa: BLE001 - the point of this call is to read the error
+            return {**out, "error": str(e)[:2000]}
+        camp = self.brevo("GET", f"/emailCampaigns/{cid}", None) or {}
+        return {**out, "campaign_id": cid, "status": camp.get("status"), "subject": camp.get("subject"),
+                "name": camp.get("name")}
+
     def proof_restore(self, run_ids):
         """Put raivis@alenda.lv's attributes back to what they were before the FIRST proof of these runs."""
         rows = self.q(f"SELECT run_id, raivis_before, written FROM `{T_PROOF}` WHERE run_id IN "
@@ -480,12 +509,16 @@ class Day:
                 before.setdefault(k, v)
             keys |= set(json.loads(r["written"] or "{}"))
         types = self.attr_types()
-        restore = {k: before.get(k, "" if types.get(k) == "text" else None) for k in keys}
-        restore = {k: v for k, v in restore.items() if v is not None}
+        # a key with no value before goes back to no value: '' for text, null for a number / boolean / date
+        # (MAIN 2026-10-09 17:50 - the first restore left OFFER_HAS_STD / OFFER_RUNG / P1_FRESH holding proof values)
+        restore = {k: before[k] if k in before else ("" if types.get(k) == "text" else None) for k in keys}
         self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": restore})
         self.q(f"UPDATE `{T_PROOF}` SET restored_at = CURRENT_TIMESTAMP() WHERE run_id IN "
                f"({','.join(_s(r) for r in run_ids)})")
-        return {"restored": sorted(restore), "left_numeric_or_boolean": sorted(keys - set(restore))}
+        now = self.contact_attrs(TEST_RECIPIENT) or {}
+        differ = sorted(k for k, v in restore.items() if _norm(now.get(k)) != _norm(v))
+        return {"restored": sorted(restore), "nulled": sorted(k for k, v in restore.items() if v is None),
+                "differ_after": differ, "after_nulled": {k: now.get(k) for k in restore if restore[k] is None}}
 
     def fill_list(self, name, emails, rounds=3, pause=6, settle_s=300):
         lid = int(self.brevo("POST", "/contacts/lists", {"name": name[:120], "folderId": LIST_FOLDER_ID})["id"])
@@ -517,7 +550,7 @@ class Day:
             if len(page) < 500:
                 return out
 
-    def create_campaign(self, et, tid, d, list_id, batch):
+    def create_campaign(self, et, tid, d, list_id, batch, name=None):
         import campaign as CAMP
         tpl = self.brevo("GET", f"/smtp/templates/{int(tid)}", None) or {}
         week = f"{d.isocalendar()[0]}-w{d.isocalendar()[1]:02d}"
@@ -526,7 +559,7 @@ class Day:
             html, _pairs = CAMP.apply_utm_week(html, week)
         # else: byte for byte - the approved letters 179 / 180 / 244 carry no utm link at all (measured 2026-10-09);
         # their D1 hash is of exactly these bytes
-        payload = {"name": f"SD {d} {et} ({batch})"[:200], "subject": tpl.get("subject") or "",
+        payload = {"name": (name or f"SD {d} {et} ({batch})")[:200], "subject": tpl.get("subject") or "",
                    "sender": {"id": CAMP.SENDER_ID}, "replyTo": "info@tiktik.lv", "htmlContent": html,
                    "recipients": {"listIds": [int(list_id)], "exclusionListIds": [SUPPRESSION_LIST_ID]},
                    "inlineImageActivation": False}
@@ -704,6 +737,16 @@ def main(argv) -> int:
         q, wh, brevo, pd_post, dash = _prod()
         print("PROOF_RESTORE " + json.dumps(Day(q, wh, brevo, pd_post, dash, os.environ)
                                             .proof_restore(args["proof-restore"].split(",")), default=str))
+        return 0
+    if args.get("draft-test"):
+        q, wh, brevo, pd_post, dash = _prod()
+        day = Day(q, wh, brevo, pd_post, dash, os.environ)
+        try:
+            res = day.draft_test(args["draft-test"], d, int(args["list"]))
+        except SP.SendLocked as e:
+            print("DRAFT_TEST_REFUSED " + str(e)[:800])
+            return 3
+        print("DRAFT_TEST " + json.dumps({"run_id": day.run_id, **res}, ensure_ascii=False, default=str)[:6000])
         return 0
     if args.get("proof"):
         q, wh, brevo, pd_post, dash = _prod()
