@@ -366,13 +366,16 @@ class Day:
         lst = self.fill_list(f"SD {d} {et} {batch}", emails)
         if alias is not None and self.list_members(lst["list_id"]) != {TEST_RECIPIENT}:
             raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {TEST_RECIPIENT}")])
-        if alias is not None and SUPPRESSION_LIST_ID in self.contact_lists(TEST_RECIPIENT):
-            raise SP.SendLocked([("PROOF", f"{TEST_RECIPIENT} is in suppression list {SUPPRESSION_LIST_ID}: the "
-                                           f"campaign excludes that list and would reach nobody")])
         if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
-        camp = self.create_campaign(et, tid, d, lst["list_id"], batch)
+        # PROOF only: raivis@alenda.lv sits in suppression list 4 (measured 2026-10-09: listIds hold 4), so
+        # exclusionListIds=[4] leaves NO recipient and Brevo answers 400 "There are no contacts associated with the
+        # given recipients info". The proof list was just read back as exactly that one address, so it goes without
+        # the exclusion. A real batch always carries it.
+        camp = self.create_campaign(et, tid, d, lst["list_id"], batch,
+                                    name=(f"TEST proof {et} {batch}" if alias is not None else None),
+                                    exclude_suppression=alias is None)
         content = self.brevo("GET", f"/emailCampaigns/{camp}", None) or {}
         import campaign as CAMP
         hits = CAMP.placeholder_hits(content.get("subject"), content.get("previewText"), content.get("htmlContent") or "")
@@ -509,16 +512,18 @@ class Day:
                 before.setdefault(k, v)
             keys |= set(json.loads(r["written"] or "{}"))
         types = self.attr_types()
-        # a key with no value before goes back to no value: '' for text, null for a number / boolean / date
-        # (MAIN 2026-10-09 17:50 - the first restore left OFFER_HAS_STD / OFFER_RUNG / P1_FRESH holding proof values)
-        restore = {k: before[k] if k in before else ("" if types.get(k) == "text" else None) for k in keys}
+        # a key with no value before goes back to NO value. Brevo ignores null (measured 2026-10-09: a PUT with null
+        # left OFFER_HAS_STD / OFFER_RUNG / P1_FRESH unchanged) and clears any type with '' (measured: the same three
+        # disappeared from the contact after one PUT with '').
+        restore = {k: before[k] if k in before else "" for k in keys}
         self.brevo("PUT", f"/contacts/{TEST_RECIPIENT}", {"attributes": restore})
         self.q(f"UPDATE `{T_PROOF}` SET restored_at = CURRENT_TIMESTAMP() WHERE run_id IN "
                f"({','.join(_s(r) for r in run_ids)})")
         now = self.contact_attrs(TEST_RECIPIENT) or {}
         differ = sorted(k for k, v in restore.items() if _norm(now.get(k)) != _norm(v))
-        return {"restored": sorted(restore), "nulled": sorted(k for k, v in restore.items() if v is None),
-                "differ_after": differ, "after_nulled": {k: now.get(k) for k in restore if restore[k] is None}}
+        cleared = sorted(k for k in restore if k not in before)
+        return {"restored": sorted(restore), "cleared": cleared, "differ_after": differ,
+                "after_cleared": {k: now.get(k) for k in cleared}}
 
     def fill_list(self, name, emails, rounds=3, pause=6, settle_s=300):
         lid = int(self.brevo("POST", "/contacts/lists", {"name": name[:120], "folderId": LIST_FOLDER_ID})["id"])
@@ -550,7 +555,7 @@ class Day:
             if len(page) < 500:
                 return out
 
-    def create_campaign(self, et, tid, d, list_id, batch, name=None):
+    def create_campaign(self, et, tid, d, list_id, batch, name=None, exclude_suppression=True):
         import campaign as CAMP
         tpl = self.brevo("GET", f"/smtp/templates/{int(tid)}", None) or {}
         week = f"{d.isocalendar()[0]}-w{d.isocalendar()[1]:02d}"
@@ -561,7 +566,8 @@ class Day:
         # their D1 hash is of exactly these bytes
         payload = {"name": (name or f"SD {d} {et} ({batch})")[:200], "subject": tpl.get("subject") or "",
                    "sender": {"id": CAMP.SENDER_ID}, "replyTo": "info@tiktik.lv", "htmlContent": html,
-                   "recipients": {"listIds": [int(list_id)], "exclusionListIds": [SUPPRESSION_LIST_ID]},
+                   "recipients": ({"listIds": [int(list_id)], "exclusionListIds": [SUPPRESSION_LIST_ID]}
+                                  if exclude_suppression else {"listIds": [int(list_id)]}),
                    "inlineImageActivation": False}
         return int(self.brevo("POST", "/emailCampaigns", payload)["id"])
 

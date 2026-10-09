@@ -309,27 +309,25 @@ class Proof(unittest.TestCase):
             day(Q([cand(1)]), Brevo(html="<p>other</p>"), env=LIVE_ENV).proof("reorder_1", TUE, 99)
         self.assertIn("TEMPLATE_HASH_CHANGED", str(e.exception))
 
-    def test_proof_refused_when_raivis_sits_in_the_suppression_list(self):
-        class B(Brevo):
-            def __call__(self, method, path, payload):
-                if method == "GET" and path == "/contacts/raivis@alenda.lv":
-                    self.calls.append((method, path))
-                    return {"attributes": self.attrs or {}, "listIds": [4, 62]}
-                return super().__call__(method, path, payload)
-        b = B(attrs={})
-        with mock.patch.object(SD.time, "sleep"), self.assertRaises(SP.SendLocked) as e:
-            day(Q([cand(1)], tracks=[]), b, env=LIVE_ENV).proof("reorder_1", TUE, 99)
-        self.assertIn("suppression list 4", str(e.exception))
-        self.assertNotIn(("POST", "/emailCampaigns"), b.calls)
+    def test_proof_campaign_drops_the_suppression_exclusion_real_batch_keeps_it(self):
+        b = Brevo(attrs={})
+        with mock.patch.object(SD.time, "sleep"):
+            day(Q([cand(1)], tracks=[]), b, env=LIVE_ENV, pd=mock.Mock(return_value=1)).proof("reorder_1", TUE, 99)
+        self.assertEqual(b.campaign["recipients"], {"listIds": [77]})
+        self.assertTrue(b.campaign["name"].startswith("TEST proof reorder_1"))
+        b2 = Brevo()
+        day(Q([cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 2, "set_at": "x"}]),
+            b2, env=LIVE_ENV).run(TUE)
+        self.assertEqual(b2.campaign["recipients"]["exclusionListIds"], [4])
 
-    def test_restore_nulls_numbers_and_booleans_that_had_no_value(self):
+    def test_restore_clears_keys_that_had_no_value_with_empty_string(self):
         q = Q([cand(1)])
         q.proof_rows = [{"run_id": "r1", "raivis_before": '{"P1_NAME": "Vecais"}',
                          "written": '{"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0}'}]
         b = Brevo(attrs={"P1_NAME": "Cimdi", "OFFER_RUNG": 0.0})
         res = day(q, b, env=LIVE_ENV).proof_restore(["r1"])
-        self.assertEqual(b.puts[-1][1], {"attributes": {"P1_NAME": "Vecais", "OFFER_RUNG": None}})
-        self.assertEqual(res["nulled"], ["OFFER_RUNG"])
+        self.assertEqual(b.puts[-1][1], {"attributes": {"P1_NAME": "Vecais", "OFFER_RUNG": ""}})
+        self.assertEqual(res["cleared"], ["OFFER_RUNG"])
 
     def test_draft_test_creates_and_never_sends(self):
         b = Brevo()
