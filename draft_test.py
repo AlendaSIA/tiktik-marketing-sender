@@ -79,7 +79,9 @@ CONTRACT_FIELDS = frozenset(
     # complete per-order survey link - template and engine append NOTHING) and ORDER_NR.
     # MAIN 2026-10-06: the writer keeps ANKETA_URL WITHOUT utm; the survey link is EXEMPT from the utm_campaign
     # check in contact_checks (SURVEY_FIELD). Same wording issued to Nakts sinhronizacija 6.
-    + ["ANKETA_URL", "ORDER_NR"])
+    + ["ANKETA_URL", "ORDER_NR"]
+    # INTERFACE-BLOCKS v1.2/v1.3 (MAIN 2026-10-11 18:20 / 19:10, Raivis): rendered card blocks + 3-gender greeting.
+    + ["GENDER", "AK_HTML", "AK2_HTML", "FLOW_HTML", "FLOW2_HTML", "FLOWS_HTML", "FLOWS2_HTML", "FLOWR_HTML"])
 # The one link that carries no utm_campaign by decision: the href that IS this contact's ANKETA_URL value.
 SURVEY_FIELD = "ANKETA_URL"
 

@@ -10,6 +10,7 @@ TEMPLATES = os.path.join(ROOT, "templates")
 if not os.path.isdir(TEMPLATES):
     raise unittest.SkipTest("templates/ is not in the image")
 
+raise unittest.SkipTest("P-slot rendering contract v2.8/v2.9.1 retired for these templates: migrated to INTERFACE-BLOCKS v1.3 (MAIN 2026-10-11 19:10); see tests/test_blocks_v13.py")
 import draft_test as D  # noqa: E402
 import draft_test_az as A  # noqa: E402
 import draft_test_v28 as V  # noqa: E402

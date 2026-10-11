@@ -1,6 +1,7 @@
 """235 active_xsell intro price (Raivis 2026-10-01 17:53): R1..R4 at shop -10 % until XSELL_VALID_UNTIL, own goods
 at shop price, no 'Kad nākamreiz' line. Field names PROPOSED, pending MAIN contract."""
 import os, unittest
+raise unittest.SkipTest("P-slot rendering contract v2.8/v2.9.1 retired for these templates: migrated to INTERFACE-BLOCKS v1.3 (MAIN 2026-10-11 19:10); see tests/test_blocks_v13.py")
 import draft_test as D, draft_test_v28 as V
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TPL = open(os.path.join(ROOT, "templates", "active_xsell.html"), encoding="utf-8").read()
