@@ -10,7 +10,9 @@ builds the two pieces that do not depend on the frame, and nothing else:
            Measured from the Brevo list snapshot (mkt_control.edu_brevo_list) and BigQuery; the campaign itself will
            carry listIds [3] and exclusionListIds [4, 46, 75, 96] so Brevo applies the same rule at send time.
 
-No Brevo call, no attribute write, no campaign: --shadow prints the funnel and writes the region HTML to GCS.
+No Brevo write, no attribute write, no campaign: --shadow prints the gate + funnel and writes the campaign HTML to GCS.
+v1.2 (MAIN 17:45): the shared maker region is rendered by the writer into mkt_control.ak_maker_html; region_html()
+below stays only as a reference renderer, the campaign uses the writer's html.
 """
 from __future__ import annotations
 
@@ -117,17 +119,41 @@ FROM x LEFT JOIN s USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (
 WHERE x.l3"""
 
 
-def shadow(query, put, day=None) -> dict:
-    day = day or dt.date.today()
-    wk = shared_blocks(query, day)
-    res = {k: v for k, v in wk.items() if k != "blocks"}
-    if wk["status"] == "OK":
-        region = region_html(wk["blocks"])
-        res.update({"blocks": [{"title": b["title"], "goods": len(b["items"])} for b in wk["blocks"]],
-                    "region_bytes": len(region.encode()), "region_sha256": hashlib.sha256(region.encode()).hexdigest()[:12],
-                    "region_gcs": put(REGION_GCS.format(week=wk["week_id"]), region)})
+TEMPLATE_ID = 236
+CAMPAIGN_GCS = "gs://jaunais-za-aizv04022026-brevo-history/_akcija/campaign_{week}.html"
+
+
+def frame_order_ok(frame: str) -> bool:
+    """v1.2 frame order: own goods ({{ contact.AK_HTML }} / AK2) come BEFORE <!--MAKER_BLOCKS-->."""
+    i = frame.find(PLACEHOLDER)
+    return i > 0 and "contact.AK_HTML" in frame[:i]
+
+
+def shadow(query, put, day=None, frame_fn=None) -> dict:
+    """v1.2 DRY: gate (AK-H1 + ak_maker_html), the campaign HTML = 236 frame with the writer's maker html at
+    <!--MAKER_BLOCKS--> (written to GCS only), and the audience funnel. No Brevo write, no campaign."""
     import block_gate as BG
-    res["ak_h1"] = BG.ak_h1(query, wk["send_date"], wk["week_id"]) or "OK"   # 236 may go only on "OK" (AK-H1)
+    day = day or dt.date.today()
+    tue, week_id, _end = A.week_of(day)
+    res = {"week_id": week_id, "send_date": tue.isoformat(), "template_id": TEMPLATE_ID}
+    res["gate"] = BG.ak_h1(query, res["send_date"], week_id) or "OK"     # 236 may go only on "OK"
+    row, why = BG.maker_html(query, week_id)
+    if why:
+        res["maker"] = why
+    else:
+        h = row["html"]
+        full = hashlib.sha256(h.encode("utf-8")).hexdigest()
+        res["maker"] = {"html_bytes": len(h.encode("utf-8")), "html_sha256": str(row["html_sha256"])[:12],
+                        "sha_matches_html": full.startswith(str(row["html_sha256"]).strip().lower()),
+                        "built_at": str(row.get("built_at"))}
+        frame = frame_fn(TEMPLATE_ID) if frame_fn else ""
+        try:
+            out = fill_frame(frame or "", h)
+            res["campaign"] = {"frame_order_ok": frame_order_ok(frame), "bytes": len(out.encode("utf-8")),
+                               "sha256": hashlib.sha256(out.encode("utf-8")).hexdigest()[:12],
+                               "gcs": put(CAMPAIGN_GCS.format(week=week_id), out)}
+        except ValueError as e:
+            res["campaign"] = f"HOLD FRAME: {e}"
     funnel = {}
     for r in query(AUDIENCE_SQL):
         funnel[r["gate"]] = funnel.get(r["gate"], 0) + 1
@@ -157,7 +183,11 @@ def main(argv) -> int:
         print(__doc__)
         return 2
     q, put = _prod()
-    print("AKCIJA_CAMPAIGN " + json.dumps(shadow(q, put), ensure_ascii=False, default=str))
+    import campaign as CAMP
+
+    def frame_fn(tid):                                   # read-only Brevo GET of the 236 frame
+        return (CAMP._call("GET", f"/smtp/templates/{int(tid)}", None) or {}).get("htmlContent") or ""
+    print("AKCIJA_CAMPAIGN " + json.dumps(shadow(q, put, frame_fn=frame_fn), ensure_ascii=False, default=str))
     return 0
 
 
