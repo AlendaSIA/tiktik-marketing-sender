@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, vai tev ir higiēnas plāns pārbaudei? Sagatavosim bez maksas</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Individuāls uzkopšanas un dezinfekcijas plāns tavai darba vietai — 2 darba dienās tavā e-pastā.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Manrope','Segoe UI',Arial,sans-serif;color:#23303a;">
+
+<tr><td align="center" style="padding:26px 34px 6px;">
+<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+</td></tr>
+
+
+<tr><td style="padding:18px 34px 0;">
+<div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
+</td></tr>
+<tr><td style="padding:14px 34px 0;">
+<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">Higiēnas plāns tavai darba vietai — bez maksas</h1>
+</td></tr>
+<tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
+<p style="margin:0 0 12px;">Ja tev ir salons, prakse, kabinets vai cita darba vieta — šis var noderēt.</p>
+<p style="margin:0 0 12px;">Kad atnāk pārbaude, viens no pirmajiem jautājumiem ir: „Parādiet savu uzkopšanas un dezinfekcijas plānu.“ Daudziem tāda nav vai tas ir sen novecojis — un tad sākas skraidīšana.</p>
+<p style="margin:0 0 12px;">Tāpēc mēs to saviem klientiem sagatavojam paši. Tu atbildi uz dažiem jautājumiem — kādas procedūras dari, kādas telpas un virsmas tev ir, ar ko tagad tīri. Mēs saliekam plānu tieši tavai darba vietai: kas, ar ko, cik bieži un kurš atbild. Pēc 2 darba dienām tas ir tavā e-pastā{% if contact.KABINETS_URL %} un arī tavā kabinetā sadaļā „Mans plāns“{% endif %}.</p>
+<p style="margin:0 0 6px;">&#9989; Bez maksas — arī ja līdzekļus pērc citur.</p>
+<p style="margin:0 0 6px;">&#9989; Aizpildīt var apmēram 5 minūtēs.</p>
+<p style="margin:0 0 4px;">&#9989; Ja tev ir vairākas darba vietas, plānu var sagatavot katrai.</p>
+</td></tr>
+<tr><td align="center" style="padding:16px 28px 0;">
+<a href="https://plani.tiktik.lv/index.php?e={{ contact.EMAIL }}" style="display:inline-block;background:#1f6fb2;color:#ffffff;text-decoration:none;font-weight:800;padding:16px 40px;border-radius:11px;font-size:16px;">Sagatavot manu plānu &rarr;</a>
+</td></tr>
+<tr><td align="center" style="padding:12px 28px 0;font-size:14px;">
+<a href="https://plani.tiktik.lv/paraugs.php" style="color:#1f6fb2;text-decoration:underline;">Apskatīt gatava plāna paraugu</a>
+</td></tr>
+
+<tr><td style="padding:20px 34px 0;">
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">Ja plāns tev nav vajadzīgs — nekas, vienkārši izlaid šo vēstuli. Ja ir jautājumi, atbildi, palīdzēsim.</p>
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:12px 0 0;">tiktik.lv komanda</p>
+</td></tr>
+
+<tr><td style="padding:22px 34px 28px;">
+<div style="border-top:1px solid #e6eaf2;padding-top:16px;font-size:12px;line-height:1.6;color:#9aa4b2;text-align:center;">
+SIA Alenda &middot; tiktik.lv &middot; info@tiktik.lv<br>
+Šo e-pastu saņem, jo esi iepircies tiktik.lv veikalā.<br>
+<a href="{{ unsubscribe }}" style="color:#9aa4b2;">Atteikties no šiem e-pastiem</a>
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
