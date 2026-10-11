@@ -179,8 +179,10 @@ def _prod():
         return [dict(r) for r in c.query(s).result()]
 
     def insert(table, rows):
-        for i in range(0, len(rows), 5000):
-            c.load_table_from_json(rows[i:i + 5000], table, job_config=bigquery.LoadJobConfig(
+        # ONE load job per call: chunked loads right after a DELETE hit BigQuery's per-table update rate limit
+        # (measured 11.10: 403 rateLimitExceeded on 5 loads of 5 000 rows)
+        if rows:
+            c.load_table_from_json(rows, table, job_config=bigquery.LoadJobConfig(
                 write_disposition="WRITE_APPEND")).result()
     return q, insert
 
