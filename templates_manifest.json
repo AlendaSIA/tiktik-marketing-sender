@@ -148,10 +148,10 @@
    "variant": "winback_1",
    "id": 180,
    "file": "templates/winback_1.html",
-   "git_blob": "a0dc0a4d52ff8822e6d4562247a875dcc263cf12",
-   "sha256": "010b3a30bf3136c5312ce6cabfcbcc98f760085c3b407945150a84923470149b",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: labāka cena tavām ierastajām precēm",
-   "name": "money:winback_1 v11 — Raivja teksts 01.10 (klienti pa daļām, 'ja tev viss pietiek — super')",
+   "git_blob": "94d61c5ff1652932ec107dbabcb8c3db29b00d2e",
+   "sha256": "6f68711db3352e4d71ce8a88fe3f0dce72494bea0049310dde7411dea84ec066",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavām ierastajām precēm' }} — {{ contact.P1_PRICE }}{% if contact.OFFER_VALID_UNTIL %}, līdz {{ contact.OFFER_VALID_UNTIL }}{% endif %}",
+   "name": "money:winback_1 v12 — P1 tematā un H1 (Raivis 11.10 10:22)",
    "live_name": "money:winback_1 v5 — Raivja teksts, kabinets, izmesto preču bloks apakšā (2026-09-16)",
    "live_sha256": "760f4142905458f2695bed94e915f82433db8cb29f0f2011832fa8b643874a3c"
   }
@@ -166,10 +166,10 @@
    "episode": "E2",
    "e1_template_id": 180,
    "file": "templates/winback_1_e2.html",
-   "git_blob": "1043521cf1a2d34c4d183a48e0fccb0e67a37064",
-   "sha256": "c8c18651b0da669bb02f43de21c2bc0951ab85ff48782cbc29bcf44515ca99de",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, nepalaid garām — tavas cenas vēl 7 dienas",
-   "name": "money:winback_1_e2 v4 — Raivja teksts 01.10 10:29"
+   "git_blob": "9791cfb842459fc80993275017778bed24197676",
+   "sha256": "e04a74111f4a20a65476ca33ad47cb7f2a3f3e92fe89a02e41cf7949889a1e34",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_SHORT | default : 'tavām ierastajām precēm' }} — {{ contact.P1_PRICE }}, tikai tev",
+   "name": "money:winback_1_e2 v5 — P1 tematā un H1 (Raivis 11.10 10:29)"
   },
   {
    "variant": "winback_2_e2",
