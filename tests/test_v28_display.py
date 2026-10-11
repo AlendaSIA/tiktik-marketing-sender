@@ -21,8 +21,8 @@ import presend as P  # noqa: E402
 
 NB, EUR = chr(0xA0), chr(0x20AC)
 FILES = {232: "winback_2.html", 233: "winback_3.html", 234: "lost_quarterly.html"}   # P2, P4, P6
-PLAIN = {229: "welcome_1.html", 230: "reorder_2.html", 231: "reorder_3.html", 235: "active_xsell.html",
-         179: "reorder_1.html"}                                                   # P2 only
+PLAIN = {229: "welcome_1.html", 230: "reorder_2.html", 231: "reorder_3.html", 235: "active_xsell.html"}  # P2 only
+# 179 reorder_1 moved to INTERFACE-BLOCKS v1.2 (FLOW_HTML, Raivis 11.10 18:25) - pinned in test_blocks_v12.py
 DATE_ONLY = {180: "winback_1.html"}   # L4 (2026-09-28): P2 + the date line in the body; fixed preheader, no fresh line
 ALL = {**FILES, **PLAIN, **DATE_ONLY}
 BASE = {"KABINETS_HAS_PRODUCTS": True, "KABINETS_URL": "https://plani.tiktik.lv/kabinets.php?k=x&tab=preces",

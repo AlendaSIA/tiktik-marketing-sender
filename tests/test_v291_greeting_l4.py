@@ -14,11 +14,12 @@ import draft_test as D  # noqa: E402
 import draft_test_az as A  # noqa: E402
 import draft_test_v28 as V  # noqa: E402
 
-FILES = {229: "welcome_1", 179: "reorder_1", 230: "reorder_2", 231: "reorder_3", 180: "winback_1",
+FILES = {229: "welcome_1", 230: "reorder_2", 231: "reorder_3", 180: "winback_1",
          232: "winback_2", 233: "winback_3", 234: "lost_quarterly", 235: "active_xsell", 236: "akcija_weekly",
          255: "winback_1_e2", 256: "winback_2_e2", 257: "winback_3_e2",
          # draft_test_az.PRICE_LETTERS still lists the old provisional ids; not changed (MAIN 11.10 13:50: manifest ids only)
          9180: "winback_1_e2", 9232: "winback_2_e2", 9233: "winback_3_e2"}
+# 179 reorder_1 moved to INTERFACE-BLOCKS v1.2 (Raivis 11.10 18:25) - pinned in test_blocks_v12.py
 TAG = "{{ contact.GREETING | default : 'Sveiki!' }}"
 LINE = "<div style=\"font-size:22px;font-weight:800;color:#23303a;\">" + TAG + "</div>"   # 126 frame
 NB, EUR = chr(0xA0), chr(0x20AC)
@@ -71,6 +72,8 @@ class GreetingAndL4(unittest.TestCase):
 
     def test_reorder_letters_carry_no_discount_words(self):
         for tid in A.REORDER_LETTERS:
+            if tid not in FILES:   # 179 is on blocks v1.2 (test_blocks_v12.py); its text is unchanged
+                continue
             attrs = dict(BASE, OFFER_VALID_UNTIL="", OFFER_RUNG=0)
             self.assertTrue(A.words_check(tid, D.render(tpl(tid), attrs), "S", attrs)["ok"], tid)
 
