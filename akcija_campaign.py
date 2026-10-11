@@ -137,6 +137,13 @@ def shadow(query, put, day=None, frame_fn=None) -> dict:
     tue, week_id, _end = A.week_of(day)
     res = {"week_id": week_id, "send_date": tue.isoformat(), "template_id": TEMPLATE_ID}
     res["gate"] = BG.ak_h1(query, res["send_date"], week_id) or "OK"     # 236 may go only on "OK"
+    wk = query(f"SELECT maker FROM `{A.T_WEEK}` WHERE week_id = '{week_id}'")
+    res["maker_of_week"] = wk[0]["maker"] if len(wk) == 1 else None
+    if res["maker_of_week"] == A.MIX:                                     # MAIN 19:00: MIX list from week_price_mix16
+        mrows, why = BG.mix_rows(query, week_id)
+        res["mix_goods"] = len(mrows)
+        if why and res["gate"] == "OK":
+            res["gate"] = why
     # MAIN 18:50: checked at send time; the first of 3 sends (09:00/09:15/09:30) may slide to the OK row (until 10:30)
     last = BG.latest_push(query, res["send_date"], "AK_HTML") if BG._exists(query, BG.T_BLOCK_LOG) else None
     res["ak_push_latest"] = last and {k: str(last.get(k)) for k in ("mode", "status", "errors", "week_id", "finished_at")}

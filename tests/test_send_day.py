@@ -657,3 +657,60 @@ class BlockTiming(unittest.TestCase):
         import inspect
         src = inspect.getsource(SD.Day.run)
         self.assertIn("types = sorted(types, key=lambda t: bool(", src)
+
+
+class FlowV13(unittest.TestCase):
+    """INTERFACE BLOCKS v1.3 (MAIN 19:00): per-letter config, all-product-fields-empty rule, push gate per group."""
+    GRID = "{{ contact.FLOW_HTML|safe }}{{ contact.FLOW2_HTML|safe }}{{ contact.FLOWR_HTML|safe }}"
+    ROWS = "{{ contact.FLOW_HTML|safe }}{{ contact.FLOWS_HTML|safe }}{{ contact.FLOWS2_HTML|safe }}{{ contact.FLOWR_HTML|safe }}"
+
+    def tearDown(self):
+        import block_gate as BG
+        BG.FLOW_RULES_APPROVED_SHA = None
+
+    def test_new_fields_are_groups(self):
+        import block_gate as BG
+        self.assertEqual(BG.fields_in(self.ROWS), ["FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"])
+        self.assertEqual(BG.fields_in("{{ contact.FLOWS2_HTML }}"), ["FLOWS_HTML"])
+
+    def test_inactive_until_main_hands_the_sha(self):
+        import block_gate as BG
+        c = BG.letter_config(232, self.ROWS)
+        self.assertEqual((c["source"], c["product"]), ("template", ["FLOW_HTML"]))      # v1.2 behaviour kept
+        self.assertEqual(c["reads"], ["FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"])          # push gate = what it reads
+        BG.FLOW_RULES_APPROVED_SHA = "something-else"
+        self.assertEqual(BG.letter_config(232, self.ROWS)["source"], "template")
+
+    def test_active_rules(self):
+        import block_gate as BG
+        BG.FLOW_RULES_APPROVED_SHA = BG.FLOW_RULES_SOURCE_SHA
+        c = BG.letter_config(232, self.ROWS)
+        self.assertEqual((c["product"], c["mismatch"]), (["FLOW_HTML", "FLOWS_HTML"], None))
+        self.assertEqual(BG.letter_config(179, self.GRID)["product"], ["FLOW_HTML"])
+        self.assertIn("CONFIG_MISMATCH 231", BG.letter_config(231, self.GRID)["mismatch"])  # 231 has no R part
+        self.assertEqual(BG.letter_config(999, self.GRID)["source"], "template")          # not in the rules
+
+    def test_all_product_fields_empty(self):
+        import block_gate as BG
+        p = ["FLOW_HTML", "FLOWS_HTML"]
+        self.assertEqual(BG.all_empty({"FLOW_HTML": "", "FLOWS_HTML": " "}, p), p)
+        self.assertEqual(BG.all_empty({"FLOW_HTML": "", "FLOWS_HTML": "<t/>"}, p), [])
+        self.assertEqual(BG.all_empty({"FLOWR_HTML": "<t/>"}, ["FLOW_HTML"]), ["FLOW_HTML"])
+        self.assertEqual(BG.all_empty({}, []), [])
+
+    def test_send_day_rows_letter_goes_with_flows_only_when_active(self):
+        import block_gate as BG
+        attrs = {"P1_NAME": "Cimdi", "OFFER_RUNG": 0, "FLOW_HTML": "", "FLOWS_HTML": "<t/>", "FLOWR_HTML": ""}
+        q = BlocksD31.QB([cand(1)])
+        t = day(q, Brevo(attrs=attrs, html=self.ROWS)).run(TUE, caps_override={"reorder_1": 5})["types"][0]
+        self.assertEqual(t["refused"], {"block_empty": 1})                   # inactive: FLOW_HTML "" refuses
+        self.assertEqual(t["blocks"], ["FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"])
+        BG.FLOW_RULES_APPROVED_SHA = BG.FLOW_RULES_SOURCE_SHA
+        BG.FLOW_RULES[179] = BG.FLOW_RULES[232]                               # reorder_1 fixture uses template 179
+        try:
+            t = day(BlocksD31.QB([cand(1)]), Brevo(attrs=attrs, html=self.ROWS)).run(
+                TUE, caps_override={"reorder_1": 5})["types"][0]
+        finally:
+            BG.FLOW_RULES[179] = BG._GRID
+        self.assertEqual(t["chosen"], 1)
+        self.assertEqual(t["block_config"], "rules b34fcb1d56f8")

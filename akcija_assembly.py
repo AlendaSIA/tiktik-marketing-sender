@@ -400,8 +400,18 @@ def run(query, day: dt.date, record: bool, what_if_maker=None) -> dict:
     except SelectorError as e:
         return stop("akcija_asm_block_rules_unreadable", "hard", f"{maker}: {e}")
     all_goods = query(sql_goods(maker))
+    mix_keep = None
+    if maker == MIX:                       # MAIN 19:00: MIX goods = ONLY week_price_mix16 rows of the week, never ours
+        import block_gate as BG
+        mrows, why = BG.mix_rows(query, week_id)
+        if why:
+            return stop("akcija_asm_mix_list_missing", "hard", why)
+        order = {r["product_handle"]: i for i, r in enumerate(mrows)}
+        mix_keep = set(order)
+        all_goods = sorted((g for g in all_goods if g["handle"] in mix_keep), key=lambda g: order[g["handle"]])
     goods = [g for g in all_goods if _b(g["sellable"]) and g["url"] and g["img"]]
-    dropped = {"not_sellable": sum(not _b(g["sellable"]) for g in all_goods),
+    dropped = {"mix_list_not_on_sale": (len(mix_keep) - len({g["handle"] for g in all_goods})) if mix_keep else 0,
+               "not_sellable": sum(not _b(g["sellable"]) for g in all_goods),
                "no_shop_url": [g["handle"] for g in all_goods if _b(g["sellable"]) and not g["url"]],
                "no_picture": [g["handle"] for g in all_goods if _b(g["sellable"]) and g["url"] and not g["img"]]}
     cats = query(sql_cat_order(maker))
@@ -413,7 +423,8 @@ def run(query, day: dt.date, record: bool, what_if_maker=None) -> dict:
     for r in query(f"SELECT LOWER(TRIM(email)) AS email, maker, rnk, rnk_maker, handle, name, name_short, img, url, "
                    f"CAST(sale_gross AS STRING) AS sale_gross, CAST(std_gross AS STRING) AS std_gross "
                    f"FROM `{T_OWN}` WHERE plan_date = DATE '{d}'"):
-        own.setdefault(r["email"], []).append(r)
+        if mix_keep is None or r["handle"] in mix_keep:
+            own.setdefault(r["email"], []).append(r)
     greet = {r["email"]: r["GREETING"] for r in query(
         f"SELECT LOWER(TRIM(email)) AS email, ANY_VALUE(GREETING HAVING MAX built_at) AS GREETING FROM `{T_LF}` "
         f"WHERE plan_date = DATE '{d}' GROUP BY 1")}

@@ -36,6 +36,7 @@ class Region(unittest.TestCase):
 
 class ShadowV12(unittest.TestCase):
     """INTERFACE BLOCKS v1.2 (MAIN 17:45): the writer's ak_maker_html goes at <!--MAKER_BLOCKS-->."""
+    maker = "ZARYS"
     FRAME = "<p>Sveiki</p>{{ contact.AK_HTML|safe }}{{ contact.AK2_HTML|safe }}" + C.PLACEHOLDER + "<p>beigas</p>"
 
     def _q(self, maker=True, log=True):
@@ -45,13 +46,18 @@ class ShadowV12(unittest.TestCase):
             if sql.startswith("SELECT last_modified_time"):
                 return [{"t": "2026-10-13 06:00:00"}]
             if "INFORMATION_SCHEMA.TABLES" in sql:
-                return [{"x": 1}] if ("'ak_maker_html'" in sql and maker) or ("'block_push_log'" in sql and log) else []
+                return [{"x": 1}] if ("'ak_maker_html'" in sql and maker) or ("'block_push_log'" in sql and log) \
+                    or "'week_price_mix16'" in sql else []
             if "ak_maker_html" in sql:
                 return [{"week_id": "w", "html": h, "html_sha256": hashlib.sha256(h.encode()).hexdigest(),
                          "built_at": "t"}] if maker else []
             if "block_push_log" in sql:
                 return [{"mode": "LIVE", "status": "OK", "errors": 0, "week_id": "2026-W42", "built_match": True,
                          "finished_at": "2026-10-13 06:05:00+00:00"}] if log else []
+            if "akcija_week`" in sql:
+                return [{"maker": self.maker}]
+            if "week_price_mix16" in sql:
+                return []
             if "edu_brevo_list" in sql:
                 return [{"gate": "IN"}, {"gate": "IN"}, {"gate": "NO_PROMO"}]
             return []
@@ -82,3 +88,15 @@ class ShadowV12(unittest.TestCase):
         r = C.shadow(self._q(), lambda p, t: p, dt.date(2026, 10, 12), frame_fn=lambda t: "<p>no marker</p>")
         self.assertTrue(r["campaign"].startswith("HOLD FRAME"))
         self.assertFalse(C.frame_order_ok(C.PLACEHOLDER + "{{ contact.AK_HTML|safe }}"))
+
+
+class MixGate(ShadowV12):
+    maker = "MIX"
+
+    def test_mix_week_without_rows_holds(self):
+        import datetime as dt
+        r = C.shadow(self._q(), lambda p, t: p, dt.date(2026, 10, 12), frame_fn=lambda t: self.FRAME)
+        self.assertEqual(r["gate"], "HOLD MIX: no week_price_mix16 rows for 2026-W42")
+        self.assertEqual(r["mix_goods"], 0)
+
+    test_maker_inserted_at_marker_and_gate_ok = None

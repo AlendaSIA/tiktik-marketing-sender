@@ -189,5 +189,48 @@ class Run(unittest.TestCase):
         self.assertIn("never used", res["why"])
 
 
+class MixList(unittest.TestCase):
+    """MAIN 19:00: a MIX week's goods = ONLY mkt_control.week_price_mix16 rows of that week; none -> HOLD MIX."""
+
+    def _q(self, mix):
+        good = lambda h, c: {"handle": h, "name": h, "img": "https://x/" + h, "url": "https://www.tiktik.lv/" + h,  # noqa: E731
+                             "sale": "1", "std": "2", "category": c, "kind": "k", "buyers": 5, "maker": "Z",
+                             "sellable": True}
+
+        def q(sql):
+            if "akcija_week`" in sql:
+                return [{"maker": "MIX"}]
+            if "akcija_own_goods_log" in sql:
+                return [{"status": "OK", "run_id": "o"}]
+            if "shadow_akcija_audience" in sql and "GROUP BY run_id" in sql:
+                return [{"run_id": "r1", "offer_week": "2026-W44"}]
+            if "shadow_akcija_audience" in sql:
+                return [{"email": "a@x.lv", "master_key": "m1"}]
+            if "INFORMATION_SCHEMA.TABLES" in sql:
+                return [{"x": 1}]
+            if "week_price_mix16" in sql:
+                return [{"product_handle": h, "category": c, "rank": r} for h, c, r in mix]
+            if "product_catalog" in sql and "eff_price < c.std_price" in sql and "ORDER BY buyers DESC, c.handle" in sql:
+                return [good("a", "c1"), good("b", "c1"), good("z", "c2")]
+            if "akcija_own_goods`" in sql:
+                return [{"email": "a@x.lv", "maker": "Z", "rnk": i, "rnk_maker": i, "handle": h, "name": h,
+                         "name_short": h, "img": "i", "url": "u" + h, "sale_gross": "1", "std_gross": "2"}
+                        for i, h in enumerate(["z", "b"], 1)]
+            return []
+        return q
+
+    def test_no_rows_holds_mix(self):
+        res = A.run(self._q([]), dt.date(2026, 10, 26), record=False)          # Monday -> Tuesday 27.10 = W44
+        self.assertEqual(res["status"], "NO_LETTERS")
+        self.assertIn("HOLD MIX: no week_price_mix16 rows for 2026-W44", res["why"])
+
+    def test_only_mix16_goods_and_own_goods_within_it(self):
+        res = A.run(self._q([("b", "c1", 1), ("a", "c1", 2)]), dt.date(2026, 10, 26), record=False)
+        self.assertEqual(res["status"], "ASSEMBLED")
+        self.assertEqual(res["week_goods"], 2)                                  # "z" is not in the MIX list
+        wk = [c for c in res["checks"] if c["check_name"] == "akcija_asm_week"][0]
+        self.assertIn('"mix_list_not_on_sale": 0', wk["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

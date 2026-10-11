@@ -316,7 +316,7 @@ class Day:
                                        f"WHERE LOWER(TRIM(email)) IN ({lst})")}
 
     # -- member gates (L5 L7 L8 L9 L11), on the data date (= the plan's date)
-    def member_refusal_fn(self, et, rung_of, data_date, cands, l11=True, blocks_needed=()):
+    def member_refusal_fn(self, et, rung_of, data_date, cands, l11=True, blocks_needed=(), product=None):
         mks = [c["master_key"] for c in cands]
         supp = self.suppressed([c["email"] for c in cands])
         ctx = self.wh.presend_ctx({"email_type": et}, data_date, mks)
@@ -347,7 +347,8 @@ class Day:
             attrs = self.contact_attrs(c["email"])
             if attrs is None:
                 return "L11_CONTACT_UNREADABLE"
-            empty = BG.empty_blocks(attrs, blocks_needed)            # D31: an empty block = no letter for them
+            empty = (BG.all_empty(attrs, product) if product is not None      # v1.3: all product fields ""
+                     else BG.empty_blocks(attrs, blocks_needed))               # D31: an empty block = no letter
             if empty:
                 return "block_empty " + ",".join(empty)
             if not l11:
@@ -435,14 +436,18 @@ class Day:
             res["type_refusal"] = "D3 NO_CAP (0)"
         # D31 (INTERFACE BLOCKS v1) + MAIN 18:50: a template that reads a block field goes only when the LATEST push row
         # of each of its blocks today is LIVE/OK/0, checked at SEND time; LIVE waits (5 min re-check) until 10:30 Riga
-        blocks_needed = BG.fields_in(self.template_html(tid)) if tid else []
-        res["blocks"] = blocks_needed
+        cfg = BG.letter_config(tid, self.template_html(tid)) if tid else {"reads": [], "product": [], "mismatch": None,
+                                                                           "source": "none"}
+        blocks_needed = cfg["reads"]
+        res["blocks"], res["block_config"] = blocks_needed, cfg["source"]
+        if cfg["mismatch"] and not res["type_refusal"]:
+            res["type_refusal"] = cfg["mismatch"]
         if blocks_needed:
             res.update(self.block_gate(d, blocks_needed, wait=live and not res["type_refusal"]))
             if res["block_hold"] and not res["type_refusal"]:
                 res["type_refusal"] = res["block_hold"]
         refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
-                                        blocks_needed=blocks_needed) if cands else (lambda c: None)
+                                        blocks_needed=blocks_needed, product=cfg["product"]) if cands else (lambda c: None)
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
         chosen, decisions = select_audience(cands, 0 if (live and res["type_refusal"]) else cap, refuse)
@@ -762,7 +767,7 @@ class Day:
 
     @staticmethod
     def _detail(res):
-        keys = ("blocks", "block_hold", "block_rows", "block_ok_at", "would_start", "released_at", "block_wait")
+        keys = ("blocks", "block_config", "block_hold", "block_rows", "block_ok_at", "would_start", "released_at", "block_wait")
         det = {k: res[k] for k in keys if res.get(k)}
         return json.dumps(det, sort_keys=True, default=str) if det else None
 

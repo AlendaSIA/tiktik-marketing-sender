@@ -20,6 +20,12 @@
      block for the day, it is checked at SEND time (not 08:55), and a block letter waits (re-check every 5 min) until
      10:30 Riga, then HOLD + reason. Letters without blocks never wait. 236's 3 sends (09:00 / 09:15 / 09:30, smallest
      list first) keep their 15 min gaps; only the first may slide to the OK row.
+  v1.3 (MAIN 19:00, file sha 2d9dc460f678): FLOW family grows to FLOW_HTML(+FLOW2) / FLOWS_HTML(+FLOWS2) / FLOWR_HTML.
+     Per letter the engine keeps a config of which block fields it reads and which of them are PRODUCT fields; a letter
+     does not go to a contact when ALL its product fields are "" (reason block_empty ...). The push gate covers every
+     group the letter reads (latest row per day, same 5 min / 10:30 wait). Source of the config = _FLOW-GROUP-RULES.md
+     (7b); it becomes active only when MAIN hands its sha (FLOW_RULES_APPROVED_SHA). Until then: the template's own
+     references decide the push gate and only FLOW_HTML is checked for "" (v1.2 behaviour).
 Read-only. Nothing here writes anything.
 """
 from __future__ import annotations
@@ -32,15 +38,47 @@ P = "jaunais-za-aizv04022026"
 M = f"{P}.mkt_control"
 T_BLOCK_LOG = f"{M}.block_push_log"
 T_MAKER = f"{M}.ak_maker_html"
-BLOCKS = ("AK_HTML", "FLOW_HTML")                          # family = its FIRST field = the block_push_log `block`
-FAMILY = {"AK_HTML": "AK_HTML", "AK2_HTML": "AK_HTML", "FLOW_HTML": "FLOW_HTML", "FLOW2_HTML": "FLOW_HTML"}
+T_MIX = f"{M}.week_price_mix16"                             # MAIN 19:00: the ONLY source of a MIX week's 236 goods
+BLOCKS = ("AK_HTML", "FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML")  # group = its FIRST field = the block_push_log `block`
+FAMILY = {"AK_HTML": "AK_HTML", "AK2_HTML": "AK_HTML", "FLOW_HTML": "FLOW_HTML", "FLOW2_HTML": "FLOW_HTML",
+          "FLOWS_HTML": "FLOWS_HTML", "FLOWS2_HTML": "FLOWS_HTML", "FLOWR_HTML": "FLOWR_HTML"}
 RIGA = zoneinfo.ZoneInfo("Europe/Riga")
 WAIT_UNTIL = dt.time(10, 30)                                # MAIN 18:50: wait for the block push at most until 10:30
 POLL_S = 300                                                # re-check every 5 min
 SEND_START = dt.time(9, 0)                                  # 236 first send; also the DRY "would start" base
 GAP_236 = dt.timedelta(minutes=15)
 EMPTY_CHECKED = ("FLOW_HTML",)                              # v1.2: AK_HTML may be "" (own goods only)
-_REF = re.compile(r"\{\{\s*contact\.(AK2?_HTML|FLOW2?_HTML)\b")
+_REF = re.compile(r"\{\{\s*contact\.(AK2?_HTML|FLOW2?_HTML|FLOWS2?_HTML|FLOWR_HTML)\b")
+# ---- v1.3 per-letter config, transcribed from _FLOW-GROUP-RULES.md (7b, read 11.10 19:15, sha b34fcb1d56f8).
+# reads = groups the letter's template reads; product = groups that count for "all product fields empty" (7b note:
+# the letter needs FLOW_HTML, the ROWS letters FLOW_HTML or FLOWS_HTML; FLOWR = companion goods, not counted).
+FLOW_RULES_SOURCE_SHA = "b34fcb1d56f8"
+FLOW_RULES_APPROVED_SHA = None                               # set ONLY to the sha MAIN hands over -> config active
+_GRID = {"reads": ("FLOW_HTML", "FLOWR_HTML"), "product": ("FLOW_HTML",)}
+_ROWS = {"reads": ("FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"), "product": ("FLOW_HTML", "FLOWS_HTML")}
+FLOW_RULES = {179: _GRID, 180: _GRID, 255: _GRID, 229: _GRID, 230: _GRID, 235: _GRID,
+              231: {"reads": ("FLOW_HTML",), "product": ("FLOW_HTML",)},
+              232: _ROWS, 256: _ROWS, 234: _ROWS, 233: _ROWS, 257: _ROWS}
+
+
+def rules_active() -> bool:
+    return FLOW_RULES_APPROVED_SHA is not None and FLOW_RULES_APPROVED_SHA == FLOW_RULES_SOURCE_SHA
+
+
+def letter_config(template_id, html: str) -> dict:
+    """-> {"reads": [groups to push-gate], "product": [groups for the all-empty rule], "source", "mismatch"}.
+    Active config: the rules; the template must read exactly those groups, else mismatch (the type is held).
+    Inactive: the template's own references; product = FLOW_HTML only (v1.2)."""
+    found = fields_in(html)
+    rule = FLOW_RULES.get(int(template_id)) if template_id and rules_active() else None
+    if rule is None:
+        return {"reads": found, "product": [b for b in found if b in EMPTY_CHECKED], "source": "template",
+                "mismatch": None}
+    want = [b for b in BLOCKS if b in rule["reads"]]
+    flows = [b for b in found if b != "AK_HTML"]
+    mm = None if flows == want else f"CONFIG_MISMATCH {template_id}: template reads {flows}, rules say {want}"
+    return {"reads": want, "product": list(rule["product"]), "source": f"rules {FLOW_RULES_SOURCE_SHA}",
+            "mismatch": mm}
 
 
 def fields_in(html: str) -> list:
@@ -48,6 +86,13 @@ def fields_in(html: str) -> list:
     2nd field still needs its family's first field and push row."""
     found = {FAMILY[f] for f in _REF.findall(html or "")}
     return [b for b in BLOCKS if b in found]
+
+
+def all_empty(attrs: dict, product) -> list:
+    """v1.3: the product groups when ALL of them are "" for the contact (-> no letter), else []."""
+    product = list(product or [])
+    empty = [f for f in product if not str((attrs or {}).get(f) or "").strip()]
+    return empty if product and len(empty) == len(product) else []
 
 
 def empty_blocks(attrs: dict, fields) -> list:
@@ -164,3 +209,13 @@ def maker_html(q, week_id: str):
     if not rows or not str(rows[0].get("html_sha256") or "").strip() or not str(rows[0].get("html") or "").strip():
         return None, f"HOLD MAKER: no ak_maker_html row with html + html_sha256 for {week_id}"
     return rows[0], None
+
+
+def mix_rows(q, week_id: str):
+    """MAIN 19:00 (WA7d): a MIX week's goods = mkt_control.week_price_mix16 rows of that week_id, nothing computed here.
+    -> (rows, None) or ([], "HOLD MIX ...")."""
+    if not _exists(q, T_MIX):
+        return [], f"HOLD MIX: {T_MIX} does not exist"
+    rows = q(f"SELECT product_handle, category, rank FROM `{T_MIX}` WHERE week_id = '{week_id}' "
+             f"ORDER BY category, rank")
+    return (rows, None) if rows else ([], f"HOLD MIX: no week_price_mix16 rows for {week_id}")
