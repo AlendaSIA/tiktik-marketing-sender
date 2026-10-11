@@ -50,7 +50,8 @@ class ShadowV12(unittest.TestCase):
                 return [{"week_id": "w", "html": h, "html_sha256": hashlib.sha256(h.encode()).hexdigest(),
                          "built_at": "t"}] if maker else []
             if "block_push_log" in sql:
-                return [{"n": 1 if log else 0}]
+                return [{"mode": "LIVE", "status": "OK", "errors": 0, "week_id": "2026-W42", "built_match": True,
+                         "finished_at": "2026-10-13 06:05:00+00:00"}] if log else []
             if "edu_brevo_list" in sql:
                 return [{"gate": "IN"}, {"gate": "IN"}, {"gate": "NO_PROMO"}]
             return []

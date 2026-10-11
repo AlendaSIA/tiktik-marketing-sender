@@ -269,6 +269,8 @@ class Day:
     def __init__(self, q, wh, brevo, pd_post, dash, env, now=None):
         self.q, self.wh, self.brevo, self.pd_post, self.dash, self.env = q, wh, brevo, pd_post, dash, env
         self.now = now or dt.datetime.now(dt.timezone.utc)
+        self.clock = (lambda: dt.datetime.now(dt.timezone.utc)) if now is None else (lambda: self.now)
+        self.sleep = time.sleep
         self.run_id = f"sd-{self.now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
         self.pd_ids = []
 
@@ -379,7 +381,10 @@ class Day:
         track_rows = [dict(r) for r in self.q(f"SELECT track, enabled, enabled_by FROM `{T_TRACK}`")]
         appr_rows = [dict(r) for r in self.q(f"SELECT template_id, email_type, approved, approved_by, approved_sha256 "
                                              f"FROM `{T_APPROVAL}`")]
-        for t in self.types_of(plan_run, send_date):
+        types = self.types_of(plan_run, send_date)
+        # MAIN 18:50: letters without blocks never wait - they go first; block letters may wait for the push row
+        types = sorted(types, key=lambda t: bool(_i(t["template_id"]) and BG.fields_in(self.template_html(_i(t["template_id"])))))
+        for t in types:
             et = t["email_type"]
             if only and et not in only:
                 continue
@@ -428,13 +433,14 @@ class Day:
                 self.dash("KĻŪDA", f"Sūtīšanas diena {d}: {et} atteikts - " + "; ".join(d1) + " - nekas nav sūtīts")
         elif cap <= 0:
             res["type_refusal"] = "D3 NO_CAP (0)"
-        # D31 (INTERFACE BLOCKS v1): a template that reads a block field goes only with today's LIVE/OK/0 push row
+        # D31 (INTERFACE BLOCKS v1) + MAIN 18:50: a template that reads a block field goes only when the LATEST push row
+        # of each of its blocks today is LIVE/OK/0, checked at SEND time; LIVE waits (5 min re-check) until 10:30 Riga
         blocks_needed = BG.fields_in(self.template_html(tid)) if tid else []
         res["blocks"] = blocks_needed
-        for b in blocks_needed:
-            why = BG.push_ok(self.q, str(d), b)
-            if why and not res["type_refusal"]:
-                res["type_refusal"] = why
+        if blocks_needed:
+            res.update(self.block_gate(d, blocks_needed, wait=live and not res["type_refusal"]))
+            if res["block_hold"] and not res["type_refusal"]:
+                res["type_refusal"] = res["block_hold"]
         refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
                                         blocks_needed=blocks_needed) if cands else (lambda c: None)
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
@@ -457,6 +463,30 @@ class Day:
         if live and chosen and not res["type_refusal"]:
             res.update(self._send(et, tid, track, d, chosen, plan_run))
         return self._record(res, d, live, cands, decisions)
+
+    def block_gate(self, d, blocks, wait) -> dict:
+        def check():
+            return next((w for w in (BG.push_ok(self.q, str(d), b) for b in blocks) if w), None)
+        if wait:
+            released, why = BG.wait_for(check, self.clock, self.sleep, BG.deadline(d))
+        else:
+            why = check()
+            released = self.clock() if why is None else None
+        rows = {}
+        if BG._exists(self.q, BG.T_BLOCK_LOG):
+            for b in blocks:
+                r = BG.latest_push(self.q, str(d), b)
+                rows[b] = None if not r else {k: str(r.get(k)) for k in ("mode", "status", "errors", "finished_at")}
+        ok_at = None
+        if why is None and rows and all(rows.values()):
+            ok_at = max(BG._aware(r["finished_at"]) for r in rows.values())
+        start = BG.would_start(d, ok_at)
+        out = {"block_hold": why, "block_rows": rows, "block_ok_at": ok_at and ok_at.isoformat(),
+               "would_start": start and start.astimezone(BG.RIGA).isoformat(),
+               "released_at": released and released.isoformat()}
+        if why and not wait and self.clock() < BG.deadline(d):
+            out["block_wait"] = f"would re-check every {BG.POLL_S // 60} min until {BG.WAIT_UNTIL:%H:%M} Riga"
+        return out
 
     # -- LIVE: list, campaign, dispatch
     def _send(self, et, tid, track, d, chosen, plan_run, alias=None):
@@ -730,13 +760,19 @@ class Day:
         self.q(f"UPDATE `{T_STATE}` SET last_email_type = {_s(et)}, last_sent_on = DATE '{on}', step = IFNULL(step, 0) + 1, "
                f"last_send_source = 'engine_live' WHERE master_key = {_s(mk)}")
 
+    @staticmethod
+    def _detail(res):
+        keys = ("blocks", "block_hold", "block_rows", "block_ok_at", "would_start", "released_at", "block_wait")
+        det = {k: res[k] for k in keys if res.get(k)}
+        return json.dumps(det, sort_keys=True, default=str) if det else None
+
     def _record(self, res, d, live, cands, decisions):
         mode = "live" if live else "dry"
         self.q(f"INSERT INTO `{T_RUN}` VALUES ({_s(self.run_id)}, DATE '{d}', {_s(mode)}, {_s(res['email_type'])}, "
                f"{_n(res['template_id'])}, {_s(res['track'])}, {_n(res.get('cap'))}, {int(res['candidates'])}, "
                f"{int(res['chosen'])}, {_s(json.dumps(res['refused'], sort_keys=True))}, {_s(res['type_refusal'])}, "
                f"{_s(res.get('batch_id'))}, {_n(res.get('list_id'))}, {_n(res.get('campaign_id'))}, "
-               f"{_n(res.get('sent'))}, {_n(res.get('pd_writes'))}, NULL, CURRENT_TIMESTAMP())")
+               f"{_n(res.get('sent'))}, {_n(res.get('pd_writes'))}, {_s(self._detail(res))}, CURRENT_TIMESTAMP())")
         if cands:
             rows = []
             for rank, c in enumerate(cands, 1):

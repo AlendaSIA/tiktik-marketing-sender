@@ -487,7 +487,8 @@ class BlocksD31(unittest.TestCase):
                 return [{"x": 1}] if self.log_exists else []
             if "block_push_log" in sql:
                 self.calls.append(sql)
-                return [{"n": self.rows}]
+                return [{"mode": "LIVE", "status": "OK", "errors": 0, "week_id": "2026-W42",
+                         "finished_at": "2026-10-13 06:05:00+00:00"}] if self.rows else []
             return super().__call__(sql)
 
     def _run(self, attrs, **k):
@@ -510,7 +511,7 @@ class BlocksD31(unittest.TestCase):
         import block_gate as BG
         self.assertIn("does not exist", BG.push_ok(self.QB([], log_exists=False), "2026-10-13", "FLOW_HTML"))
         self.assertIsNone(BG.push_ok(self.QB([], rows=1), "2026-10-13", "FLOW_HTML"))
-        self.assertIn("no LIVE/OK", BG.push_ok(self.QB([], rows=0), "2026-10-13", "FLOW_HTML"))
+        self.assertIn("no push row", BG.push_ok(self.QB([], rows=0), "2026-10-13", "FLOW_HTML"))
         tracks_on = [{"track": "reorder", "enabled": True, "enabled_by": "Raivis"}]
         import hashlib
         appr = [dict(APPR[0], approved_sha256=hashlib.sha256(self.BHTML.encode()).hexdigest())]
@@ -549,7 +550,8 @@ class AkH1(unittest.TestCase):
                 return [{"x": 1}] if any(f"'{t}'" in sql for t in tables) else []
             if "ak_maker_html" in sql:
                 return [dict(m) for m in maker]
-            return [{"n": n}]
+            return [{"mode": "LIVE", "status": "OK", "errors": 0, "week_id": "2026-W42", "built_match": True,
+                     "finished_at": "2026-10-13 06:05:00+00:00"}] if n else []
         return q
 
     def test_gate(self):
@@ -563,6 +565,7 @@ class AkH1(unittest.TestCase):
         BG.ak_h1(lambda s: seen.append(s) or q_of(True)(s), "2026-10-13", "2026-W42")
         self.assertFalse([x for x in seen if "ak_push_log" in x and "block_push_log" not in x])
         self.assertIn("no LIVE/OK", BG.ak_h1(q_of(True, n=0), "2026-10-13", "2026-W42"))
+        self.assertIn("ORDER BY finished_at DESC LIMIT 1", "".join(seen))
         self.assertIn("partition_id = '20261013'", BG.assembled_built_at_sql("2026-10-13"))
 
     def test_v12_maker_row_required(self):
@@ -575,3 +578,82 @@ class AkH1(unittest.TestCase):
         seen = []
         BG.ak_h1(lambda s: seen.append(s) or q_of(True)(s), "2026-10-13", "2026-W42")
         self.assertTrue([x for x in seen if "ak_maker_html" in x and "week_id = '2026-W42'" in x])
+
+
+class BlockTiming(unittest.TestCase):
+    """MAIN 18:50: latest push row per block, checked at send time, wait (5 min) until 10:30 Riga."""
+
+    def q_rows(self, rows):
+        def q(sql):
+            if "INFORMATION_SCHEMA.TABLES" in sql:
+                return [{"x": 1}]
+            if "block_push_log" in sql:
+                return rows[:1]                 # the SQL orders by finished_at DESC; the test passes them latest first
+            return []
+        return q
+
+    def test_latest_row_wins(self):
+        import block_gate as BG
+        ok = {"mode": "LIVE", "status": "OK", "errors": 0, "finished_at": "2026-10-13 06:05:00+00:00"}
+        err = {"mode": "LIVE", "status": "ERROR", "errors": 3, "finished_at": "2026-10-13 06:01:00+00:00"}
+        self.assertIsNone(BG.push_ok(self.q_rows([ok, err]), "2026-10-13", "FLOW_HTML"))
+        self.assertIn("ERROR", BG.push_ok(self.q_rows([dict(err, finished_at="2026-10-13 06:09:00+00:00"), ok]),
+                                          "2026-10-13", "FLOW_HTML"))
+        seen = []
+        BG.push_ok(lambda s: seen.append(s) or self.q_rows([ok])(s), "2026-10-13", "FLOW_HTML")
+        self.assertTrue([x for x in seen if "ORDER BY finished_at DESC LIMIT 1" in x])
+
+    def test_wait_releases_on_ok_and_holds_at_1030(self):
+        import datetime as dt
+        import block_gate as BG
+        R = BG.RIGA
+        t = [dt.datetime(2026, 10, 13, 9, 0, tzinfo=R)]
+        slept = []
+
+        def sleep(s):
+            slept.append(s)
+            t[0] += dt.timedelta(seconds=s)
+        answers = iter(["HOLD x", "HOLD x", None])
+        at, why = BG.wait_for(lambda: next(answers), lambda: t[0], sleep, BG.deadline("2026-10-13"))
+        self.assertEqual((at.astimezone(R).strftime("%H:%M"), why, slept), ("09:10", None, [300, 300]))
+        t[0] = dt.datetime(2026, 10, 13, 9, 0, tzinfo=R)
+        at, why = BG.wait_for(lambda: "HOLD x", lambda: t[0], sleep, BG.deadline("2026-10-13"))
+        self.assertIsNone(at)
+        self.assertIn("waited until 10:30 Riga", why)
+        self.assertLessEqual(t[0].astimezone(R).time(), dt.time(10, 30))
+
+    def test_would_start_and_236_sends(self):
+        import block_gate as BG
+        f = lambda ts: [x.astimezone(BG.RIGA).strftime("%H:%M") for x in BG.sends_236("2026-10-13", ts)]  # noqa: E731
+        self.assertEqual(f("2026-10-13 05:50:00+00:00"), ["09:00", "09:15", "09:30"])       # OK before 09:00
+        self.assertEqual(f("2026-10-13 06:05:10+00:00"), ["09:10", "09:25", "09:40"])       # OK 09:05:10 -> 09:10
+        self.assertEqual(f("2026-10-13 07:31:00+00:00"), [])                                 # after 10:30 -> HOLD
+        self.assertEqual(f(None), [])
+
+    def test_send_day_dry_does_not_sleep_and_records_timing(self):
+        bh = BlocksD31.BHTML
+        q = BlocksD31.QB([cand(1)], rows=0)
+        dd = day(q, Brevo(attrs={"P1_NAME": "Cimdi", "OFFER_RUNG": 0, "FLOW_HTML": "<t/>"}, html=bh))
+        dd.sleep = lambda s: self.fail("DRY must not wait")
+        t = dd.run(TUE, caps_override={"reorder_1": 5})["types"][0]
+        self.assertTrue(t["block_hold"].startswith("HOLD FLOW_HTML"))
+        self.assertIsNone(t["would_start"])
+
+    def test_live_waits_then_holds(self):
+        import send_day as SDm
+        dd = day(BlocksD31.QB([cand(1)], rows=0), Brevo(attrs={"FLOW_HTML": "<t/>"}, html=BlocksD31.BHTML))
+        import datetime as dt
+        import block_gate as BG
+        t = [dt.datetime(2026, 10, 13, 9, 0, tzinfo=BG.RIGA)]
+        dd.clock = lambda: t[0]
+        n = []
+        dd.sleep = lambda s: (n.append(s), t.__setitem__(0, t[0] + dt.timedelta(seconds=s)))
+        out = dd.block_gate(dt.date(2026, 10, 13), ["FLOW_HTML"], wait=True)
+        self.assertEqual(len(n), 18)                                   # checks 09:00 ... 10:30, every 5 min
+        self.assertIn("waited until 10:30", out["block_hold"])
+        self.assertTrue(hasattr(SDm.Day, "block_gate"))
+
+    def test_block_types_go_after_plain_types(self):
+        import inspect
+        src = inspect.getsource(SD.Day.run)
+        self.assertIn("types = sorted(types, key=lambda t: bool(", src)

@@ -137,6 +137,11 @@ def shadow(query, put, day=None, frame_fn=None) -> dict:
     tue, week_id, _end = A.week_of(day)
     res = {"week_id": week_id, "send_date": tue.isoformat(), "template_id": TEMPLATE_ID}
     res["gate"] = BG.ak_h1(query, res["send_date"], week_id) or "OK"     # 236 may go only on "OK"
+    # MAIN 18:50: checked at send time; the first of 3 sends (09:00/09:15/09:30) may slide to the OK row (until 10:30)
+    last = BG.latest_push(query, res["send_date"], "AK_HTML") if BG._exists(query, BG.T_BLOCK_LOG) else None
+    res["ak_push_latest"] = last and {k: str(last.get(k)) for k in ("mode", "status", "errors", "week_id", "finished_at")}
+    ok_at = BG._aware(last["finished_at"]) if res["gate"] == "OK" and last else None
+    res["sends_riga"] = [t.astimezone(BG.RIGA).strftime("%H:%M") for t in BG.sends_236(res["send_date"], ok_at)]
     row, why = BG.maker_html(query, week_id)
     if why:
         res["maker"] = why
