@@ -54,11 +54,11 @@
    "variant": "winback_3",
    "id": 233,
    "file": "templates/winback_3.html",
-   "git_blob": "3ab2ff623053170c73ba5a259c5dbe0f0647b404",
-   "sha256": "628730e8b902beb96ef37bfe567e45fc8a171f620519fa793b437320438af605",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavai biežāk pirktajai precei' }} — {{ contact.P1_PRICE }}, līdz {{ contact.OFFER_VALID_UNTIL }}",
+   "git_blob": "05f17547674e84ce5ba60ef552f96dc404494d89",
+   "sha256": "f6c148f8ac71a4a34cf37d44dd448bcfcf0a2db15c5e75aba23195623b4f96ae",
+   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavai biežāk pirktajai precei' }} — {{ contact.P1_PRICE }}{% if contact.OFFER_VALID_UNTIL %}, līdz {{ contact.OFFER_VALID_UNTIL }}{% endif %}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tava cena spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.{% endif %}",
-   "name": "money:winback_3 v5 — RUNG GOODS v1 G6/G7: 1 cenota (TOP) + 0..7 bez personīgās cenas (2026-10-01)",
+   "name": "money:winback_3 v6 — līdz OVU tematā tikai ar OVU (MAIN 11.10 11:57)",
    "purpose": "Third and last winback rung: calm, the batch is still in stock and the customer price still holds until OFFER_VALID_UNTIL (contract v2.8); shorter than 180."
   },
   {

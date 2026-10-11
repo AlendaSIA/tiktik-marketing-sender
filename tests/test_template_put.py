@@ -1,6 +1,7 @@
 """Offline tests for template_put.py - no network, no Brevo."""
 import hashlib
 import json
+import re
 import os
 import sys
 
@@ -85,7 +86,8 @@ def test_manifest_rows_are_allowed_and_complete():
     for r in rows:
         raw = open(os.path.join(here, r["file"]), "rb").read()
         assert T.blob_sha(raw) == r["git_blob"] and hashlib.sha256(raw).hexdigest() == r["sha256"]
-        assert "%" not in r["subject"] and "!" not in r["subject"]
+        visible = re.sub(r"\{%.*?%\}", "", r["subject"])  # Brevo {% if %} tags are logic, not a visible "%" (MAIN 11.10 11:57, T2)
+        assert "%" not in visible and "!" not in visible
 
 
 def test_commit_must_be_full_sha():
