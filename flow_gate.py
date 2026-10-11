@@ -99,15 +99,25 @@ def sync_lists(q, brevo, chunk=150) -> dict:
     for key, lid in ids.items():
         want = {r["email"] for r in q(f"SELECT email FROM `{T_MEMBERS}` WHERE list_name = {_s(key)}")}
         have = list_members(brevo, lid)
-        add, drop, not_in_brevo = sorted(want - have), sorted(have - want), 0
+        add, drop, not_in_brevo, invalid = sorted(want - have), sorted(have - want), 0, 0
         for i in range(0, len(add), chunk):
-            r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": add[i:i + chunk]}) or {}
-            not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
+            part = add[i:i + chunk]
+            try:
+                r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": part}) or {}
+                not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
+            except Exception:  # noqa: BLE001 - Brevo refuses the whole chunk for one malformed address: go one by one
+                for e in part:
+                    try:
+                        r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": [e]}) or {}
+                        not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
+                    except Exception:  # noqa: BLE001
+                        invalid += 1
         for i in range(0, len(drop), chunk):
             brevo("POST", f"/contacts/lists/{lid}/contacts/remove", {"emails": drop[i:i + chunk]})
         now = list_members(brevo, lid)
-        out[key] = {"list_id": lid, "wanted": len(want), "added": len(add) - not_in_brevo, "removed": len(drop),
-                    "not_a_brevo_contact": not_in_brevo, "members_now": len(now)}
+        out[key] = {"list_id": lid, "wanted": len(want), "added": len(add) - not_in_brevo - invalid,
+                    "removed": len(drop), "not_a_brevo_contact": not_in_brevo, "refused_by_brevo": invalid,
+                    "members_now": len(now)}
     return out
 
 

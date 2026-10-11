@@ -34,7 +34,8 @@ by_org AS (   -- PD people of manual / B2B organisations that have no buyer mast
   FROM persons p
   WHERE (p.org_id IN (SELECT org_id FROM p11_org) OR p.org_id IN (SELECT org_id FROM b2b_org))
     AND p.email NOT IN (SELECT email FROM m_email)),
-allm AS (SELECT * FROM by_master UNION ALL SELECT * FROM by_org)
+allm AS (SELECT * FROM (SELECT * FROM by_master UNION ALL SELECT * FROM by_org)
+         WHERE REGEXP_CONTAINS(email, r'^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$'))
 SELECT 'NO_PROMO' AS list_name, email, STRING_AGG(DISTINCT gate ORDER BY gate) AS why FROM allm GROUP BY email
 UNION ALL
 SELECT 'NO_ANY', email, STRING_AGG(DISTINCT gate ORDER BY gate) FROM allm

@@ -63,10 +63,22 @@ class FlowGate(unittest.TestCase):
         b = Brevo(have={7: {"old@x.lv"}})
         res = FG.sync_lists(q, b)
         self.assertEqual(res["NO_PROMO"], {"list_id": 7, "wanted": 2, "added": 1, "removed": 1,
-                                           "not_a_brevo_contact": 1, "members_now": 1})
+                                           "not_a_brevo_contact": 1, "refused_by_brevo": 0, "members_now": 1})
         self.assertEqual(res["NO_ANY"]["list_id"], 501)
         self.assertEqual(len([c for c in b.calls if c[1] == "/contacts/lists"]), 1)
         self.assertFalse([c for c in b.calls if "emailCampaigns" in c[1] or c[1] == "/smtp/email"])
+
+    def test_one_bad_address_does_not_sink_the_chunk(self):
+        class B(Brevo):
+            def __call__(self, method, path, payload):
+                if path.endswith("/contacts/add") and any(e.startswith("bad") for e in payload["emails"]):
+                    raise RuntimeError("400 invalid")
+                return super().__call__(method, path, payload)
+        q = Q(members=[("NO_ANY", "a@x.lv"), ("NO_ANY", "bad@x"), ("NO_ANY", "c@x.lv")],
+              lists=[{"list_name": "NO_PROMO", "list_id": 7}, {"list_name": "NO_ANY", "list_id": 8}])
+        b = B(have={7: set(), 8: set()})
+        res = FG.sync_lists(q, b)["NO_ANY"]
+        self.assertEqual((res["added"], res["refused_by_brevo"], res["members_now"]), (2, 1, 2))
 
     def test_notify_stays_off_without_the_flag(self):
         b = Brevo()
