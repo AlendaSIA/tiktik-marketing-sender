@@ -16,6 +16,8 @@ import draft_test_v28 as V  # noqa: E402
 
 FILES = {229: "welcome_1", 179: "reorder_1", 230: "reorder_2", 231: "reorder_3", 180: "winback_1",
          232: "winback_2", 233: "winback_3", 234: "lost_quarterly", 235: "active_xsell", 236: "akcija_weekly",
+         255: "winback_1_e2", 256: "winback_2_e2", 257: "winback_3_e2",
+         # draft_test_az.PRICE_LETTERS still lists the old provisional ids; not changed (MAIN 11.10 13:50: manifest ids only)
          9180: "winback_1_e2", 9232: "winback_2_e2", 9233: "winback_3_e2"}
 TAG = "{{ contact.GREETING | default : 'Sveiki!' }}"
 LINE = "<div style=\"font-size:22px;font-weight:800;color:#23303a;\">" + TAG + "</div>"   # 126 frame
@@ -58,7 +60,7 @@ class GreetingAndL4(unittest.TestCase):
     def test_price_letters_make_the_one_off_offer_only_with_a_date(self):
         for tid in A.PRICE_LETTERS:
             on = "\n".join(V.visible_lines(D.render(tpl(tid), BASE)))
-            self.assertTrue("Saviem esošajiem klientiem šobrīd" in on or (tid == 180 and "Daļai esošo klientu" in on) or (tid == 9180 and "Akcijas ar labākām cenām daļai klientu" in on) or (tid == 234 and "Daļai klientu, kas iepriekš pie mums pirkuši" in on) or (tid == 232 and "Veicam noliktavas pielīdzināšanu" in on) or (tid == 233 and "ko tu pie mums pērc visbiežāk" in on) or (tid == 9233 and "Pirms nedēļas tev nosūtījām īpašu cenu" in on) or (tid == 9232 and "Pirms nedēļas daļai no tevis pirktajām precēm" in on), tid)
+            self.assertTrue("Saviem esošajiem klientiem šobrīd" in on or (tid == 180 and "Daļai esošo klientu" in on) or (tid in (255, 9180) and "Akcijas ar labākām cenām daļai klientu" in on) or (tid == 234 and "Daļai klientu, kas iepriekš pie mums pirkuši" in on) or (tid == 232 and "Veicam noliktavas pielīdzināšanu" in on) or (tid == 233 and "ko tu pie mums pērc visbiežāk" in on) or (tid in (257, 9233) and "Pirms nedēļas tev nosūtījām īpašu cenu" in on) or (tid in (256, 9232) and "Pirms nedēļas daļai no tevis pirktajām precēm" in on), tid)
             self.assertIn(V.SPEKA_LIDZ + " 04.10.2026", on, tid)
             off = "\n".join(V.visible_lines(D.render(tpl(tid), dict(BASE, OFFER_VALID_UNTIL=""))))
             self.assertNotIn("Saviem esošajiem klientiem", off, tid)
