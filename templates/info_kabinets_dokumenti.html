@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, PPR vai DDL? Visu vari lejupielādēt šeit</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Pavadzīmes grāmatvedībai un drošības datu lapas pārbaudēm — nekas nav jāmeklē e-pastos.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Manrope','Segoe UI',Arial,sans-serif;color:#23303a;">
+
+<tr><td align="center" style="padding:26px 34px 6px;">
+<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+</td></tr>
+
+
+<tr><td style="padding:18px 34px 0;">
+<div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
+</td></tr>
+<tr><td style="padding:14px 34px 0;">
+<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">Pavadzīmes un dokumenti — viss tavā kabinetā</h1>
+</td></tr>
+<tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
+<p style="margin:0 0 12px;">Paldies, ka iepērcies tiktik.lv. Gribējām pastāstīt vienu lietu, kas daudziem mūsu klientiem ietaupa laiku.</p>
+<p style="margin:0 0 12px;">Pazīstama situācija? Grāmatvede prasa pavadzīmi, bet tā kaut kur noslīkusi e-pastos. Vai atnāk pārbaude, un vajag drošības datu lapu tieši tam līdzeklim, ko lietojat. {% if contact.KABINETS_URL %}Lai tas nav jāmeklē, mēs visu jau esam salikuši tavā kabinetā:</p>
+<p style="margin:0 0 12px;">&#128196; <strong>Mani pasūtījumi.</strong> Visi tavi pirkumi, un pie katra — pavadzīme PDF. Lejupielādē un pārsūti grāmatvedei.</p>
+<p style="margin:0 0 12px;">&#129514; <strong>Dokumenti.</strong> Drošības datu lapas, lietošanas instrukcijas, sertifikāti un atbilstības deklarācijas precēm, kurām tās pienākas. Ja kāda vēl trūkst, spied „Vajag steidzami“ — saliksim ātrāk.</p>
+<p style="margin:0 0 12px;">&#128722; <strong>Manas preces.</strong> Tavas preces ar tavām cenām. Nākamreiz ieraksti daudzumu un spied „Uz grozu“ — nav jāmeklē pa visu veikalu.</p>
+<p style="margin:0 0 4px;color:#555;">Mazs padoms: kabinetu var uzlikt kā ikonu telefonā vai datorā — tad tas vienmēr ir pa rokai.</p>
+</td></tr>
+<tr><td align="center" style="padding:16px 28px 0;">
+<a href="{{ contact.KABINETS_URL }}" style="display:inline-block;background:#1f6fb2;color:#ffffff;text-decoration:none;font-weight:800;padding:16px 40px;border-radius:11px;font-size:16px;">Atvērt savu kabinetu &rarr;</a>
+</td></tr>
+{% else %}Ja kaut ko no tā vajag, atbildi uz šo vēstuli — atsūtīsim.</p>
+</td></tr>
+{% endif %}
+
+<tr><td style="padding:20px 34px 0;">
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">Ja kaut kā pietrūkst vai kaut kas nav skaidrs — vienkārši atbildi uz šo vēstuli, palīdzēsim.</p>
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:12px 0 0;">tiktik.lv komanda</p>
+</td></tr>
+
+<tr><td style="padding:22px 34px 28px;">
+<div style="border-top:1px solid #e6eaf2;padding-top:16px;font-size:12px;line-height:1.6;color:#9aa4b2;text-align:center;">
+SIA Alenda &middot; tiktik.lv &middot; info@tiktik.lv<br>
+Šo e-pastu saņem, jo esi iepircies tiktik.lv veikalā.<br>
+<a href="{{ unsubscribe }}" style="color:#9aa4b2;">Atteikties no šiem e-pastiem</a>
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
