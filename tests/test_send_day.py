@@ -524,6 +524,11 @@ class BlocksD31(unittest.TestCase):
         self.assertEqual(BG.fields_in("{{ contact.AK_HTML|safe }} {{contact.FLOW_HTML | safe}}"), ["AK_HTML", "FLOW_HTML"])
         self.assertEqual(BG.fields_in(HTML), [])
         self.assertEqual(BG.empty_blocks({"FLOW_HTML": "  "}, ["FLOW_HTML"]), ["FLOW_HTML"])
+        # v1.1: two fields per family; only the FIRST is checked, the 2nd may be ""
+        self.assertEqual(BG.fields_in("{{ contact.FLOW_HTML|safe }}{{ contact.FLOW2_HTML|safe }}"), ["FLOW_HTML"])
+        self.assertEqual(BG.fields_in("{{ contact.AK2_HTML|safe }}"), ["AK_HTML"])
+        self.assertEqual(BG.empty_blocks({"FLOW_HTML": "<t>", "FLOW2_HTML": ""}, ["FLOW_HTML"]), [])
+        self.assertEqual(BG.empty_blocks({"AK_HTML": "", "AK2_HTML": "<t>"}, ["AK_HTML"]), ["AK_HTML"])
         plan = [{"master_key": "m1", "email": "a", "email_type": "reorder_1", "planned_send_date": "2026-10-13",
                  "would_send": True, "reason": "r"}]
         got = SD.outcome_rows(plan, [{"email_type": "reorder_1", "decisions": {"m1": "block_empty FLOW_HTML"},
@@ -535,7 +540,7 @@ class AkH1(unittest.TestCase):
     def test_gate(self):
         import block_gate as BG
 
-        def q_of(part, tables=("ak_push_log",), n=1):
+        def q_of(part, tables=("block_push_log",), n=1):
             def q(sql):
                 if "INFORMATION_SCHEMA.PARTITIONS" in sql and sql.startswith("SELECT last_modified_time"):
                     return [{"t": "2026-10-13 06:00:00"}] if part else []
@@ -545,6 +550,10 @@ class AkH1(unittest.TestCase):
             return q
         self.assertIsNone(BG.ak_h1(q_of(True), "2026-10-13", "2026-W42"))
         self.assertIn("no akcija_assembled partition", BG.ak_h1(q_of(False), "2026-10-13", "2026-W42"))
-        self.assertIn("neither", BG.ak_h1(q_of(True, tables=()), "2026-10-13", "2026-W42"))
+        self.assertIn("does not exist", BG.ak_h1(q_of(True, tables=()), "2026-10-13", "2026-W42"))
+        self.assertIn("does not exist", BG.ak_h1(q_of(True, tables=("ak_push_log",)), "2026-10-13", "2026-W42"))
+        seen = []
+        BG.ak_h1(lambda s: seen.append(s) or q_of(True)(s), "2026-10-13", "2026-W42")
+        self.assertFalse([x for x in seen if "ak_push_log" in x and "block_push_log" not in x])
         self.assertIn("no LIVE/OK", BG.ak_h1(q_of(True, n=0), "2026-10-13", "2026-W42"))
         self.assertIn("partition_id = '20261013'", BG.assembled_built_at_sql("2026-10-13"))
