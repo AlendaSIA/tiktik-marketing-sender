@@ -16,6 +16,7 @@ Commands (one per run):
   --lists                              Brevo: create (once) and sync the two lists to flow_gate_list_members
   --notify-test                        ONE internal test mail to PROOF_RECIPIENT (MAIN 11.10: build + prove)
   --notify                             mails for un-notified G4 events - refuses unless FLOW_GATE_NOTIFY=on
+  --akcija-excl [--date=] [--build-only]  Tuesday hand-campaign exclusion list (a)+(b)+(c) for the next Tuesday
 Nothing here opens L1 or touches send_plan, tracks, caps or a customer's state. Module level imports nothing that can
 reach Brevo (the planner imports this module; Brevo is reached only through _prod() in the command-line path).
 """
@@ -40,6 +41,12 @@ DDL_EVENTS = (f"CREATE TABLE IF NOT EXISTS `{T_EVENTS}` (event STRING, master_ke
               f"notified_at TIMESTAMP, notified_to STRING)")
 DDL_LISTS = f"CREATE TABLE IF NOT EXISTS `{T_LISTS}` (list_name STRING, list_id INT64, created_at TIMESTAMP)"
 SENDER_ID = 2
+# MAIN 11.10 12:55 TUESDAY CONTENT 2: ONE more Brevo exclusion list for the hand-sent Tuesday akcija, refilled every
+# send morning: (a) INFO slot that Tuesday (D11, bought in the last 28 days), (b) a reorder_1 of the engine that day,
+# (c) cold B2B leads in Brevo list 3 (Q4 / Raivis D1). Contacts only; nothing is sent.
+EXCL_KEY = "AKCIJA_EXCL"
+EXCL_NAME = "AKCIJA IZSLĒGT - info logs + reorder_1 dienā + aukstie B2B (otrdienas roku kampaņai)"
+T_EXCL = f"{M}.akcija_exclusion_members"
 
 
 def sql(name):
@@ -97,15 +104,16 @@ WHERE g.gate = 'MANUAL_TO_SHOP'
 
 
 # ------------------------------------------------------------------------------------------------ Brevo
-def list_ids(q, brevo) -> dict:
+def list_ids(q, brevo, names=None) -> dict:
     q(DDL_LISTS)
     have = {r["list_name"]: int(r["list_id"]) for r in q(f"SELECT list_name, list_id FROM `{T_LISTS}`")}
-    for key, name in LIST_NAMES.items():
+    names = LIST_NAMES if names is None else names
+    for key, name in names.items():
         if key not in have:
             lid = int(brevo("POST", "/contacts/lists", {"name": name, "folderId": LIST_FOLDER_ID})["id"])
             q(f"INSERT INTO `{T_LISTS}` VALUES ({_s(key)}, {lid}, CURRENT_TIMESTAMP())")
             have[key] = lid
-    return have
+    return {k: v for k, v in have.items() if k in names}
 
 
 def list_members(brevo, lid) -> set:
@@ -123,27 +131,73 @@ def sync_lists(q, brevo, chunk=150) -> dict:
     ids, out = list_ids(q, brevo), {}
     for key, lid in ids.items():
         want = {r["email"] for r in q(f"SELECT email FROM `{T_MEMBERS}` WHERE list_name = {_s(key)}")}
-        have = list_members(brevo, lid)
-        add, drop, not_in_brevo, invalid = sorted(want - have), sorted(have - want), 0, 0
-        for i in range(0, len(add), chunk):
-            part = add[i:i + chunk]
-            try:
-                r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": part}) or {}
-                not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
-            except Exception:  # noqa: BLE001 - Brevo refuses the whole chunk for one malformed address: go one by one
-                for e in part:
-                    try:
-                        r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": [e]}) or {}
-                        not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
-                    except Exception:  # noqa: BLE001
-                        invalid += 1
-        for i in range(0, len(drop), chunk):
-            brevo("POST", f"/contacts/lists/{lid}/contacts/remove", {"emails": drop[i:i + chunk]})
-        now = list_members(brevo, lid)
-        out[key] = {"list_id": lid, "wanted": len(want), "added": len(add) - not_in_brevo - invalid,
-                    "removed": len(drop), "not_a_brevo_contact": not_in_brevo, "refused_by_brevo": invalid,
-                    "members_now": len(now)}
+        out[key] = sync_one(brevo, lid, want, chunk)
     return out
+
+
+def sync_one(brevo, lid, want, chunk=150) -> dict:
+    """Make Brevo list lid hold exactly `want` (of the addresses that are Brevo contacts)."""
+    have = list_members(brevo, lid)
+    add, drop, not_in_brevo, invalid = sorted(want - have), sorted(have - want), 0, 0
+    for i in range(0, len(add), chunk):
+        part = add[i:i + chunk]
+        try:
+            r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": part}) or {}
+            not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
+        except Exception:  # noqa: BLE001 - Brevo refuses the whole chunk for one malformed address: go one by one
+            for e in part:
+                try:
+                    r = brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": [e]}) or {}
+                    not_in_brevo += len(((r.get("contacts") or {}).get("failure")) or [])
+                except Exception:  # noqa: BLE001
+                    invalid += 1
+    for i in range(0, len(drop), chunk):
+        brevo("POST", f"/contacts/lists/{lid}/contacts/remove", {"emails": drop[i:i + chunk]})
+    now = list_members(brevo, lid)
+    return {"list_id": lid, "wanted": len(want), "added": len(add) - not_in_brevo - invalid,
+            "removed": len(drop), "not_a_brevo_contact": not_in_brevo, "refused_by_brevo": invalid,
+            "members_now": len(now)}
+
+
+def excl_sql(send_date: str) -> str:
+    """Members of the Tuesday exclusion list for send_date. (b) = the latest plan run's reorder_1 would-send rows due
+    on or before the date (before 08:05 that is the day before's plan - a superset is the safe side)."""
+    import edu
+    return f"""
+WITH it AS (SELECT MAX(plan_date) AS pd FROM `{M}.info_track_shadow` WHERE slot_date = DATE '{send_date}'),
+a AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'a_info_slot' AS why FROM `{M}.info_track_shadow`
+      WHERE slot_date = DATE '{send_date}' AND plan_date = (SELECT pd FROM it) AND slot = 'INFO'),
+run AS (SELECT run_id FROM `{M}.shadow_send_plan` WHERE plan_date <= DATE '{send_date}'
+        GROUP BY run_id, plan_date ORDER BY plan_date DESC, MAX(planned_at) DESC LIMIT 1),
+b AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'b_reorder_1' AS why FROM `{M}.shadow_send_plan`
+      WHERE run_id = (SELECT run_id FROM run) AND email_type = 'reorder_1' AND would_send
+        AND planned_send_date <= DATE '{send_date}'),
+l3 AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{edu.T_BLIST}` WHERE list_id = 3),
+c AS (SELECT DISTINCT l.email, 'c_cold_b2b_lead' AS why FROM `{edu.T_LEAD}` l JOIN l3 USING (email) WHERE l.is_lead),
+x AS (SELECT * FROM a UNION ALL SELECT * FROM b UNION ALL SELECT * FROM c)
+SELECT DATE '{send_date}' AS send_date, email, STRING_AGG(DISTINCT why ORDER BY why) AS why, CURRENT_TIMESTAMP() AS built_at
+FROM x WHERE REGEXP_CONTAINS(email, r'^[-a-z0-9._%+]+@[-a-z0-9.]+[.][a-z]{{2,}}$') GROUP BY email"""
+
+
+def build_excl(q, send_date: str, refresh_leads=True) -> dict:
+    """BigQuery only. The cold-lead table is rebuilt with edu's own text first (it is otherwise only rebuilt by hand)."""
+    import edu
+    if refresh_leads:
+        q(edu.LEADS_SQL)
+    q(f"CREATE TABLE IF NOT EXISTS `{T_EXCL}` (send_date DATE, email STRING, why STRING, built_at TIMESTAMP)")
+    q(f"DELETE FROM `{T_EXCL}` WHERE send_date = DATE '{send_date}'")
+    q(f"INSERT INTO `{T_EXCL}` (send_date, email, why, built_at) " + excl_sql(send_date))
+    split = {r["k"]: int(r["n"]) for r in q(
+        f"SELECT k, COUNT(*) AS n FROM `{T_EXCL}`, UNNEST(SPLIT(why, ',')) k WHERE send_date = DATE '{send_date}' "
+        f"GROUP BY k")}
+    total = q(f"SELECT COUNT(*) AS n FROM `{T_EXCL}` WHERE send_date = DATE '{send_date}'")[0]["n"]
+    return {"send_date": send_date, "members": int(total), "split": split}
+
+
+def sync_excl(q, brevo, send_date: str) -> dict:
+    lid = list_ids(q, brevo, {EXCL_KEY: EXCL_NAME})[EXCL_KEY]
+    want = {r["email"] for r in q(f"SELECT email FROM `{T_EXCL}` WHERE send_date = DATE '{send_date}'")}
+    return sync_one(brevo, lid, want)
 
 
 def mail_text(client, order_nr) -> str:
@@ -193,6 +247,15 @@ def main(argv) -> int:
         res = build(q, args.get("run") or DEFAULT_RUN)
     elif "lists" in args:
         res = sync_lists(q, brevo)
+    elif "akcija-excl" in args:
+        import info_track
+        iq, ins = info_track._prod()
+        d = args.get("date") or ""
+        day = __import__("datetime").date.fromisoformat(d) if d else None
+        it = info_track.shadow(iq, ins, weeks=4)
+        res = {"info_track": {k: v for k, v in it.items() if k != "catalog"},
+               "build": build_excl(q, (day or __import__("datetime").date.fromisoformat(min(it["per_tuesday"]))).isoformat())}
+        res["brevo"] = sync_excl(q, brevo, res["build"]["send_date"]) if "build-only" not in args else None
     elif "notify-test" in args:
         res = notify_test(brevo, os.environ)
     elif "notify" in args:

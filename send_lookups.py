@@ -43,6 +43,7 @@ T_LFLOG = f"{P}.mkt_control.letter_fields_log"
 SFX = os.environ.get("SHADOW_TABLE_SUFFIX", "")
 T_CHECK = f"{P}.mkt_control.shadow_selfcheck{SFX}"
 T_AKCIJA = f"{P}.mkt_control.shadow_akcija_audience{SFX}"
+T_VERDICT = f"{P}.mkt_control.sendtime_verdict{SFX}"
 PERSONAL = "PERSONAL_LETTER_THIS_WEEK"
 # CAB-1 (interface fixed by MAIN 2026-10-08 13:52 - same wording to "PAP cenu bloks 7" and "Nakts sinhronizacija 8").
 T_CAB = f"{P}.mkt_control.cabinet_price_current"
@@ -645,6 +646,38 @@ def record(query, res, check_rows):
           f"VALUES {vals}")
 
 
+def verdict_record(query, res, chunk=2000) -> dict:
+    """MAIN 11.10 12:55 FINDING: the 08:05 plan judges L8 before the 08:40 writer exists, so its would_deliver is 0.
+    The send-time answer (after the writer) is written PER ROW: mkt_control.sendtime_verdict (today's rows of this
+    plan run replaced) and the plan's own columns would_deliver / presend_gate / presend_gates of the rows due today
+    are set from it (MERGE; only rows due today, only on the real tables - a temp suffix writes the verdict table only)."""
+    d, run = _day(res["send_date"]), res["plan_run"] or "none"
+    query(f"CREATE TABLE IF NOT EXISTS `{T_VERDICT}` (plan_date DATE, plan_run STRING, master_key STRING, email STRING, "
+          f"email_type STRING, offer_rung INT64, template_id INT64, gate STRING, gates STRING, person_block STRING, "
+          f"deliverable BOOL, evaluated_at TIMESTAMP)")
+    query(f"DELETE FROM `{T_VERDICT}` WHERE plan_date = DATE '{d}' AND plan_run = {_sql_text(run)}")
+    rows = res["rows"]
+    for i in range(0, len(rows), chunk):
+        vals = ", ".join(
+            f"(DATE '{d}', {_sql_text(run)}, {_sql_text(r['master_key'])}, {_sql_text(r['email'])}, "
+            f"{_sql_text(r['email_type'])}, {int(r['offer_rung'] or 0)}, "
+            f"{'NULL' if r['template_id'] is None else int(r['template_id'])}, {_sql_text(r['gate'])}, "
+            f"{_sql_text(','.join(r['gates']) or None)}, {_sql_text(r['person_block'])}, "
+            f"{'TRUE' if r['deliverable'] else 'FALSE'}, TIMESTAMP {_sql_text(res['evaluated_at'])})"
+            for r in rows[i:i + chunk])
+        query(f"INSERT INTO `{T_VERDICT}` (plan_date, plan_run, master_key, email, email_type, offer_rung, template_id, "
+              f"gate, gates, person_block, deliverable, evaluated_at) VALUES {vals}")
+    merged = False
+    if rows and not SFX:
+        query(f"""MERGE `{T_PLAN}` p USING (SELECT * FROM `{T_VERDICT}` WHERE plan_date = DATE '{d}'
+  AND plan_run = {_sql_text(run)}) v
+ON p.plan_date = v.plan_date AND p.run_id = v.plan_run AND p.master_key = v.master_key AND p.email_type = v.email_type
+WHEN MATCHED THEN UPDATE SET would_deliver = v.deliverable, presend_gate = COALESCE(v.gate, CONCAT('L9_', v.person_block)),
+  presend_gates = COALESCE(v.gates, CONCAT('L9_', v.person_block))""")
+        merged = True
+    return {"verdict_rows": len(rows), "deliverable": sum(bool(r["deliverable"]) for r in rows), "plan_updated": merged}
+
+
 def window_open(now: dt.datetime) -> dt.datetime:
     """The moment the gates are evaluated FOR: now, but never before the send window opens (the 08:55 check asks
     'could the 09:00 send go', not 'is it 09:00 yet')."""
@@ -678,6 +711,7 @@ def main(argv) -> int:
     if a.record:
         akcija_record(q, day, res["akcija"])
         record(q, res, cs)
+        res["verdict"] = verdict_record(q, res)
     sample = None
     if a.sample or a.sample_force:
         picks = sample_pick(res, day)

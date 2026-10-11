@@ -40,8 +40,10 @@ class Q:
     def __call__(self, sql):
         self.calls.append(sql)
         s = sql.strip()
-        if s.startswith(("CREATE", "INSERT", "UPDATE")):
+        if s.startswith(("CREATE", "INSERT", "UPDATE", "ALTER")):
             return []
+        if "CAST(planned_send_date AS STRING) AS planned_send_date, would_send, hold_reason" in s:
+            return [{**c, "would_send": True, "hold_reason": None} for c in self.cands] + getattr(self, "held", [])
         if "GROUP BY run_id, plan_date" in s:
             return [{"run_id": "plan-1", "plan_date": "2026-10-13"}]
         if f"`{SD.T_CAP}`" in s:
@@ -433,3 +435,38 @@ class BrevoWritesRefusedWhileL1Closed(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Outcome(unittest.TestCase):
+    """MAIN 11.10 12:55: every planned letter of the date with what happened and why."""
+
+    def test_outcome_rows(self):
+        plan = [{"master_key": "a", "email": "a@x", "email_type": "reorder_1", "template_id": 179,
+                 "planned_send_date": "2026-10-13", "would_send": True, "reason": "r"},
+                {"master_key": "b", "email": "b@x", "email_type": "reorder_1", "template_id": 179,
+                 "planned_send_date": "2026-10-13", "would_send": True, "reason": "r"},
+                {"master_key": "c", "email": "c@x", "email_type": "reorder_1", "template_id": 179,
+                 "planned_send_date": "2026-10-13", "would_send": False, "hold_reason": "B2B_FLOW", "reason": "r"},
+                {"master_key": "d", "email": "d@x", "email_type": "winback_1", "template_id": 180,
+                 "planned_send_date": "2026-10-20", "would_send": True, "reason": "w"},
+                {"master_key": "e", "email": "e@x", "email_type": "winback_1", "template_id": 180,
+                 "planned_send_date": "2026-10-13", "would_send": True, "reason": "w"}]
+        types = [{"email_type": "reorder_1", "type_refusal": None, "cap": 1,
+                  "decisions": {"a": "CHOSEN", "b": "OVER_CAP"}},
+                 {"email_type": "winback_1", "type_refusal": "D3 NO_CAP (0)", "cap": 0,
+                  "decisions": {"e": "OVER_CAP"}}]
+        got = {r[0]: (r[5], r[6]) for r in SD.outcome_rows(plan, types, "2026-10-13", live=False)}
+        self.assertEqual(got["a"], ("DRY_WOULD_SEND", None))
+        self.assertEqual(got["b"], ("OVER_CAP", "cap 1"))
+        self.assertEqual(got["c"], ("HELD_IN_PLAN", "B2B_FLOW"))
+        self.assertEqual(got["d"][0], "NOT_DUE_YET")
+        self.assertEqual(got["e"][0], "OVER_CAP")
+
+    def test_dry_run_writes_the_outcome_table_and_send_log_carries_the_reason(self):
+        q = Q([cand(1), cand(2)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 5,
+                                          "set_at": "x"}])
+        src = open(SD.__file__).read()
+        self.assertIn("ADD COLUMN IF NOT EXISTS reason STRING", src)
+        self.assertIn("utm_campaign, reason) VALUES", src)
+        import send_path
+        self.assertIn('"reason": a.get("reason") or None', open(send_path.__file__).read())

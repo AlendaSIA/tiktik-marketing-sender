@@ -209,7 +209,8 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
                      "email_type": campaign["email_type"], "template_id": campaign["template_id"],
                      "track": campaign["track"], "step": None, "rung": campaign.get("rung") or 0,
                      "sent_at": sent_at, "source": "engine_live", "run_id": batch_id,
-                     "brevo_message_id": None, "utm_campaign": campaign.get("utm_campaign")})
+                     "brevo_message_id": None, "utm_campaign": campaign.get("utm_campaign"),
+                     "reason": a.get("reason") or None})                 # MAIN 11.10 12:55: the plan's reason
         rec = pd_record.render(person_id=a.get("person_id"), org_id=None, master_key=a["master_key"],
                                email=a["email"], email_type=campaign["email_type"],
                                template_id=campaign["template_id"], send_date=send_date,

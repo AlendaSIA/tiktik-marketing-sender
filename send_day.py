@@ -92,6 +92,10 @@ def proof_recipient(env) -> str:
 def test_key(recipient) -> str:
     return "TEST:" + recipient
 T_PROOF = f"{M}.send_day_proof"
+# MAIN 11.10 12:55 LOGGING: every letter the plan holds for the send date, with what happened and why - one row per
+# (run, person, letter): SENT / DRY_WOULD_SEND / HELD_IN_PLAN / NOT_DUE_YET / TYPE_REFUSED / MEMBER_REFUSED / OVER_CAP.
+# With send_log (what went, now with the plan's reason) one query per person answers what, when, why and what not.
+T_OUTCOME = f"{M}.send_outcome"
 
 DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRING, cap INT64, set_by STRING,
   set_at TIMESTAMP, note STRING)""",
@@ -107,7 +111,43 @@ DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRI
        f"""CREATE TABLE IF NOT EXISTS `{T_PROOF}` (run_id STRING, email_type STRING, source_master_key STRING,
   source_email STRING, raivis_before STRING, written STRING, campaign_id INT64, list_id INT64, created_at TIMESTAMP,
   restored_at TIMESTAMP)""",
-       f"ALTER TABLE `{T_PROOF}` ADD COLUMN IF NOT EXISTS recipient STRING"]
+       f"ALTER TABLE `{T_PROOF}` ADD COLUMN IF NOT EXISTS recipient STRING",
+       f"ALTER TABLE `{T_LOG}` ADD COLUMN IF NOT EXISTS reason STRING",
+       f"""CREATE TABLE IF NOT EXISTS `{T_OUTCOME}` (send_date DATE, run_id STRING, mode STRING, plan_run STRING,
+  master_key STRING, email STRING, email_type STRING, template_id INT64, planned_send_date DATE, outcome STRING,
+  reason STRING, plan_reason STRING, created_at TIMESTAMP)"""]
+
+
+def outcome_rows(plan_rows, results, send_date, live) -> list:
+    """Pure. plan_rows = the plan run's rows that carry a letter; results = run()['types'] with 'decisions'.
+    -> [(master_key, email, email_type, template_id, planned_send_date, outcome, reason, plan_reason)]."""
+    by_type = {r["email_type"]: r for r in results}
+    out = []
+    for p in plan_rows:
+        et, mk = p["email_type"], p["master_key"]
+        base = (mk, p.get("email"), et, p.get("template_id"), p.get("planned_send_date"))
+        if not _b(p.get("would_send")):
+            out.append(base + ("HELD_IN_PLAN", p.get("hold_reason"), p.get("reason")))
+            continue
+        if str(p.get("planned_send_date") or "") > str(send_date):
+            out.append(base + ("NOT_DUE_YET", "planned " + str(p.get("planned_send_date")), p.get("reason")))
+            continue
+        t = by_type.get(et)
+        if t is None:
+            out.append(base + ("NOT_EVALUATED", "type not run", p.get("reason")))
+            continue
+        dec = (t.get("decisions") or {}).get(mk)
+        if dec == "CHOSEN" and not t.get("type_refusal"):
+            out.append(base + ("SENT" if live and t.get("sent") else "DRY_WOULD_SEND", None, p.get("reason")))
+        elif dec == "CHOSEN":
+            out.append(base + ("TYPE_REFUSED", t["type_refusal"], p.get("reason")))
+        elif dec == "OVER_CAP":
+            out.append(base + ("OVER_CAP", f"cap {t.get('cap')}", p.get("reason")))
+        elif dec:
+            out.append(base + ("MEMBER_REFUSED", dec, p.get("reason")))
+        else:
+            out.append(base + ("TYPE_REFUSED", t.get("type_refusal") or "not evaluated", p.get("reason")))
+    return out
 
 
 # ------------------------------------------------------------------------------------------------ pure rules
@@ -332,7 +372,30 @@ class Day:
                 continue
             res = self._one(t, send_date, plan_date, plan_run, live, cap_rows, track_rows, appr_rows, caps_override)
             result["types"].append(res)
+        result["outcome"] = self.write_outcome(plan_run, send_date, live, result["types"], only)
+        for t in result["types"]:
+            t.pop("decisions", None)
         return result
+
+    def write_outcome(self, plan_run, d, live, types, only=None) -> dict:
+        plan = [dict(r) for r in self.q(
+            f"SELECT master_key, LOWER(TRIM(email)) AS email, email_type, template_id, "
+            f"CAST(planned_send_date AS STRING) AS planned_send_date, would_send, hold_reason, reason "
+            f"FROM `{T_PLAN}` WHERE run_id = '{plan_run}' AND email_type IS NOT NULL")]
+        if only:
+            plan = [p for p in plan if p["email_type"] in only]
+        rows = outcome_rows(plan, types, d, live)
+        mode = "live" if live else "dry"
+        for i in range(0, len(rows), 1000):
+            vals = ",".join("(" + ",".join([f"DATE '{d}'", _s(self.run_id), _s(mode), _s(plan_run), _s(r[0]), _s(r[1]),
+                                            _s(r[2]), _n(r[3]), (f"DATE '{r[4]}'" if r[4] else "NULL"), _s(r[5]),
+                                            _s((r[6] or "")[:300] or None), _s((r[7] or "")[:300] or None),
+                                            "CURRENT_TIMESTAMP()"]) + ")" for r in rows[i:i + 1000])
+            self.q(f"INSERT INTO `{T_OUTCOME}` VALUES {vals}")
+        counts = {}
+        for r in rows:
+            counts[r[5]] = counts.get(r[5], 0) + 1
+        return {"table": T_OUTCOME, "rows": len(rows), "by_outcome": counts}
 
     def _one(self, t, d, plan_date, plan_run, live, cap_rows, track_rows, appr_rows, caps_override):
         et, tid, track = t["email_type"], _i(t["template_id"]), t["track"]
@@ -361,6 +424,7 @@ class Day:
         if len(rungs) > 1 and not res["type_refusal"]:
             res["type_refusal"] = f"MIXED_RUNG {sorted(rungs)} - one campaign carries one rung"
         res["chosen"] = len(chosen)
+        res["decisions"] = dict(decisions)
         for v in decisions.values():
             if v != "CHOSEN":
                 k = v.split(" ")[0]
@@ -478,7 +542,7 @@ class Day:
         if diff:
             raise SP.SendLocked([("L11", f"{rcpt} attributes differ after the write: {diff[:8]}")])
         me = {"master_key": test_key(rcpt), "email": rcpt, "person_id": int(pd_person), "rung": src.get("rung"),
-              "reason": f"PROOF of {et} with the letter of {src['master_key']}"}
+              "reason": f"PROOF of {et} (source letter: send_day_proof run {self.run_id})"}
         out = self._send(et, tid, track, d, [me], plan_run, alias={test_key(rcpt): src["master_key"]})
         t0, camp = time.time(), {}
         while time.time() - t0 < wait_s:
@@ -635,9 +699,10 @@ class Day:
             "(" + ",".join([_s(r["master_key"]), _s(r["email"]), str(int(r["campaign_id"])),
                             _n(r.get("brevo_list_id")), _s(r["email_type"]), _n(r.get("template_id")),
                             _s(r.get("track")), "NULL", _n(r.get("rung")), f"TIMESTAMP {_s(r['sent_at'])}",
-                            _s(r["source"]), _s(r["run_id"]), "NULL", _s(r.get("utm_campaign"))]) + ")" for r in rows)
+                            _s(r["source"]), _s(r["run_id"]), "NULL", _s(r.get("utm_campaign")),
+                            _s(r.get("reason"))]) + ")" for r in rows)
         self.q(f"INSERT INTO `{T_LOG}` (master_key, email, campaign_id, brevo_list_id, email_type, template_id, track, "
-               f"step, rung, sent_at, source, run_id, brevo_message_id, utm_campaign) VALUES {vals}")
+               f"step, rung, sent_at, source, run_id, brevo_message_id, utm_campaign, reason) VALUES {vals}")
 
     def advance(self, mk, et, on, rung, batch, camp):
         self.q(f"INSERT INTO `{T_ADV}` VALUES ({_s(mk)}, {_s(et)}, DATE '{on}', {int(rung or 0)}, {_s(batch)}, "

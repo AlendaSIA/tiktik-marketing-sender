@@ -175,3 +175,29 @@ class LiveGate(unittest.TestCase):
         fsrc = open(FG.__file__).read().split("def _prod")[0]
         for bad in ("\nimport campaign", "\nimport brevo", "\nfrom campaign", "\nimport send_day"):
             self.assertNotIn(bad, fsrc)
+
+
+class AkcijaExclusion(unittest.TestCase):
+    """MAIN 11.10 12:55 TUESDAY CONTENT 2: (a) INFO slot, (b) reorder_1 that day, (c) cold B2B leads in list 3."""
+
+    def test_sql_has_the_three_sources_for_the_date(self):
+        s = FG.excl_sql("2026-10-13")
+        for must in ("slot = 'INFO'", "slot_date = DATE '2026-10-13'", "email_type = 'reorder_1' AND would_send",
+                     "planned_send_date <= DATE '2026-10-13'", "l.is_lead", "list_id = 3",
+                     "'a_info_slot'", "'b_reorder_1'", "'c_cold_b2b_lead'"):
+            self.assertIn(must, s)
+
+    def test_sync_one_adds_and_removes_and_the_list_is_its_own(self):
+        b = Brevo(have={501: {"old@x.lv"}})
+        q = Q(lists=[{"list_name": FG.EXCL_KEY, "list_id": 501}])
+        q.excl = ["new@x.lv"]
+        orig = q.__call__
+
+        def call(s):
+            if s.startswith(f"SELECT email FROM `{FG.T_EXCL}`"):
+                return [{"email": e} for e in q.excl]
+            return orig(s)
+        r = FG.sync_excl(call, b, "2026-10-13")
+        self.assertEqual(r["list_id"], 501)
+        self.assertEqual(b.have[501], {"new@x.lv"})
+        self.assertNotIn(FG.EXCL_KEY, FG.LIST_NAMES)        # never synced by the daily 96/97 step

@@ -76,6 +76,21 @@ def flow_gate_lists(dry):
     return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
 
 
+def akcija_excl(dry):
+    """MAIN 11.10 12:55: refill the Tuesday hand-campaign exclusion list (info slot + reorder_1 + cold B2B leads) for
+    the next Tuesday. Contacts only. -> None or why not."""
+    if dry:
+        print("DRY akcija-excl skipped"); return None
+    try:
+        r = subprocess.run(["gcloud", "run", "jobs", "execute", "tiktik-send-day", "--region", "europe-west1",
+                            "--project", P, "--wait", "--args=^@^flow_gate.py@--akcija-excl"],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print("AKCIJA_EXCL exit", r.returncode, (r.stderr or r.stdout)[-300:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
 def bq(sql):
     out = subprocess.check_output(["bq", "--project_id", P, "query", "--nouse_legacy_sql", "--format=json",
                                    "--max_rows=200", sql], stderr=subprocess.DEVNULL).decode()
@@ -86,6 +101,7 @@ def main():
     runs = bq(f"SELECT run_id FROM `{P}.mkt_control.shadow_run_report` WHERE plan_date = CURRENT_DATE() "
               f"ORDER BY finished_at DESC LIMIT 1")
     fg_err = flow_gate_lists(os.environ.get("DRY") == "1") if runs else None   # members come from today's plan run
+    fg_err = fg_err or (akcija_excl(os.environ.get("DRY") == "1") if runs else None)
     if bq(f"SELECT 1 FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
           f"AND check_name = '_dash_row_posted' LIMIT 1"):
         print("already posted today"); return 0
