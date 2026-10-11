@@ -701,7 +701,9 @@ def main(argv) -> int:
         else window_open(dt.datetime.now(dt.timezone.utc))
     q = cli_query if os.environ.get("BQ_TRANSPORT") == "cli" else rest_query
     refresh_error = refresh_hashes() if a.refresh_hashes else None
-    wh = Warehouse(q)
+    # the paid-order source of production (the mirror, 60-min rule). Without it every reactivation letter is held
+    # PAID_ORDERS_SOURCE_MISSING - measured 11.10: that alone made sendtime_person_blocked_among_due fail every day.
+    wh = Warehouse(q, lambda since: mirror_paid_since(q, since))
     day = SP.riga(now).date()
     res = evaluate(wh, day, now)
     res["template_content"] = {"refresh_error": refresh_error, "refreshed": bool(a.refresh_hashes),

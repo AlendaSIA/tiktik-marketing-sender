@@ -478,3 +478,9 @@ class Cab1AtSend(unittest.TestCase):
             self.assertIn(G.WRITER_HELD, gates_of(WH(Fake(lf=lf)), "m1", "winback_1", 1))
         lf = [dict(r, would_send="true", hold_reason=None) if r["email"] == "a@x.lv" else r for r in LF]
         self.assertNotIn(G.WRITER_HELD, gates_of(WH(Fake(lf=lf)), "m1", "winback_1", 1))
+
+
+class CliUsesThePaidSource(unittest.TestCase):
+    def test_main_wires_the_mirror(self):
+        src = open(L.__file__).read().split("def main(argv)")[1]
+        self.assertIn("Warehouse(q, lambda since: mirror_paid_since(q, since))", src)
