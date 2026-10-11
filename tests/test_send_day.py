@@ -714,3 +714,18 @@ class FlowV13(unittest.TestCase):
             BG.FLOW_RULES[179] = BG._GRID
         self.assertEqual(t["chosen"], 1)
         self.assertEqual(t["block_config"], "rules b34fcb1d56f8")
+
+
+class GateDate(unittest.TestCase):
+    def test_dry_only_and_used_for_the_push_rows(self):
+        import datetime as dt
+        q = BlocksD31.QB([cand(1)])
+        dd = day(q, Brevo(attrs={"P1_NAME": "Cimdi", "OFFER_RUNG": 0, "FLOW_HTML": "<t/>"}, html=BlocksD31.BHTML))
+        t = dd.run(TUE, caps_override={"reorder_1": 5}, gate_date=dt.date(2026, 10, 11))["types"][0]
+        self.assertEqual(t["gate_date"], "2026-10-11")
+        self.assertTrue([x for x in q.calls if "run_date = DATE '2026-10-11'" in x])
+        self.assertFalse([x for x in q.calls if "block_push_log" in x and f"run_date = DATE '{TUE}'" in x])
+        live = day(BlocksD31.QB([cand(1)]), Brevo())
+        live.env = {"DRY_RUN": "false", "ALLOW_SEND": "true", "GLOBAL_SEND_ENABLED": "true"}
+        with self.assertRaises(SD.SP.SendLocked):
+            live.run(TUE, mode="live", gate_date=dt.date(2026, 10, 11))

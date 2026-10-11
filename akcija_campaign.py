@@ -129,14 +129,17 @@ def frame_order_ok(frame: str) -> bool:
     return i > 0 and "contact.AK_HTML" in frame[:i]
 
 
-def shadow(query, put, day=None, frame_fn=None) -> dict:
+def shadow(query, put, day=None, frame_fn=None, gate_date=None) -> dict:
     """v1.2 DRY: gate (AK-H1 + ak_maker_html), the campaign HTML = 236 frame with the writer's maker html at
     <!--MAKER_BLOCKS--> (written to GCS only), and the audience funnel. No Brevo write, no campaign."""
     import block_gate as BG
     day = day or dt.date.today()
     tue, week_id, _end = A.week_of(day)
     res = {"week_id": week_id, "send_date": tue.isoformat(), "template_id": TEMPLATE_ID}
-    res["gate"] = BG.ak_h1(query, res["send_date"], week_id) or "OK"     # 236 may go only on "OK"
+    gd = str(gate_date or res["send_date"])      # MAIN 19:05: DRY may test the gate against another day's push rows
+    if gd != res["send_date"]:
+        res["gate_date"] = gd
+    res["gate"] = BG.ak_h1(query, gd, week_id) or "OK"                    # 236 may go only on "OK"
     wk = query(f"SELECT maker FROM `{A.T_WEEK}` WHERE week_id = '{week_id}'")
     res["maker_of_week"] = wk[0]["maker"] if len(wk) == 1 else None
     if res["maker_of_week"] == A.MIX:                                     # MAIN 19:00: MIX list from week_price_mix16
@@ -145,10 +148,10 @@ def shadow(query, put, day=None, frame_fn=None) -> dict:
         if why and res["gate"] == "OK":
             res["gate"] = why
     # MAIN 18:50: checked at send time; the first of 3 sends (09:00/09:15/09:30) may slide to the OK row (until 10:30)
-    last = BG.latest_push(query, res["send_date"], "AK_HTML") if BG._exists(query, BG.T_BLOCK_LOG) else None
+    last = BG.latest_push(query, gd, "AK_HTML") if BG._exists(query, BG.T_BLOCK_LOG) else None
     res["ak_push_latest"] = last and {k: str(last.get(k)) for k in ("mode", "status", "errors", "week_id", "finished_at")}
     ok_at = BG._aware(last["finished_at"]) if res["gate"] == "OK" and last else None
-    res["sends_riga"] = [t.astimezone(BG.RIGA).strftime("%H:%M") for t in BG.sends_236(res["send_date"], ok_at)]
+    res["sends_riga"] = [t.astimezone(BG.RIGA).strftime("%H:%M") for t in BG.sends_236(gd, ok_at)]
     row, why = BG.maker_html(query, week_id)
     if why:
         res["maker"] = why
@@ -194,12 +197,15 @@ def main(argv) -> int:
     if "--shadow" not in argv:
         print(__doc__)
         return 2
+    args = dict(a.lstrip("-").split("=", 1) for a in argv if "=" in a)
+    day = dt.date.fromisoformat(args["date"]) if args.get("date") else None
+    gd = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
     q, put = _prod()
     import campaign as CAMP
 
     def frame_fn(tid):                                   # read-only Brevo GET of the 236 frame
         return (CAMP._call("GET", f"/smtp/templates/{int(tid)}", None) or {}).get("htmlContent") or ""
-    print("AKCIJA_CAMPAIGN " + json.dumps(shadow(q, put, frame_fn=frame_fn), ensure_ascii=False, default=str))
+    print("AKCIJA_CAMPAIGN " + json.dumps(shadow(q, put, day, frame_fn=frame_fn, gate_date=gd), ensure_ascii=False, default=str))
     return 0
 
 

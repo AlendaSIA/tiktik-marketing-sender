@@ -366,10 +366,13 @@ class Day:
         return {str(r["email"]).strip().lower(): dict(r) for r in rows}
 
     # -- the day
-    def run(self, send_date: dt.date, mode="auto", caps_override=None, only=None) -> dict:
+    def run(self, send_date: dt.date, mode="auto", caps_override=None, only=None, gate_date=None) -> dict:
         live = mode != "dry" and l1_open(self.env)
         if caps_override is not None and live:
             raise SP.SendLocked([("D3", "a caps override exists only for a DRY rehearsal")])
+        if gate_date is not None and live:
+            raise SP.SendLocked([("D31", "a forced block-gate date exists only for a DRY rehearsal")])
+        self.gate_date = gate_date          # MAIN 19:05: DRY test of the block gates against another day's push rows
         for ddl in DDL:
             self.q(ddl)
         plan_run, plan_date = self.plan_run_of(send_date)
@@ -443,7 +446,10 @@ class Day:
         if cfg["mismatch"] and not res["type_refusal"]:
             res["type_refusal"] = cfg["mismatch"]
         if blocks_needed:
-            res.update(self.block_gate(d, blocks_needed, wait=live and not res["type_refusal"]))
+            gd = getattr(self, "gate_date", None) or d
+            res.update(self.block_gate(gd, blocks_needed, wait=live and not res["type_refusal"]))
+            if gd != d:
+                res["gate_date"] = str(gd)
             if res["block_hold"] and not res["type_refusal"]:
                 res["type_refusal"] = res["block_hold"]
         refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
@@ -767,7 +773,7 @@ class Day:
 
     @staticmethod
     def _detail(res):
-        keys = ("blocks", "block_config", "block_hold", "block_rows", "block_ok_at", "would_start", "released_at", "block_wait")
+        keys = ("gate_date", "blocks", "block_config", "block_hold", "block_rows", "block_ok_at", "would_start", "released_at", "block_wait")
         det = {k: res[k] for k in keys if res.get(k)}
         return json.dumps(det, sort_keys=True, default=str) if det else None
 
@@ -956,7 +962,8 @@ def main(argv) -> int:
     q, wh, brevo, pd_post, dash = _prod()
     day = Day(q, wh, brevo, pd_post, dash, os.environ)
     try:
-        res = day.run(d, mode=mode, caps_override=caps, only=only)
+        gd = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
+        res = day.run(d, mode=mode, caps_override=caps, only=only, gate_date=gd)
     except SP.SendLocked as e:
         print("SEND_DAY_REFUSED " + str(e)[:800])
         dash("KĻŪDA", f"Sūtīšanas diena {d}: atteikts - {str(e)[:250]} - nekas nav sūtīts")

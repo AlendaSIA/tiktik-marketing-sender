@@ -360,12 +360,13 @@ def load_partition(day, rows):
         raise RuntimeError("bq load failed: " + (out.stdout + out.stderr)[:600])
 
 
-def run(query, day: dt.date, record: bool, what_if_maker=None) -> dict:
-    """what_if_maker: measure another maker on today's data (read-only; refused together with record)."""
-    if what_if_maker and record:
-        raise ValueError("a what-if maker is never recorded")
+def run(query, day: dt.date, record: bool, what_if_maker=None, as_week_of=None) -> dict:
+    """what_if_maker: measure another maker on today's data (read-only; refused together with record).
+    as_week_of: DRY only - assemble today's data as the letter of that day's week (MAIN 19:05 W44 MIX test)."""
+    if (what_if_maker or as_week_of) and record:
+        raise ValueError("a what-if maker / week is never recorded")
     d = day.isoformat()
-    tue, week_id, end = week_of(day)
+    tue, week_id, end = week_of(as_week_of or day)
     aud_run = query(f"SELECT run_id, ANY_VALUE(offer_week) AS offer_week FROM `{T_AUD}` WHERE plan_date = DATE '{d}' "
                     f"GROUP BY run_id ORDER BY MAX(planned_at) DESC LIMIT 1")
     run_id = aud_run[0]["run_id"] if aud_run else "none"
@@ -451,10 +452,12 @@ def main(argv) -> int:
     ap.add_argument("--record", action="store_true", help="write akcija_assembled (today) and the akcija_asm_* rows")
     ap.add_argument("--date", help="letter date YYYY-MM-DD (default: today, Europe/Riga)")
     ap.add_argument("--what-if-maker", help="measure this maker instead of the week's (never with --record)")
+    ap.add_argument("--as-week-of", help="DRY: assemble today's data as the letter of this date's week")
     a = ap.parse_args(argv)
     day = dt.date.fromisoformat(a.date) if a.date else dt.datetime.now(zoneinfo.ZoneInfo("Europe/Riga")).date()
     q = L.cli_query if os.environ.get("BQ_TRANSPORT") == "cli" else L.rest_query
-    res = run(q, day, a.record, a.what_if_maker)
+    res = run(q, day, a.record, a.what_if_maker,
+              dt.date.fromisoformat(a.as_week_of) if a.as_week_of else None)
     print(json.dumps(res, ensure_ascii=False, indent=1, default=str))
     return 0
 
