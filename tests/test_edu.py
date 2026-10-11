@@ -513,3 +513,10 @@ class ProductSlots(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuietNeverBuyer(unittest.TestCase):
+    def test_d20_quiet_never_buyer_is_out(self):
+        import edu as E
+        self.assertEqual(E.edu_all_gate({"quiet_never_buyer": True, "l3": True}), "QUIET_NEVER_BUYER")
+        self.assertIn("quiet_never_buyer", E.edu_all_sql())

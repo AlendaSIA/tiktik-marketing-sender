@@ -213,7 +213,8 @@ class TemplateContentTC4(unittest.TestCase):
         cs = {c["check_name"]: c for c in L.checks(res)}
         self.assertFalse(cs["sendtime_template_hash_mirror_fresh"]["ok"])              # 235's mirror row is 30 h old
         self.assertEqual(cs["sendtime_template_content"]["value"], "1")
-        fresh = [t for t in res["template_content"]["rows"] if t["template_id"] != 235]
+        fresh = [t for t in res["template_content"]["rows"] if t["template_id"] != 235
+                 and t["mirror_age_h"] is not None]                 # W-E2: 255-257 are real ids with no fake mirror row
         res["template_content"] = {"refresh_error": None, "refreshed": True, "rows": fresh}
         self.assertTrue({c["check_name"]: c for c in L.checks(res)}["sendtime_template_hash_mirror_fresh"]["ok"])
         res["template_content"]["refresh_error"] = "job failed"

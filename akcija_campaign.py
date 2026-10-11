@@ -26,7 +26,8 @@ P = "jaunais-za-aizv04022026"
 M = f"{P}.mkt_control"
 PLACEHOLDER = "<!--MAKER_BLOCKS-->"
 LIST_ALL, LIST_SUPPRESSION, LIST_EN, LIST_EE, LIST_NO_PROMO = 3, 4, 46, 75, 96
-CAMPAIGN_LISTS = {"listIds": [LIST_ALL], "exclusionListIds": [LIST_SUPPRESSION, LIST_EN, LIST_EE, LIST_NO_PROMO]}
+LIST_EXCL = 98                    # AKCIJA IZSLĒGT: info slot (a) + reorder_1 (b) + cold B2B leads (c) + quiet never-buyers (d)
+CAMPAIGN_LISTS = {"listIds": [LIST_ALL], "exclusionListIds": [LIST_SUPPRESSION, LIST_EN, LIST_EE, LIST_NO_PROMO, LIST_EXCL]}
 REGION_GCS = "gs://jaunais-za-aizv04022026-brevo-history/_akcija/region_{week}.html"
 GREEN = "#12603f"
 
@@ -100,14 +101,19 @@ s AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.email
 bs AS (SELECT LOWER(TRIM(email)) AS email, LOGICAL_OR(email_blocklisted OR NOT email_subscribed) AS blocked
        FROM `{P}.business_marts.brevo_contacts_snapshot` GROUP BY 1),
 sg AS (SELECT email, MIN(language) AS language FROM `{M}.edu_segment` GROUP BY 1),
-np AS (SELECT DISTINCT email FROM `{M}.flow_gate_list_members` WHERE list_name = 'NO_PROMO')
+np AS (SELECT DISTINCT email FROM `{M}.flow_gate_list_members` WHERE list_name = 'NO_PROMO'),
+ld AS (SELECT DISTINCT email FROM `{M}.b2b_lead_email` WHERE is_lead),
+qn AS (SELECT DISTINCT email FROM `{M}.quiet_never_buyer`)
 SELECT x.email,
   CASE WHEN x.l4 THEN 'LIST_4_SUPPRESSION' WHEN x.l46 THEN 'EN_LIST' WHEN x.l75 THEN 'EE_LIST'
        WHEN s.email IS NOT NULL THEN 'SUPPRESSED' WHEN IFNULL(bs.blocked, FALSE) THEN 'BREVO_BLOCKLISTED'
        WHEN IFNULL(sg.language, 'lv') != 'lv' THEN 'NOT_LV'
        WHEN np.email IS NOT NULL THEN 'NO_PROMO'
+       WHEN ld.email IS NOT NULL THEN 'COLD_B2B_LEAD'
+       WHEN qn.email IS NOT NULL THEN 'QUIET_NEVER_BUYER'
        ELSE 'IN' END AS gate
 FROM x LEFT JOIN s USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN np USING (email)
+  LEFT JOIN ld USING (email) LEFT JOIN qn USING (email)
 WHERE x.l3"""
 
 
@@ -120,6 +126,8 @@ def shadow(query, put, day=None) -> dict:
         res.update({"blocks": [{"title": b["title"], "goods": len(b["items"])} for b in wk["blocks"]],
                     "region_bytes": len(region.encode()), "region_sha256": hashlib.sha256(region.encode()).hexdigest()[:12],
                     "region_gcs": put(REGION_GCS.format(week=wk["week_id"]), region)})
+    import block_gate as BG
+    res["ak_h1"] = BG.ak_h1(query, wk["send_date"], wk["week_id"]) or "OK"   # 236 may go only on "OK" (AK-H1)
     funnel = {}
     for r in query(AUDIENCE_SQL):
         funnel[r["gate"]] = funnel.get(r["gate"], 0) + 1

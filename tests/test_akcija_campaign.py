@@ -31,4 +31,4 @@ class Region(unittest.TestCase):
         self.assertIn("WHERE x.l3", s)
         for must in ("email_suppression_all", "'NO_PROMO'", "LIST_4_SUPPRESSION", "EN_LIST", "EE_LIST", "NOT_LV"):
             self.assertIn(must, s)
-        self.assertEqual(C.CAMPAIGN_LISTS, {"listIds": [3], "exclusionListIds": [4, 46, 75, 96]})
+        self.assertEqual(C.CAMPAIGN_LISTS, {"listIds": [3], "exclusionListIds": [4, 46, 75, 96, 98]})

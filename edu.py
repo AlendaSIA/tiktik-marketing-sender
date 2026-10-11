@@ -164,6 +164,8 @@ def edu_all_gate(r: dict) -> str:
         return "EE_LIST"
     if _b(r.get("lead")):
         return "B2B_LEAD"
+    if _b(r.get("quiet_never_buyer")):
+        return "QUIET_NEVER_BUYER"                 # Raivis D19/D20 11.10: never bought and never read -> out
     if not _b(r.get("in_engine")) and _b(r.get("b2b_email")):
         return "B2B_FLOW_BY_EMAIL"                 # the engine holds no person, but the address is a B2B customer's
     if _b(r.get("suppressed")) or reason == "SUPPRESSED":
@@ -794,17 +796,18 @@ b2b AS (SELECT email FROM cls WHERE email LIKE '%@%'
         UNION DISTINCT SELECT ex.email FROM ex JOIN borg USING (org_id)
         UNION DISTINCT SELECT LOWER(TRIM(c.email)) FROM `{P}.paytraq_core.clients` c JOIN bcid ON bcid.cid = CAST(c.client_id AS STRING)
                        WHERE c.email LIKE '%@%'),
+qn AS (SELECT DISTINCT email FROM `{M}.quiet_never_buyer`),
 x AS (SELECT email, LOGICAL_OR(list_id = 3) AS l3, LOGICAL_OR(list_id = 4) AS l4, LOGICAL_OR(list_id = 46) AS l46,
              LOGICAL_OR(list_id = 75) AS l75 FROM bl GROUP BY 1)
 SELECT b.email, IFNULL(x.l3, FALSE) AS l3, IFNULL(x.l4, FALSE) AS l4, IFNULL(x.l46, FALSE) AS l46,
        IFNULL(x.l75, FALSE) AS l75,
-       ld.email IS NOT NULL AS lead, s.email IS NOT NULL AS suppressed, IFNULL(bs.blocked, FALSE) AS blocked,
+       ld.email IS NOT NULL AS lead, qn.email IS NOT NULL AS quiet_never_buyer, s.email IS NOT NULL AS suppressed, IFNULL(bs.blocked, FALSE) AS blocked,
        sg.language, sg.info_track AS track, a.email IS NOT NULL AS in_engine, a.excluded_reason,
        b2b.email IS NOT NULL AS b2b_email,
        COALESCE(a.master_key, i.master_key) AS master_key, lvall.email IS NOT NULL AS in_lv_all
 FROM base b LEFT JOIN x USING (email) LEFT JOIN a USING (email) LEFT JOIN i USING (email) LEFT JOIN s USING (email)
 LEFT JOIN ld USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (email) LEFT JOIN lvall USING (email)
-LEFT JOIN b2b USING (email)"""
+LEFT JOIN b2b USING (email) LEFT JOIN qn USING (email)"""
 
 
 def latest_pick(q, d, code=None):

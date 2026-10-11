@@ -93,13 +93,14 @@ class K3PriceEpisode(unittest.TestCase):
         tmap = {"winback_1": 180, "winback_2": 232, "reorder_1": 179}
         # INTERFACE v2 (MAIN 2026-10-05): the E2 has its OWN id - provisional 9180 from config until MAIN names the
         # real one; the map row wins when it exists; never another letter's template.
-        self.assertEqual(J.plan_template(d, tmap), (9180, None, "config_provisional"))
+        self.assertEqual(J.plan_template(d, tmap), (255, None, "config"))                 # W-E2: 9180 -> 255
         self.assertEqual(J.plan_template(d, {**tmap, "winback_1_e2": 9001}), (9001, None, "map"))
         self.assertEqual(J.plan_template(self.d1, tmap), (180, None, "map"))
         self.assertEqual(J.plan_template(self.d1, {}), (180, None, "config"))
         self.assertIsNone(S.INTERFACE_V1.get("winback_1_e2"))
         self.assertNotEqual(S.INTERFACE_V2["winback_1_e2"], S.INTERFACE_V2["winback_1"])
-        self.assertTrue({S.INTERFACE_V2[e] for e in S.E2_TYPES} <= S.PROVISIONAL_TEMPLATE_IDS)
+        self.assertEqual({S.INTERFACE_V2[e] for e in S.E2_TYPES}, {255, 256, 257})        # W-E2
+        self.assertFalse(S.PROVISIONAL_TEMPLATE_IDS)
 
 
 class K4K5Episodes(unittest.TestCase):

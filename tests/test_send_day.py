@@ -470,3 +470,81 @@ class Outcome(unittest.TestCase):
         self.assertIn("utm_campaign, reason) VALUES", src)
         import send_path
         self.assertIn('"reason": a.get("reason") or None', open(send_path.__file__).read())
+
+
+class BlocksD31(unittest.TestCase):
+    """INTERFACE BLOCKS v1 (MAIN 11.10 17:05 tasks 4a/4b)."""
+    BHTML = "<div>{{ contact.FLOW_HTML|safe }}</div>"
+
+    class QB(Q):
+        def __init__(self, *a, log_exists=True, rows=1, **k):
+            super().__init__(*a, **k)
+            self.log_exists, self.rows = log_exists, rows
+
+        def __call__(self, sql):
+            if "INFORMATION_SCHEMA.TABLES" in sql:
+                self.calls.append(sql)
+                return [{"x": 1}] if self.log_exists else []
+            if "block_push_log" in sql:
+                self.calls.append(sql)
+                return [{"n": self.rows}]
+            return super().__call__(sql)
+
+    def _run(self, attrs, **k):
+        q = self.QB([cand(1)], **k)
+        b = Brevo(attrs=attrs, html=self.BHTML)
+        return day(q, b).run(TUE, caps_override={"reorder_1": 5})["types"][0]
+
+    def test_empty_block_is_not_sent_with_reason(self):
+        t = self._run({"P1_NAME": "Cimdi", "OFFER_RUNG": 0, "FLOW_HTML": ""})
+        self.assertEqual(t["blocks"], ["FLOW_HTML"])
+        self.assertEqual(t["refused"], {"block_empty": 1})
+        self.assertEqual(t["chosen"], 0)
+
+    def test_filled_block_passes_when_push_logged(self):
+        t = self._run({"P1_NAME": "Cimdi", "OFFER_RUNG": 0, "FLOW_HTML": "<table>x</table>"})
+        self.assertEqual(t["chosen"], 1)
+        self.assertTrue(t["type_refusal"].startswith("D1 "))            # only the (expected) track refusal
+
+    def test_no_log_table_or_no_row_holds_the_type(self):
+        import block_gate as BG
+        self.assertIn("does not exist", BG.push_ok(self.QB([], log_exists=False), "2026-10-13", "FLOW_HTML"))
+        self.assertIsNone(BG.push_ok(self.QB([], rows=1), "2026-10-13", "FLOW_HTML"))
+        self.assertIn("no LIVE/OK", BG.push_ok(self.QB([], rows=0), "2026-10-13", "FLOW_HTML"))
+        tracks_on = [{"track": "reorder", "enabled": True, "enabled_by": "Raivis"}]
+        import hashlib
+        appr = [dict(APPR[0], approved_sha256=hashlib.sha256(self.BHTML.encode()).hexdigest())]
+        q = self.QB([cand(1)], log_exists=False, tracks=tracks_on, appr=appr)
+        t = day(q, Brevo(attrs={"FLOW_HTML": "x", "P1_NAME": "Cimdi", "OFFER_RUNG": 0}, html=self.BHTML)).run(
+            TUE, caps_override={"reorder_1": 5})["types"][0]
+        self.assertTrue(t["type_refusal"].startswith("HOLD FLOW_HTML"))
+
+    def test_fields_and_outcome_reason(self):
+        import block_gate as BG
+        self.assertEqual(BG.fields_in("{{ contact.AK_HTML|safe }} {{contact.FLOW_HTML | safe}}"), ["AK_HTML", "FLOW_HTML"])
+        self.assertEqual(BG.fields_in(HTML), [])
+        self.assertEqual(BG.empty_blocks({"FLOW_HTML": "  "}, ["FLOW_HTML"]), ["FLOW_HTML"])
+        plan = [{"master_key": "m1", "email": "a", "email_type": "reorder_1", "planned_send_date": "2026-10-13",
+                 "would_send": True, "reason": "r"}]
+        got = SD.outcome_rows(plan, [{"email_type": "reorder_1", "decisions": {"m1": "block_empty FLOW_HTML"},
+                                      "type_refusal": None}], "2026-10-13", False)
+        self.assertEqual(got[0][5:7], ("MEMBER_REFUSED", "block_empty FLOW_HTML"))
+
+
+class AkH1(unittest.TestCase):
+    def test_gate(self):
+        import block_gate as BG
+
+        def q_of(part, tables=("ak_push_log",), n=1):
+            def q(sql):
+                if "INFORMATION_SCHEMA.PARTITIONS" in sql and sql.startswith("SELECT last_modified_time"):
+                    return [{"t": "2026-10-13 06:00:00"}] if part else []
+                if "INFORMATION_SCHEMA.TABLES" in sql:
+                    return [{"x": 1}] if any(t in sql for t in tables) else []
+                return [{"n": n}]
+            return q
+        self.assertIsNone(BG.ak_h1(q_of(True), "2026-10-13", "2026-W42"))
+        self.assertIn("no akcija_assembled partition", BG.ak_h1(q_of(False), "2026-10-13", "2026-W42"))
+        self.assertIn("neither", BG.ak_h1(q_of(True, tables=()), "2026-10-13", "2026-W42"))
+        self.assertIn("no LIVE/OK", BG.ak_h1(q_of(True, n=0), "2026-10-13", "2026-W42"))
+        self.assertIn("partition_id = '20261013'", BG.assembled_built_at_sql("2026-10-13"))

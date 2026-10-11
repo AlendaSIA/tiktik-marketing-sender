@@ -47,6 +47,35 @@ SENDER_ID = 2
 EXCL_KEY = "AKCIJA_EXCL"
 EXCL_NAME = "AKCIJA IZSLĒGT - info logs + reorder_1 dienā + aukstie B2B (otrdienas roku kampaņai)"
 T_EXCL = f"{M}.akcija_exclusion_members"
+# RAIVIS D19/D20 (11.10 12:59 / 13:01): a contact who NEVER bought (new Paytraq account, old account, paid shop order,
+# engine person with orders) and never READ (no click, no real open - Apple MPP auto-opens do not count) is out of
+# everything the engine builds and out of the Tuesday campaign: exclusion part (d). Readers among never-buyers stay.
+T_QUIET = f"{M}.quiet_never_buyer"
+QUIET_SQL = f"""
+CREATE OR REPLACE TABLE `{T_QUIET}` AS
+WITH r AS (
+  SELECT LOWER(TRIM(email)) AS email, LOGICAL_OR(IFNULL(clicked_links_count, 0) > 0) AS clicked,
+         LOGICAL_OR(IFNULL(total_opens, 0) > IFNULL(apple_mpp_opens, 0)) AS real_open,
+         LOGICAL_OR(IFNULL(apple_mpp_opens, 0) > 0) AS mpp, COUNT(DISTINCT campaign_id) AS letters
+  FROM `{M}.brevo_campaign_recipients_hist` GROUP BY 1),
+ev AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.brevo_events_raw` WHERE event = 'clicks'),
+buy AS (
+  SELECT DISTINCT LOWER(TRIM(e)) AS email FROM `{P}.legacy_paytraq.client_map`,
+         UNNEST(REGEXP_EXTRACT_ALL(IFNULL(emails, ''), r'[^,; ]+@[^,; ]+')) e WHERE docs > 0
+  UNION DISTINCT SELECT DISTINCT LOWER(TRIM(c.email)) FROM `{P}.paytraq_core.clients` c
+         JOIN `{P}.paytraq_core.sales_documents_list` d ON d.client_id = c.client_id
+         WHERE d.document_type = 'sale' AND d.document_status NOT IN ('voided', 'draft') AND c.email LIKE '%@%'
+  UNION DISTINCT SELECT DISTINCT LOWER(TRIM(email)) FROM `{P}.business_marts.mozello_orders`
+         WHERE payment_status = 'paid' AND email LIKE '%@%'
+  UNION DISTINCT SELECT DISTINCT i.email_norm FROM `{P}.business_marts.customer_identity` i
+         JOIN `{P}.business_marts.customer_master` m USING (master_key) WHERE m.orders > 0 AND i.email_norm LIKE '%@%'),
+pop AS (SELECT email FROM r UNION DISTINCT
+        SELECT DISTINCT LOWER(TRIM(email)) FROM `{M}.edu_brevo_list` WHERE list_id = 3)
+SELECT pop.email, IF(IFNULL(r.mpp, FALSE), 'mpp_only', 'nothing') AS why, IFNULL(r.letters, 0) AS letters,
+       CURRENT_TIMESTAMP() AS built_at
+FROM pop LEFT JOIN r USING (email) LEFT JOIN ev USING (email) LEFT JOIN buy USING (email)
+WHERE buy.email IS NULL AND ev.email IS NULL AND NOT IFNULL(r.clicked, FALSE) AND NOT IFNULL(r.real_open, FALSE)
+  AND REGEXP_CONTAINS(pop.email, r'^[-a-z0-9._%+]+@[-a-z0-9.]+[.][a-z]{{2,}}$')"""
 
 
 def sql(name):
@@ -174,7 +203,8 @@ b AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'b_reorder_1' AS why FROM `{M
         AND planned_send_date <= DATE '{send_date}'),
 l3 AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{edu.T_BLIST}` WHERE list_id = 3),
 c AS (SELECT DISTINCT l.email, 'c_cold_b2b_lead' AS why FROM `{edu.T_LEAD}` l JOIN l3 USING (email) WHERE l.is_lead),
-x AS (SELECT * FROM a UNION ALL SELECT * FROM b UNION ALL SELECT * FROM c)
+d AS (SELECT DISTINCT q.email, 'd_quiet_never_buyer' AS why FROM `{T_QUIET}` q JOIN l3 USING (email)),
+x AS (SELECT * FROM a UNION ALL SELECT * FROM b UNION ALL SELECT * FROM c UNION ALL SELECT * FROM d)
 SELECT DATE '{send_date}' AS send_date, email, STRING_AGG(DISTINCT why ORDER BY why) AS why, CURRENT_TIMESTAMP() AS built_at
 FROM x WHERE REGEXP_CONTAINS(email, r'^[-a-z0-9._%+]+@[-a-z0-9.]+[.][a-z]{{2,}}$') GROUP BY email"""
 
@@ -184,6 +214,7 @@ def build_excl(q, send_date: str, refresh_leads=True) -> dict:
     import edu
     if refresh_leads:
         q(edu.LEADS_SQL)
+        q(QUIET_SQL)
     q(f"CREATE TABLE IF NOT EXISTS `{T_EXCL}` (send_date DATE, email STRING, why STRING, built_at TIMESTAMP)")
     q(f"DELETE FROM `{T_EXCL}` WHERE send_date = DATE '{send_date}'")
     q(f"INSERT INTO `{T_EXCL}` (send_date, email, why, built_at) " + excl_sql(send_date))

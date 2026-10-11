@@ -29,8 +29,8 @@ def sent(d, day):
 class Interface(unittest.TestCase):
     def test_v2_is_exactly_the_commanded_letters(self):
         self.assertEqual(S.INTERFACE_V2, {
-            "reorder_1": 179, "winback_1": 180, "winback_1_e2": 9180, "winback_2": 232, "winback_2_e2": 9232,
-            "winback_3": 233, "winback_3_e2": 9233, "lost_quarterly": 234, "active_xsell": 235,
+            "reorder_1": 179, "winback_1": 180, "winback_1_e2": 255, "winback_2": 232, "winback_2_e2": 256,
+            "winback_3": 233, "winback_3_e2": 257, "lost_quarterly": 234, "active_xsell": 235,
             "post_purchase_feedback": 244, "akcija_weekly": 236})
 
     def test_229_is_out_no_mapping_no_track(self):
@@ -269,7 +269,7 @@ class PreSendGates(unittest.TestCase):
         self.assertEqual(G.gates("reorder_1", 0, ctx(r_handles=(), r_cabinet=())), [])
 
     def test_template_provisional_and_not_approved(self):
-        self.assertEqual(G.gates("winback_1_e2", 1, ctx(template_id=9180)), [G.T_PROVISIONAL])
+        self.assertNotIn(G.T_PROVISIONAL, G.gates("winback_1_e2", 1, ctx(template_id=255)))   # W-E2: no provisional ids
         self.assertEqual(G.gates("reorder_1", 0, ctx(template_id=179, template_approved=False)), [G.T_NOT_APPROVED])
 
     def test_empty_ctx_refuses_and_gates_are_named_and_ordered(self):

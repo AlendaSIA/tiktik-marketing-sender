@@ -55,6 +55,7 @@ import time
 import uuid
 import zoneinfo
 
+import block_gate as BG
 import pd_record
 import presend as G
 import send_path as SP
@@ -281,6 +282,13 @@ class Day:
         html = (self.brevo("GET", f"/smtp/templates/{int(template_id)}", None) or {}).get("htmlContent") or ""
         return hashlib.sha256(html.encode("utf-8")).hexdigest()
 
+    def template_html(self, template_id):
+        """The template's htmlContent read from Brevo NOW (D31: which block fields it reads). Cached per run."""
+        c = self.__dict__.setdefault("_html", {})
+        if template_id not in c:
+            c[template_id] = (self.brevo("GET", f"/smtp/templates/{int(template_id)}", None) or {}).get("htmlContent") or ""
+        return c[template_id]
+
     def contact_attrs(self, email):
         try:
             return (self.brevo("GET", f"/contacts/{email}", None) or {}).get("attributes") or {}
@@ -306,7 +314,7 @@ class Day:
                                        f"WHERE LOWER(TRIM(email)) IN ({lst})")}
 
     # -- member gates (L5 L7 L8 L9 L11), on the data date (= the plan's date)
-    def member_refusal_fn(self, et, rung_of, data_date, cands, l11=True):
+    def member_refusal_fn(self, et, rung_of, data_date, cands, l11=True, blocks_needed=()):
         mks = [c["master_key"] for c in cands]
         supp = self.suppressed([c["email"] for c in cands])
         ctx = self.wh.presend_ctx({"email_type": et}, data_date, mks)
@@ -332,11 +340,16 @@ class Day:
             frow = full.get(c["email"])
             if not frow:
                 return "L11_NO_LETTER_FIELDS_ROW"
-            if not l11:
+            if not l11 and not blocks_needed:
                 return None
             attrs = self.contact_attrs(c["email"])
             if attrs is None:
                 return "L11_CONTACT_UNREADABLE"
+            empty = BG.empty_blocks(attrs, blocks_needed)            # D31: an empty block = no letter for them
+            if empty:
+                return "block_empty " + ",".join(empty)
+            if not l11:
+                return None
             diff = attrs_equal(frow, attrs)
             return ("L11_LETTER_FIELDS_NOT_IN_BREVO " + ",".join(diff[:5])) if diff else None
         return refuse
@@ -415,8 +428,15 @@ class Day:
                 self.dash("KĻŪDA", f"Sūtīšanas diena {d}: {et} atteikts - " + "; ".join(d1) + " - nekas nav sūtīts")
         elif cap <= 0:
             res["type_refusal"] = "D3 NO_CAP (0)"
-        refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands) if cands \
-            else (lambda c: None)
+        # D31 (INTERFACE BLOCKS v1): a template that reads a block field goes only with today's LIVE/OK/0 push row
+        blocks_needed = BG.fields_in(self.template_html(tid)) if tid else []
+        res["blocks"] = blocks_needed
+        for b in blocks_needed:
+            why = BG.push_ok(self.q, str(d), b)
+            if why and not res["type_refusal"]:
+                res["type_refusal"] = why
+        refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
+                                        blocks_needed=blocks_needed) if cands else (lambda c: None)
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
         chosen, decisions = select_audience(cands, 0 if (live and res["type_refusal"]) else cap, refuse)

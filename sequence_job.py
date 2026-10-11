@@ -823,7 +823,10 @@ def main():
     for t in (T_PLAN, T_PDW, T_AKCIJA):
         bq.query(f"DELETE FROM `{t}` WHERE plan_date = CURRENT_DATE()").result()
     # the marker of a dash row already posted today survives a re-run (never two dash rows a day)
-    bq.query(f"DELETE FROM `{T_CHECK}` WHERE plan_date = CURRENT_DATE() AND check_name != '_dash_row_posted'").result()
+    # ... and only the planner's OWN rows are replaced: the 08:55 send-time (sendtime_*) and assembly (akcija_asm_*)
+    # rows belong to later steps. Found 11.10: a same-day re-plan (dry chain runs) deleted the 08:55 akcija_asm_* rows.
+    bq.query(f"DELETE FROM `{T_CHECK}` WHERE plan_date = CURRENT_DATE() AND check_name != '_dash_row_posted' "
+             r"AND NOT STARTS_WITH(check_name, 'sendtime_') AND NOT STARTS_WITH(check_name, 'akcija_asm_')").result()
     J = bigquery.LoadJobConfig
     bq.load_table_from_json(states, T_STATE, job_config=J(write_disposition="WRITE_TRUNCATE")).result()
     if pending_rows:

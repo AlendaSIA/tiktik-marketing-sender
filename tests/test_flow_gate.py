@@ -201,3 +201,19 @@ class AkcijaExclusion(unittest.TestCase):
         self.assertEqual(r["list_id"], 501)
         self.assertEqual(b.have[501], {"new@x.lv"})
         self.assertNotIn(FG.EXCL_KEY, FG.LIST_NAMES)        # never synced by the daily 96/97 step
+
+
+class QuietPartD(unittest.TestCase):
+    def test_d_is_in_the_exclusion_and_the_rule_reads_clicks_and_real_opens(self):
+        self.assertIn("'d_quiet_never_buyer'", FG.excl_sql("2026-10-13"))
+        for must in ("total_opens, 0) > IFNULL(apple_mpp_opens", "clicked_links_count", "legacy_paytraq.client_map",
+                     "payment_status = 'paid'", "event = 'clicks'"):
+            self.assertIn(must, FG.QUIET_SQL)
+
+
+class ReplanKeepsLaterRows(unittest.TestCase):
+    def test_planner_deletes_only_its_own_check_rows(self):
+        import os
+        src = open(os.path.join(os.path.dirname(FG.__file__), "sequence_job.py")).read()
+        self.assertIn("NOT STARTS_WITH(check_name, 'akcija_asm_')", src)
+        self.assertIn("NOT STARTS_WITH(check_name, 'sendtime_')", src)

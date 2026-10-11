@@ -64,12 +64,14 @@ XSELL = "active_xsell"
 AKCIJA = "akcija_weekly"
 INTERFACE_V2 = {
     "reorder_1": 179,
-    "winback_1": 180, "winback_1_e2": 9180,
-    "winback_2": 232, "winback_2_e2": 9232,
-    "winback_3": 233, "winback_3_e2": 9233,
+    # W-E2 (MAIN 11.10, identical wording): "Letter types winback_1_e2 / winback_2_e2 / winback_3_e2 change template id
+    # 9180 -> 255, 9232 -> 256, 9233 -> 257. All three stay INACTIVE and their tracks stay OFF until MAIN's go."
+    "winback_1": 180, "winback_1_e2": 255,
+    "winback_2": 232, "winback_2_e2": 256,
+    "winback_3": 233, "winback_3_e2": 257,
     "lost_quarterly": 234, XSELL: 235, PP1: 244, AKCIJA: 236,
 }
-PROVISIONAL_TEMPLATE_IDS = {9180, 9232, 9233}
+PROVISIONAL_TEMPLATE_IDS = frozenset()          # W-E2: the provisional 9180 / 9232 / 9233 are retired
 NEVER_PLANNED = {"welcome_1", "reorder_2", "reorder_3"}
 # CADENCE v1 K3/K7: E1 of rung r = winback_r (180/232/233 are the E1 candidates); E2 = winback_r_e2, whose texts
 # Vēstuļu šabloni is still writing -> no template id exists; the planner must hold them, never fall back.
