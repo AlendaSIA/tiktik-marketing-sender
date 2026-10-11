@@ -367,6 +367,17 @@ class Proof(unittest.TestCase):
         self.assertIn("master_key: TEST:alenda.jurmala@gmail.com", pd.call_args[0][0]["note"])
         self.assertEqual(res["sent"], 1)
 
+    def test_restore_uses_only_the_earliest_runs_before_values(self):
+        q = Q([cand(1)])
+        q.proof_rows = [
+            {"run_id": "r1", "raivis_before": '{"P1_NAME": "Mans"}', "written": '{"P1_NAME": "A", "P2_NAME": "B"}',
+             "recipient": "alenda.jurmala@gmail.com"},
+            {"run_id": "r2", "raivis_before": '{"P1_NAME": "A", "P2_NAME": "B"}',
+             "written": '{"P1_NAME": "C", "P2_NAME": "D", "P3_NAME": "E"}', "recipient": "alenda.jurmala@gmail.com"}]
+        b = Brevo(attrs={})
+        day(q, b, env=LIVE_ENV).proof_restore(["r1", "r2"])
+        self.assertEqual(b.puts[-1][1], {"attributes": {"P1_NAME": "Mans", "P2_NAME": "", "P3_NAME": ""}})
+
     def test_restore_refuses_runs_of_another_recipient(self):
         q = Q([cand(1)])
         q.proof_rows = [{"run_id": "old", "raivis_before": "{}", "written": "{}", "recipient": None}]

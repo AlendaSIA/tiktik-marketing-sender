@@ -560,10 +560,12 @@ class Day:
         other = sorted({(r.get("recipient") or LEGACY_PROOF_RECIPIENT) for r in rows} - {rcpt})
         if other:
             raise SP.SendLocked([("PROOF", f"these runs wrote to {other}, not to the configured {rcpt}")])
-        before, keys = {}, set()
+        # ONLY the earliest run's before-values are the contact's own: a later run's "before" holds what an earlier
+        # proof wrote (measured 2026-10-11: merging them left 27 proof values behind). Every key any run wrote and the
+        # earliest run did not see filled goes back to no value.
+        before = json.loads(rows[0]["raivis_before"] or "{}") if rows else {}
+        keys = set()
         for r in rows:
-            for k, v in json.loads(r["raivis_before"] or "{}").items():
-                before.setdefault(k, v)
             keys |= set(json.loads(r["written"] or "{}"))
         types = self.attr_types()
         # a key with no value before goes back to NO value. Brevo ignores null (measured 2026-10-09: a PUT with null
