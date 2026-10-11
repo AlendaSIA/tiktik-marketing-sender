@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="lv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ contact.UZRUNA | default : 'Sveiki' }}, 4 lietas, ko ne visi zina par tiktik.lv</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f6fb;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">Ātra izsūtīšana, bezmaksas piegāde no 59 €, atpakaļ pieņemam arī atvērtas pakas.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;font-family:'Manrope','Segoe UI',Arial,sans-serif;color:#23303a;">
+
+<tr><td align="center" style="padding:26px 34px 6px;">
+<img src="https://site-944391.mozfiles.com/files/944391/logobox/94817333/logo-default-332f03c83834e77366e4cfe90a1ef087.png" alt="tiktik.lv" width="150" style="display:block;border:0;width:150px;max-width:150px;">
+</td></tr>
+
+
+<tr><td style="padding:18px 34px 0;">
+<div style="font-size:22px;font-weight:800;color:#23303a;">{{ contact.GREETING | default : 'Sveiki!' }}</div>
+</td></tr>
+<tr><td style="padding:14px 34px 0;">
+<h1 style="margin:0;font-size:19px;font-weight:800;color:#17578c;line-height:1.3;">4 lietas, ko ne visi zina par tiktik.lv</h1>
+</td></tr>
+<tr><td style="padding:12px 34px 4px;font-size:15px;line-height:1.65;color:#23303a;">
+<p style="margin:0 0 12px;">{% if "Sveika," in contact.GREETING %}Tu jau esi pie mums iepirkusies{% else %}{% if "Sveiks," in contact.GREETING %}Tu jau esi pie mums iepircies{% else %}Tu jau pie mums iepērcies{% endif %}{% endif %}, bet dažas lietas, kā pamanām, klienti uzzina tikai pēc laika. Tāpēc īsi:</p>
+<p style="margin:0 0 12px;">&#128666; <strong>Ātri.</strong> Pasūtījumu nododam kurjeram 1–2 darba dienu laikā pēc apmaksas, un kurjers to parasti piegādā jau nākamajā darba dienā.</p>
+<p style="margin:0 0 12px;">&#128230; <strong>No 59 € piegāde bez maksas</strong> uz Venipak pakomātu.</p>
+<p style="margin:0 0 12px;">&#8617;&#65039; <strong>Ja kaut kas neder — ņemam atpakaļ.</strong> Arī atvērtas pakas, un atpakaļsūtīšanu apmaksājam mēs. Mums svarīgāk, lai {% if "Sveika," in contact.GREETING %}tu esi apmierināta{% else %}{% if "Sveiks," in contact.GREETING %}tu esi apmierināts{% else %}tev viss der{% endif %}{% endif %}.</p>
+<p style="margin:0 0 16px;">&#128222; <strong>Dzīvs cilvēks otrā galā.</strong> Darba dienās 10:00–18:00 pa tālruni +371 22 811 277 vai vienkārši atbildot uz šo vēstuli.</p>
+<p style="margin:0 0 6px;"><strong>Pērc regulāri?</strong></p>
+<p style="margin:0 0 4px;">Ja tās pašas preces vajag ik pēc laika — piemēram, cimdus katru mēnesi — uzraksti mums. Sarunāsim, kā tev ērtāk: atgādināsim laikā vai sagatavosim pasūtījumu, ko tev atliek tikai apstiprināt.</p>
+</td></tr>
+<tr><td align="center" style="padding:16px 28px 0;">
+<a href="mailto:info@tiktik.lv?subject=Regul%C4%81rie%20pirkumi" style="display:inline-block;background:#1f6fb2;color:#ffffff;text-decoration:none;font-weight:800;padding:16px 40px;border-radius:11px;font-size:16px;">Uzrakstīt mums &rarr;</a>
+</td></tr>
+
+<tr><td style="padding:20px 34px 0;">
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:0;">Paldies, ka esi ar mums.</p>
+<p style="font-size:15px;line-height:1.6;color:#23303a;margin:12px 0 0;">tiktik.lv komanda</p>
+</td></tr>
+
+<tr><td style="padding:22px 34px 28px;">
+<div style="border-top:1px solid #e6eaf2;padding-top:16px;font-size:12px;line-height:1.6;color:#9aa4b2;text-align:center;">
+SIA Alenda &middot; tiktik.lv &middot; info@tiktik.lv<br>
+Šo e-pastu saņem, jo iepirkies tiktik.lv veikalā.<br>
+<a href="{{ unsubscribe }}" style="color:#9aa4b2;">Atteikties no šiem e-pastiem</a>
+</div>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
