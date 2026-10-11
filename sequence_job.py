@@ -25,6 +25,7 @@ import pd_record
 import pd_target
 import pd_writeback as W
 import json
+import flow_gate as FG
 import presend as G
 import selfcheck as SC
 import sequence as S
@@ -423,16 +424,23 @@ def akcija_week(today):
     return tue, f"{iso[0]}-W{iso[1]:02d}", tue, tue + dt.timedelta(days=6)
 
 
-def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week, is_buyer=True):
-    """'Personal letter OR akcija, never both' (one sales letter per week). plan = that contact's plan row."""
+def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week, is_buyer=True, gate=None):
+    """'Personal letter OR akcija, never both' (one sales letter per week). plan = that contact's plan row.
+    gate = the master's FLOW GATE (flow_gate_master): MANUAL_P11 -> out (and out of the educational audience too);
+    B2B_EDU_ONLY -> out of akcija with a reason the educational audience lets through; G4 / B2B_* via S.gate_flow."""
     tue, label, mon, sun = week
     reason = None
+    gflow = S.gate_flow(flow, gate)
     if suppressed:
         reason = "SUPPRESSED"
     elif stage in (None, "blocked"):
         reason = "BLOCKED_OR_UNKNOWN"
-    elif flow in S.FLOW_HOLD:
-        reason = S.FLOW_HOLD[flow]
+    elif gate == S.GATE_MANUAL:
+        reason = S.HOLD_MANUAL
+    elif gflow == "B2B" and gate == S.GATE_EDU:
+        reason = S.REASON_B2B_EDU
+    elif gflow in S.FLOW_HOLD:
+        reason = S.FLOW_HOLD[gflow]
     elif is_en:
         reason = S.HOLD_EN                       # G-EN: no LV letter, the LV akcija included
     elif not is_buyer:
@@ -566,6 +574,12 @@ def main():
     flow_src = dict(next(iter(bq.query(FLOW_SRC_SQL).result())))
     if not flow_src["classification_b2b"]:
         raise RuntimeError("B2B guard source empty - refusing to plan without the B2B / LEAD guard")
+    # FLOW GATE LIVE (MAIN 11.10 11:33 F4): rebuilt here, fresh, before any letter is decided (BigQuery only)
+    fg_q = lambda sql: [dict(r) for r in bq.query(sql).result()]  # noqa: E731
+    fg_counts = FG.build_core(fg_q)
+    gates = {r["master_key"]: r["gate"] for r in fg_q(FG.GATE_SQL)}
+    FG.check_core(fg_counts, gates)                  # empty / B2B-less gate table = refuse to plan, never "no gate"
+    log.info("FLOW_GATE %s", fg_counts)
     pp_orders = {r["master_key"]: dict(r["o"]) for r in bq.query(PP_SQL).result()}
     moz_paid = {r["master_key"]: r["paid_on"] for r in bq.query(MOZ_PAID_SQL).result()}
     sl_last_ok, sl_unreviewed = sendlog_facts(bq)
@@ -655,7 +669,8 @@ def main():
                                                        _d(moz_paid.get(mk))),
                                    _d(f["last_order"]))                      # K6 / L5 on orders the stage cannot see yet
         flow, flow_from = flows.get(mk, (None, None))
-        hold = S.flow_hold(d.next_email_type, hold, flow)                            # B2B / LEAD guard
+        gate = gates.get(mk)
+        hold = S.flow_gate_hold(d.next_email_type, hold, flow, gate)                 # MANUAL / B2B / LEAD (flow gate)
         hold = S.language_hold(d.next_email_type, hold, mk in en_masters)            # G-EN
         hold = S.buyer_hold(d.next_email_type, hold, mk in buyers)                   # PA1
         hold = S.rule8a_hold(d.next_email_type, hold,
@@ -726,7 +741,7 @@ def main():
             "planned_at": now})
         akcija_rows.append({"plan_date": today.isoformat(), "run_id": RUN_ID, "planned_at": now, **akcija_row(
             mk=mk, email=f["send_email"], stage=f["lifecycle_stage"], suppressed=bool(f["suppressed"]), flow=flow,
-            is_en=mk in en_masters, plan=plan_rows[-1], week=week, is_buyer=mk in buyers)})
+            is_en=mk in en_masters, plan=plan_rows[-1], week=week, is_buyer=mk in buyers, gate=gate)})
         if would and d.next_due_on and (d.next_due_on - today).days < HORIZON_DAYS:
             tg = resolve_now(f["send_email"], mk)
             wb = W.plan(tg, email=f["send_email"], person_name=f["full_name"], org_name=f["client_name"],
@@ -822,7 +837,8 @@ def main():
     sup = next(iter(bq.query(SUPPRESSED_CHECK_SQL, job_config=bigquery.QueryJobConfig(query_parameters=[
         bigquery.ScalarQueryParameter("run", "STRING", RUN_ID)])).result()))
     prev_counts = [dict(r) for r in bq.query(PREV_COUNTS_SQL).result()]
-    checks = SC.run(plan_rows, akcija_rows, prev_counts=prev_counts, flows={k: v[0] for k, v in flows.items()},
+    eff_flows = {k: S.gate_flow(flows.get(k, (None, None))[0], gates.get(k)) for k in set(flows) | set(gates)}
+    checks = SC.run(plan_rows, akcija_rows, prev_counts=prev_counts, flows=eff_flows, gates=gates,
                     en_masters=en_masters, suppressed_send_address=sup["send_address"],
                     suppressed_any_address=sup["any_address"], today=today,
                     ages_h={"rung_price": age_h(rung_built_at), "lqxs_price": age_h(lqxs_built_at),

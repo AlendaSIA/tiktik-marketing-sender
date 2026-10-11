@@ -118,7 +118,7 @@ def presend_lock(*, campaign, send_date, audience, presend_ctx) -> list:
 
 
 def person_lock(*, send_date, audience, person_blocks) -> list:
-    """L9. person_blocks(send_date, master_keys) -> {master_key: 'B2B_FLOW' | 'LEAD_FLOW' | 'EN_PENDING'}."""
+    """L9. person_blocks(send_date, master_keys) -> {master_key: 'MANUAL_P11' | 'B2B_FLOW' | 'LEAD_FLOW' | 'EN_PENDING' ...}."""
     blocked = person_blocks(send_date, [a["master_key"] for a in audience])
     bad = {}
     for a in audience:

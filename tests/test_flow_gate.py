@@ -103,3 +103,75 @@ class FlowGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveGate(unittest.TestCase):
+    """MAIN 11.10 11:33 F2/F4: the gate in the live plan (sequence.py), the akcija audience and L9."""
+
+    def setUp(self):
+        import sequence as S
+        self.S = S
+
+    def test_manual_gets_only_order_letters(self):
+        S = self.S
+        for et in ("reorder_1", "winback_1", "lost_quarterly", S.XSELL):
+            self.assertEqual(S.flow_gate_hold(et, None, None, "MANUAL_P11"), "MANUAL_P11")
+            self.assertEqual(S.flow_gate_hold(et, None, "B2B", "MANUAL_P11"), "MANUAL_P11")
+        self.assertIsNone(S.flow_gate_hold(S.PP1, None, None, "MANUAL_P11"))
+        self.assertIsNone(S.flow_gate_hold(S.PP1, None, "B2B", "MANUAL_P11"))      # F2 even for a B2B manual
+        self.assertEqual(S.flow_gate_hold(S.PP1, "SUPPRESSED", "B2B", "MANUAL_P11"), "SUPPRESSED")
+        self.assertEqual(S.language_hold("reorder_1", "MANUAL_P11", True), "MANUAL_P11")
+        self.assertEqual(S.buyer_hold("reorder_1", "MANUAL_P11", False), "MANUAL_P11")
+
+    def test_b2b_by_either_source_and_g4_moves_to_shop(self):
+        S = self.S
+        for g in ("B2B_EDU_ONLY", "B2B_NO_SHOP", "B2B_SHOP_UNKNOWN"):
+            self.assertEqual(S.flow_gate_hold("reorder_1", None, None, g), "B2B_FLOW")
+            self.assertEqual(S.flow_gate_hold(S.PP1, None, None, g), "B2B_FLOW")       # unchanged for B2B
+        self.assertEqual(S.flow_gate_hold("reorder_1", None, "B2B", "NONE"), "B2B_FLOW")
+        self.assertEqual(S.flow_gate_hold("reorder_1", None, "B2B", None), "B2B_FLOW")
+        self.assertEqual(S.flow_gate_hold("reorder_1", None, "LEAD", "NONE"), "LEAD_FLOW")
+        self.assertIsNone(S.flow_gate_hold("reorder_1", None, "B2B", "MANUAL_TO_SHOP"))
+        self.assertIsNone(S.flow_gate_hold("reorder_1", None, None, "NONE"))
+
+    def test_akcija_reasons(self):
+        import sequence_job as J
+        wk = J.akcija_week(__import__("datetime").date(2026, 10, 12))
+        row = lambda **k: J.akcija_row(mk="m", email="a@b.lv", stage="active", suppressed=False, is_en=False,  # noqa: E731
+                                       plan=None, week=wk, **k)
+        self.assertEqual(row(flow=None, gate="MANUAL_P11")["excluded_reason"], "MANUAL_P11")
+        self.assertEqual(row(flow="B2B", gate="B2B_EDU_ONLY")["excluded_reason"], "B2B_EDU_ONLY")
+        self.assertEqual(row(flow=None, gate="B2B_EDU_ONLY")["excluded_reason"], "B2B_EDU_ONLY")
+        self.assertEqual(row(flow=None, gate="B2B_NO_SHOP")["excluded_reason"], "B2B_FLOW")
+        self.assertEqual(row(flow="B2B", gate=None)["excluded_reason"], "B2B_FLOW")
+        self.assertTrue(row(flow="B2B", gate="MANUAL_TO_SHOP")["in_audience"])
+        self.assertTrue(row(flow=None, gate="NONE")["in_audience"])
+
+    def test_send_time_l9(self):
+        S = self.S
+        self.assertEqual(S.gate_person_block("reorder_1", None, "MANUAL_P11"), "MANUAL_P11")
+        self.assertIsNone(S.gate_person_block(S.PP1, "B2B", "MANUAL_P11"))
+        self.assertEqual(S.gate_person_block("reorder_1", None, "B2B_EDU_ONLY"), "B2B_FLOW")
+        self.assertIsNone(S.gate_person_block("reorder_1", "B2B", "MANUAL_TO_SHOP"))
+        self.assertIsNone(S.gate_person_block("reorder_1", None, "NONE"))
+
+    def test_core_refuses_an_empty_gate(self):
+        with self.assertRaises(RuntimeError):
+            FG.check_core({}, {})
+        with self.assertRaises(RuntimeError):
+            FG.check_core({"NONE": 5}, {"m": "NONE"})
+        FG.check_core({"B2B_NO_SHOP": 1}, {"m": "B2B_NO_SHOP"})
+        q = Q()
+        FG.build_core(q)
+        self.assertTrue(q.calls[0].startswith("-- FLOW GATE"))
+        self.assertTrue(any("flow_gate_list_members" in c for c in q.calls))
+        self.assertFalse(any("flow_gate_plan_shadow" in c for c in q.calls))
+
+    def test_planner_wiring_and_no_brevo_import(self):
+        import os
+        src = open(os.path.join(os.path.dirname(FG.__file__), "sequence_job.py")).read()
+        self.assertLess(src.index("FG.build_core("), src.index("for f in facts:"))
+        self.assertLess(src.index("FG.check_core("), src.index("for f in facts:"))
+        fsrc = open(FG.__file__).read().split("def _prod")[0]
+        for bad in ("\nimport campaign", "\nimport brevo", "\nfrom campaign", "\nimport send_day"):
+            self.assertNotIn(bad, fsrc)

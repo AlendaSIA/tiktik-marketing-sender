@@ -82,7 +82,7 @@ class Rules(unittest.TestCase):
         self.assertNotIn("info_track", everyone)
         for sql in (glove, everyone):                                                   # the same gates in both
             for must in ("language = 'lv'", "email_suppression_all", "shadow_akcija_audience",
-                         "excluded_reason = 'PERSONAL_LETTER_THIS_WEEK' THEN 'IN'", "ELSE a.excluded_reason END"):
+                         "excluded_reason IN ('PERSONAL_LETTER_THIS_WEEK', 'B2B_EDU_ONLY') THEN 'IN'", "ELSE a.excluded_reason END"):
                 self.assertIn(must, sql)
 
     def test_unknown_rule_never_builds_an_audience(self):
@@ -216,7 +216,10 @@ class EduAllRule(unittest.TestCase):
                                                  suppressed="false", blocked="false")), "IN")
 
     def test_who_enters(self):
-        self.assertEqual(E.EDU_ALL_PASS_REASONS, (None, "", "PERSONAL_LETTER_THIS_WEEK"))
+        self.assertEqual(E.EDU_ALL_PASS_REASONS, (None, "", "PERSONAL_LETTER_THIS_WEEK", "B2B_EDU_ONLY"))
+        self.assertEqual(E.edu_all_gate({"excluded_reason": "B2B_EDU_ONLY", "in_engine": True, "b2b_email": True}), "IN")
+        self.assertEqual(E.edu_all_gate({"excluded_reason": "MANUAL_P11", "in_engine": True}), "MANUAL_P11")
+        self.assertEqual(E.edu_all_gate({"excluded_reason": "B2B_FLOW", "in_engine": True}), "B2B_FLOW")
         for kw in ({}, {"language": "lv"}, {"excluded_reason": "PERSONAL_LETTER_THIS_WEEK", "in_engine": True},
                    {"l3": False, "in_lv_all": True}, {"in_engine": True, "b2b_email": True}):
             self.assertEqual(E.edu_all_gate(self.row("x@y.lv", **kw)), "IN", kw)

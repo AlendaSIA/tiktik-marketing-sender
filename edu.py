@@ -87,12 +87,14 @@ SIGNUP_LISTS = (55, 56, 57, 58)                                      # questionn
 # Raivis 2026-10-07 15:55: "b2b klientiem un ne veikala pircējiem nesūtam, sūtam veikala pircējiem, anketu pildītājiem
 # un vecajiem klientiem". So the ONLY engine reason that does not keep a person out is the personal letter of the
 # week; B2B_FLOW, NOT_TIKTIK_BUYER and any reason nobody has seen yet keep the address out.
-EDU_ALL_PASS_REASONS = (None, "", "PERSONAL_LETTER_THIS_WEEK")
+# FLOW GATE (Raivis D1 11.10, MAIN 11:33 F4): a B2B client WITH shop purchases gets educational letters only -> his
+# akcija reason B2B_EDU_ONLY lets him into the educational audience; MANUAL_P11 and B2B_FLOW keep him out.
+EDU_ALL_PASS_REASONS = (None, "", "PERSONAL_LETTER_THIS_WEEK", "B2B_EDU_ONLY")
 F309_KEY, F309_B2B = "036687330a0d889920e7166c94392ca6238c0115", "716"   # Pipedrive org field "MKT Plūsma" = B2B
 SUPPRESSION_LIST, EN_LIST, EE_LIST = 4, 46, 75  # Brevo lists: tiktik_suppression, EN_foreign_LANG_en, EE_klienti_tel372
 EXCLUDE_LISTS = (SUPPRESSION_LIST, EN_LIST, EE_LIST)
 TEST_EXCLUDE_LISTS = (EN_LIST, EE_LIST)         # the test address itself sits in list 4 (measured 2026-10-07)
-PASS_REASONS = (None, "PERSONAL_LETTER_THIS_WEEK")   # own weekly slot: a personal sales letter does not exclude
+PASS_REASONS = (None, "PERSONAL_LETTER_THIS_WEEK", "B2B_EDU_ONLY")   # own weekly slot; B2B_EDU_ONLY = flow gate D1
 SEGMENT_MAX_AGE_H, GO_MAX_AGE_MIN, ADD_CHUNK, ADD_FAIL_PCT, DEFAULT_TOLERANCE_PCT = 26, 60, 150, 2.0, 10
 DASH = "Company-Alenda-SIA/shared-platforms/_agent-sessions.md"
 AGENT = "tiktik.lv › Marketing · Sūtīšanas dzinējs (izglītojošā vēstule)"
@@ -646,7 +648,7 @@ s AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.email
 SELECT g.email, a.master_key,
        CASE WHEN a.email IS NULL THEN 'NOT_IN_ENGINE_POPULATION'
             WHEN s.email IS NOT NULL THEN 'SUPPRESSED'
-            WHEN a.excluded_reason IS NULL OR a.excluded_reason = 'PERSONAL_LETTER_THIS_WEEK' THEN 'IN'
+            WHEN a.excluded_reason IS NULL OR a.excluded_reason IN ('PERSONAL_LETTER_THIS_WEEK', 'B2B_EDU_ONLY') THEN 'IN'
             ELSE a.excluded_reason END AS gate
 FROM g LEFT JOIN a USING (email) LEFT JOIN s USING (email)"""
 

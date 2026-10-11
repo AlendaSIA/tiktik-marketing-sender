@@ -19,6 +19,10 @@ WEEKLY AKCIJA 236 PER CONTACT (contract WA8 v1.4, Sūtīšanas dzinējs 6, 2026-
 bundle's akcija_assembly.py assembles today's letters into mkt_control.akcija_assembled and writes akcija_asm_* rows
 to shadow_selfcheck. SHADOW ONLY - it delivers nothing. A hard akcija_asm_* row posts the dash row like any other.
 Never twice a day: the posted row is remembered in mkt_control.shadow_selfcheck (check_name '_dash_row_posted').
+FLOW GATE LISTS (MAIN 11.10 11:33 F3): first, every day, the same job starts Cloud Run job tiktik-send-day with
+"flow_gate.py --lists" (the only identity holding the Brevo key): Brevo lists 96 NO_PROMO / 97 NO_ANY are synced to
+mkt_control.flow_gate_list_members, which the 08:05 planner rebuilt (flow_gate.build_core). Contacts only, nothing
+is sent. A failed sync posts the dash row like any other failure.
 It sends nothing to anyone and touches nothing but that marker row and the dash file. DRY=1 prints the row only.
 """
 import datetime as dt
@@ -58,6 +62,20 @@ def assembly(dry):
     return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
 
 
+def flow_gate_lists(dry):
+    """F3: sync the two Brevo exclusion lists through the send job (it holds the Brevo key). -> None or why not."""
+    if dry:
+        print("DRY flow_gate --lists skipped"); return None
+    try:
+        r = subprocess.run(["gcloud", "run", "jobs", "execute", "tiktik-send-day", "--region", "europe-west1",
+                            "--project", P, "--wait", "--args=^@^flow_gate.py@--lists"],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print("FLOW_GATE_LISTS exit", r.returncode, (r.stderr or r.stdout)[-300:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
 def bq(sql):
     out = subprocess.check_output(["bq", "--project_id", P, "query", "--nouse_legacy_sql", "--format=json",
                                    "--max_rows=200", sql], stderr=subprocess.DEVNULL).decode()
@@ -67,6 +85,7 @@ def bq(sql):
 def main():
     runs = bq(f"SELECT run_id FROM `{P}.mkt_control.shadow_run_report` WHERE plan_date = CURRENT_DATE() "
               f"ORDER BY finished_at DESC LIMIT 1")
+    fg_err = flow_gate_lists(os.environ.get("DRY") == "1") if runs else None   # members come from today's plan run
     if bq(f"SELECT 1 FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
           f"AND check_name = '_dash_row_posted' LIMIT 1"):
         print("already posted today"); return 0
@@ -88,6 +107,9 @@ def main():
                     + " — nekas nav sūtīts; detaļas mkt_control.shadow_selfcheck")
         elif st_err:
             what = ("Sūtīšanas brīža vārtu pārbaude (L8/L9/L10) neizdevās — " + st_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
+        elif fg_err:
+            what = ("Plūsmas vārtu Brevo sarakstu (96/97) atjaunošana neizdevās — " + fg_err.replace("\n", " ")
                     + " — nekas nav sūtīts")
         elif asm_err:
             what = ("Nedēļas akcijas (236) salikšana ēnā neizdevās — " + asm_err.replace("\n", " ")

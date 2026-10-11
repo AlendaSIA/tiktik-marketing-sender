@@ -183,8 +183,8 @@ class FlowGuard(unittest.TestCase):
         # documented order: flow first, then language; either way the contact gets nothing
         J = _job()
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
-        self.assertLess(src.index("S.flow_hold("), src.index("S.language_hold(d.next_email_type, hold"))
-        self.assertLess(src.index("S.flow_hold("), src.index("would = hold is None"))
+        self.assertLess(src.index("S.flow_gate_hold("), src.index("S.language_hold(d.next_email_type, hold"))
+        self.assertLess(src.index("S.flow_gate_hold("), src.index("would = hold is None"))
         self.assertIn("b2b_shop_flow_classification_v2", J.FLOW_SQL)
         self.assertIn("flow IN ('B2B', 'LEAD')", J.FLOW_SQL)
         self.assertIn(J.F309_KEY, J.FLOW_SQL)
@@ -212,7 +212,7 @@ class OrderAfterLastPurchase(unittest.TestCase):
     def test_job_wires_it_before_would_send(self):
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
         self.assertLess(src.index("S.recent_order_hold("), src.index("would = hold is None"))
-        self.assertLess(src.index("S.recent_order_hold("), src.index("S.flow_hold("))
+        self.assertLess(src.index("S.recent_order_hold("), src.index("S.flow_gate_hold("))
 
 
 def ctx(**k):

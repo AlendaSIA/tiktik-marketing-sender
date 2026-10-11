@@ -127,6 +127,7 @@ class Fake:
                              {"template_id": "244", "email_type": S.PP1}, {"template_id": "179", "email_type": "reorder_1"}]),
             J.FLOW_SQL: o.get("flows", [{"master_key": "m10", "flow": "B2B", "src": "pd_field_309"}]),
             J.EN_SQL: [{"master_key": "m11"}],
+            J.FG.GATE_SQL: o.get("gates", [{"master_key": "m1", "gate": "NONE"}]),
             J.BUYER_SQL: o.get("buyers", [{"master_key": p["master_key"]} for p in PLAN]),
             J.KAB_SQL: o.get("kab", [{"email": p["email"]} for p in PLAN]),
         }

@@ -187,12 +187,16 @@ QUALIFY ROW_NUMBER() OVER (PARTITION BY email ORDER BY built_at DESC) = 1""")
             "offered": {r["master_key"]: frozenset(r.get("handles") or ()) for r in rows(J.OFFERED_SQL)},
             "approved": {(_i(r["template_id"]), r["email_type"]) for r in rows(J.APPROVAL_SQL)},
             "flows": {r["master_key"]: r["flow"] for r in rows(J.FLOW_SQL)},
+            # FLOW GATE (MAIN 11.10 F4): the gate the 08:05 planner built; an empty table = no answer (below)
+            "gates": {r["master_key"]: r["gate"] for r in rows(J.FG.GATE_SQL)},
             "en": {r["master_key"] for r in rows(J.EN_SQL)},
             "buyers": {r["master_key"] for r in rows(J.BUYER_SQL)},          # PA1
             "kab": {r["email"] for r in rows(J.KAB_SQL)},                    # PA2
         }
         if not sh["buyers"] or not sh["kab"]:
             raise RuntimeError("PA1 / PA2 source is empty - refusing to answer the person re-check")
+        if not sh["gates"]:
+            raise RuntimeError("FLOW GATE source is empty - refusing to answer the person re-check")
         if not sh["flows"] or not sh["en"]:      # as the planner: no guard source = no answer, never "nobody blocked"
             raise RuntimeError("B2B / LEAD or G-EN guard source is empty - refusing to answer the person re-check")
         self._c["shared"] = sh
@@ -290,14 +294,15 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
 
     # ---- L9
     def person_blocks(self, send_date, master_keys, now=None) -> dict:
-        """B2B / LEAD, G-EN, PA1 NOT_TIKTIK_BUYER (person-level) and PA2 RULE8A_NO_CABINET_PRODUCTS (for the letter the
+        """FLOW GATE MANUAL_P11 / B2B / LEAD, G-EN, PA1 NOT_TIKTIK_BUYER (person-level) and PA2 RULE8A_NO_CABINET_PRODUCTS (for the letter the
         plan holds for that person), in the planner's order and from the planner's sources."""
         sh, out = self._shared(now or dt.datetime.now(dt.timezone.utc)), {}
         plan = self.plan_rows(send_date)
         for mk in master_keys:
             flow, p = sh["flows"].get(mk), plan.get(mk)
-            if flow in S.FLOW_HOLD:
-                out[mk] = S.FLOW_HOLD[flow]
+            gb = S.gate_person_block(p and p["email_type"], flow, sh["gates"].get(mk))
+            if gb:
+                out[mk] = gb
             elif mk in sh["en"]:
                 out[mk] = S.HOLD_EN
             elif mk not in sh["buyers"]:

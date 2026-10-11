@@ -1,4 +1,6 @@
-"""FLOW GATE (MAIN 11.10, Raivis D1-D7) - SHADOW. Who the engine may write to, by flow:
+"""FLOW GATE (MAIN 11.10, Raivis D1-D7). LIVE IN THE PLAN since MAIN 11.10 11:33 F4 (sending stays DRY): the 08:05
+planner calls build_core() and holds by gate (sequence.flow_gate_hold); the 08:55 job refreshes the Brevo lists (F3).
+Who the engine may write to, by flow:
 
   G1 MANUAL_P11      a PD org/person of the master has an OPEN deal in pipeline 11 "B2B pardosana" -> no commercial,
                      no educational letter (order letters untouched - they are not in the engine's plan)
@@ -14,7 +16,8 @@ Commands (one per run):
   --lists                              Brevo: create (once) and sync the two lists to flow_gate_list_members
   --notify-test                        ONE internal test mail to PROOF_RECIPIENT (MAIN 11.10: build + prove)
   --notify                             mails for un-notified G4 events - refuses unless FLOW_GATE_NOTIFY=on
-Nothing here opens L1 or touches send_plan, tracks, caps or a customer's state.
+Nothing here opens L1 or touches send_plan, tracks, caps or a customer's state. Module level imports nothing that can
+reach Brevo (the planner imports this module; Brevo is reached only through _prod() in the command-line path).
 """
 from __future__ import annotations
 
@@ -53,9 +56,36 @@ def _s(v):
 
 
 # ------------------------------------------------------------------------------------------------ BigQuery
+GATE_SQL = f"SELECT master_key, gate FROM `{T_MASTER}`"
+
+
+def build_core(q) -> dict:
+    """LIVE (MAIN 11.10 F3/F4): the daily planner (08:05) calls this first - gate table, G4 events, list members.
+    BigQuery only; nothing here can reach Brevo or Pipedrive. -> {gate: n}."""
+    q(sql("flow_gate_master.sql"))
+    _events(q)
+    q(sql("flow_gate_lists.sql"))
+    return {r["gate"]: int(r["n"]) for r in q(f"SELECT gate, COUNT(*) AS n FROM `{T_MASTER}` GROUP BY 1")}
+
+
+def check_core(counts, gates):
+    """Refuse to plan on a gate table that cannot be right: empty, or without a single B2B master."""
+    if not gates or not any(counts.get(g) for g in ("B2B_EDU_ONLY", "B2B_NO_SHOP", "B2B_SHOP_UNKNOWN")):
+        raise RuntimeError(f"FLOW GATE source empty or without B2B ({counts}) - refusing to plan without the gate")
+
+
 def build(q, run_id=DEFAULT_RUN) -> dict:
     q(sql("flow_gate_master.sql"))
     q(sql("flow_gate_plan_shadow.sql").replace("@run_id", _s(run_id)))
+    _events(q)
+    q(sql("flow_gate_lists.sql"))
+    gates = {r["gate"]: r["n"] for r in q(f"SELECT gate, COUNT(*) AS n FROM `{T_MASTER}` GROUP BY 1")}
+    drops = {r["k"]: r["n"] for r in q(f"SELECT IFNULL(gate_drop, 'KEPT') AS k, COUNT(*) AS n FROM `{T_PLAN}` GROUP BY 1")}
+    lists = {r["list_name"]: r["n"] for r in q(f"SELECT list_name, COUNT(*) AS n FROM `{T_MEMBERS}` GROUP BY 1")}
+    return {"run_id": run_id, "gates": gates, "plan_rows": drops, "list_members": lists}
+
+
+def _events(q):
     q(DDL_EVENTS)
     q(f"""INSERT INTO `{T_EVENTS}` (event, master_key, order_id, order_at, p11_deals, manual_since, detected_at)
 SELECT 'MANUAL_TO_SHOP', g.master_key, g.shop_after_manual.order_id, g.shop_after_manual.created_at, g.p11_deals,
@@ -64,11 +94,6 @@ FROM `{T_MASTER}` g
 WHERE g.gate = 'MANUAL_TO_SHOP'
   AND NOT EXISTS (SELECT 1 FROM `{T_EVENTS}` e WHERE e.master_key = g.master_key
                   AND e.order_id = g.shop_after_manual.order_id)""")
-    q(sql("flow_gate_lists.sql"))
-    gates = {r["gate"]: r["n"] for r in q(f"SELECT gate, COUNT(*) AS n FROM `{T_MASTER}` GROUP BY 1")}
-    drops = {r["k"]: r["n"] for r in q(f"SELECT IFNULL(gate_drop, 'KEPT') AS k, COUNT(*) AS n FROM `{T_PLAN}` GROUP BY 1")}
-    lists = {r["list_name"]: r["n"] for r in q(f"SELECT list_name, COUNT(*) AS n FROM `{T_MEMBERS}` GROUP BY 1")}
-    return {"run_id": run_id, "gates": gates, "plan_rows": drops, "list_members": lists}
 
 
 # ------------------------------------------------------------------------------------------------ Brevo

@@ -126,6 +126,51 @@ def flow_hold(email_type, hold, flow):
     return hold
 
 
+# FLOW GATE LIVE (MAIN 11.10 11:33 F1-F5, D2 approved; Raivis D1-D7 11.10). One gate per master, built by the
+# planner itself at the start of each run into mkt_control.flow_gate_master (sql/flow_gate_master.sql):
+#   MANUAL_P11      open deal in Pipedrive pipeline 11 -> NO engine letter except ORDER letters (F2: confirmation,
+#                   shipping, order_recovery, post_purchase_feedback - of these only 244 is planned here); not in the
+#                   akcija audience, not in the educational audience
+#   MANUAL_TO_SHOP  G4: a manual client paid a shop order after the deal opened -> shop flow (no manual, no B2B hold)
+#   B2B_EDU_ONLY    B2B with >= 1 paid shop order -> educational letters only (akcija reason B2B_EDU_ONLY, which the
+#                   educational audience lets through); every personal sales letter stays held B2B_FLOW as before
+#   B2B_NO_SHOP / B2B_SHOP_UNKNOWN -> nothing (B2B_FLOW, as before)
+# B2B = the planner's own FLOW_SQL says B2B OR the gate says B2B_*; either is enough (never loosened).
+HOLD_MANUAL = "MANUAL_P11"
+GATE_MANUAL, GATE_TO_SHOP, GATE_EDU = "MANUAL_P11", "MANUAL_TO_SHOP", "B2B_EDU_ONLY"
+GATE_B2B = {"B2B_EDU_ONLY", "B2B_NO_SHOP", "B2B_SHOP_UNKNOWN"}
+REASON_B2B_EDU = "B2B_EDU_ONLY"                    # akcija excluded_reason: out of akcija, IN the educational audience
+MANUAL_ORDER_TYPES = {PP1}                         # F2: order letters a manual client still gets (planned ones)
+PERSON_HOLDS.add(HOLD_MANUAL)
+EN_KEEPS.add(HOLD_MANUAL)
+
+
+def gate_flow(flow, gate):
+    """The flow the B2B / LEAD guard sees after the gate: G4 clears B2B (moved to Veikals), a B2B gate adds it."""
+    if gate == GATE_TO_SHOP:
+        return None if flow == "B2B" else flow
+    if gate in GATE_B2B:
+        return "B2B"
+    return flow
+
+
+def flow_gate_hold(email_type, hold, flow, gate):
+    """MANUAL first (a manual client is manual whatever his flow), then the B2B / LEAD guard on gate_flow()."""
+    if gate == GATE_MANUAL:
+        if hold in FLOW_KEEPS or email_type in MANUAL_ORDER_TYPES:
+            return hold
+        return HOLD_MANUAL
+    return flow_hold(email_type, hold, gate_flow(flow, gate))
+
+
+def gate_person_block(email_type, flow, gate):
+    """L9 at send time, in the planner's order: -> MANUAL_P11 | B2B_FLOW | LEAD_FLOW | None."""
+    if gate == GATE_MANUAL:
+        return None if email_type in MANUAL_ORDER_TYPES else HOLD_MANUAL
+    f = gate_flow(flow, gate)
+    return FLOW_HOLD.get(f)
+
+
 # G15 / G15.1 INTERFACE (MAIN 2026-10-01 16:35, contract sha 95d569b22d9a): a price letter (E1 or E2, any rung) whose
 # goods carry 0 priced slots is NOT sent -> NO_PRICED_SLOTS; a contact due a price letter with no row in
 # mkt_control.shadow_rung_goods_slots (latest run of the plan_date) -> NO_SLOT_ROW, never a fallback. A row built for

@@ -31,7 +31,8 @@ def _row(name, level, ok, value, detail=None):
 
 
 def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_send_address, suppressed_any_address,
-        today, ages_h, no_letter_fields, map_disagreements, buyers=None, assignment=None, priced_type=None) -> list:
+        today, ages_h, no_letter_fields, map_disagreements, buyers=None, assignment=None, priced_type=None,
+        gates=None) -> list:
     ws = [r for r in plan_rows if r["would_send"]]
     wd = [r for r in plan_rows if r.get("would_deliver")]
     out = []
@@ -39,8 +40,18 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     out.append(_row("suppressed_among_would_send", "hard", suppressed_send_address == 0 and suppressed_any_address == 0,
                     suppressed_any_address, {"send_address": suppressed_send_address,
                                              "any_address_of_the_person": suppressed_any_address}))
-    bad = [r["master_key"] for r in ws if flows.get(r["master_key"]) in S.FLOW_HOLD]
+    gates = gates or {}
+    manual = {k for k, g in gates.items() if g == S.GATE_MANUAL}
+    bad = [r["master_key"] for r in ws if flows.get(r["master_key"]) in S.FLOW_HOLD and r["master_key"] not in manual]
     out.append(_row("b2b_lead_among_would_send", "hard", not bad, len(bad), bad[:20]))
+    if gates:                                                                  # FLOW GATE (MAIN 11.10 F2/F4)
+        bad = [r["master_key"] for r in ws if r["master_key"] in manual and r.get("email_type") not in S.MANUAL_ORDER_TYPES]
+        out.append(_row("manual_p11_among_would_send", "hard", not bad, len(bad), bad[:20]))
+        bad = [r["master_key"] for r in akcija_rows if r.get("in_audience") and (
+            r["master_key"] in manual or flows.get(r["master_key"]) in S.FLOW_HOLD)]
+        out.append(_row("manual_or_b2b_in_akcija_audience", "hard", not bad, len(bad), bad[:20]))
+        out.append(_row("flow_gate_masters", "info", True, len(gates), count_by(
+            [{"gate": g} for g in gates.values()], ("gate",))))
     bad = [r["master_key"] for r in ws if r["master_key"] in en_masters]
     out.append(_row("en_among_would_send", "hard", not bad, len(bad), bad[:20]))
     if buyers is not None:                                                     # PA1
