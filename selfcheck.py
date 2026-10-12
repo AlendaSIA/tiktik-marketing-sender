@@ -85,7 +85,7 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     for a in akcija_rows:                     # in the akcija audience AND a deliverable sales letter the same week
         p = plan_by.get(a["master_key"])
         if a["in_audience"] and p and p.get("would_deliver") and p["email_type"] in S.SALES_TYPES \
-                and p.get("planned_send_date") and _same_week(p["planned_send_date"], a["send_date"]):
+                and p.get("planned_send_date") and _in_akcija_window(p["planned_send_date"], a["send_date"]):
             both.append(a["master_key"])
     out.append(_row("personal_letter_and_akcija_same_week", "hard", not both, len(both), both[:20]))
     # ---- warn: inputs and seams
@@ -126,6 +126,14 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
     out.append(_row("diff_per_person", "info", True, sum(r.get("diff_vs_prev") != "same" for r in plan_rows),
                     count_by(plan_rows, ("diff_vs_prev",))))
     return out
+
+
+def _in_akcija_window(planned: str, send_tuesday: str) -> bool:
+    """WA11 (contract 1f5092311c3e), the same window as sequence_job.akcija_week(): the send Tuesday through the
+    following Monday, both included. (The ISO-week test flagged a Monday letter before a Tuesday akcija - MAIN 2 12.10.)"""
+    import datetime as dt
+    p, t = dt.date.fromisoformat(str(planned)[:10]), dt.date.fromisoformat(str(send_tuesday)[:10])
+    return t <= p <= t + dt.timedelta(days=6)
 
 
 def _same_week(a: str, b: str) -> bool:

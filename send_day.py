@@ -169,6 +169,20 @@ def cap_of(cap_rows, email_type, d) -> int:
     return max(0, int(max(rows, key=lambda r: str(r.get("set_at") or ""))["cap"] or 0))
 
 
+FUSE_FACTOR = 1.05        # MAIN 2 12.10 15:40 (MAIN 11.10 12:45 item 3): send_cap fuse = that day's plan + 5 %
+
+
+def fuse_cap(planned: int) -> int:
+    """The D3 fuse for an enabled type: ceil(plan x 1.05) - a guard against a runaway, never a throttle (Raivis
+    12.10 14:05: no volume spreading). 469 -> 493."""
+    import math
+    return int(math.ceil(round(planned * FUSE_FACTOR, 6)))
+
+
+def track_enabled(track, track_rows) -> bool:
+    return any(r.get("track") == track and r.get("enabled") and r.get("enabled_by") == "Raivis" for r in track_rows)
+
+
 def standing_approval(email_type, track, template_id, track_rows, approval_rows, live_hash) -> list:
     """D1 -> [] when the type may go, else the reasons (all of them). live_hash(template_id) -> hex | raises."""
     out = []
@@ -426,11 +440,21 @@ class Day:
         if not is_send_day(et, d):
             res["type_refusal"] = f"NOT_A_SEND_DAY ({d:%a}; {et} goes on weekday {send_weekday(et)})"
             return self._record(res, d, live, [], {})
-        cap = int((caps_override or {}).get(et, 0)) if caps_override is not None else cap_of(cap_rows, et, d)
-        res["cap"] = cap
-        d1 = standing_approval(et, track, tid, track_rows, appr_rows, self.live_hash)
         cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
         res["candidates"] = len(cands)
+        cap = int((caps_override or {}).get(et, 0)) if caps_override is not None else cap_of(cap_rows, et, d)
+        res["cap_source"] = "override" if caps_override is not None else ("send_cap" if cap else None)
+        has_row = any(str(r["send_date"]) == str(d) and r["email_type"] == et for r in cap_rows)
+        if caps_override is None and not has_row and track_enabled(track, track_rows):
+            # FUSE (MAIN 2 12.10 15:40): an ENABLED type with no send_cap row gets plan + 5 %, written on a LIVE run;
+            # a type that is not enabled keeps "no row = 0 = nothing goes" (D3 as built)
+            cap = fuse_cap(len(cands))
+            res["cap_source"] = "fuse_plan_plus_5pct"
+            if live:
+                self.q(f"INSERT INTO `{T_CAP}` VALUES (DATE '{d}', {_s(et)}, {cap}, 'engine_fuse', CURRENT_TIMESTAMP(), "
+                       f"{_s(f'plan {len(cands)} + 5 % (MAIN 2 12.10 15:40)')})")
+        res["cap"] = cap
+        d1 = standing_approval(et, track, tid, track_rows, appr_rows, self.live_hash)
         if d1:
             res["type_refusal"] = "D1 " + "; ".join(d1)
             if live and cap > 0:

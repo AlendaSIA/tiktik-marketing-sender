@@ -213,11 +213,30 @@ class DryRun(unittest.TestCase):
         self.assertEqual(len(q.inserts(SD.T_AUD)), 1)
         self.assertEqual(q.inserts(SD.T_LOG), [])
 
-    def test_dry_without_cap_row_is_d3_zero(self):
-        q = Q([cand(1)])
+    def test_dry_without_cap_row_not_enabled_is_d3_zero(self):
+        q = Q([cand(1)], tracks=[])
         t = day(q).run(TUE)["types"][0]
-        self.assertEqual(t["type_refusal"], "D3 NO_CAP (0)")
-        self.assertEqual(t["chosen"], 0)
+        self.assertTrue(t["type_refusal"].startswith("D1"))
+        self.assertEqual((t["cap"], t["cap_source"]), (0, None))              # no row + not enabled = nothing goes
+
+    def test_fuse_enabled_type_without_row_gets_plan_plus_5pct(self):        # MAIN 2 12.10 15:40
+        self.assertEqual((SD.fuse_cap(469), SD.fuse_cap(20), SD.fuse_cap(0), SD.fuse_cap(100)), (493, 21, 0, 105))
+        q = Q([cand(i) for i in range(1, 4)])
+        t = day(q).run(TUE)["types"][0]
+        self.assertEqual((t["cap"], t["cap_source"], t["chosen"]), (4, "fuse_plan_plus_5pct", 3))
+        self.assertEqual(q.inserts(SD.T_CAP), [])                             # DRY writes no cap row
+        q2 = Q([cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 0, "set_at": "x"}])
+        t2 = day(q2).run(TUE)["types"][0]                                     # an explicit row (even 0) wins
+        self.assertEqual((t2["cap"], t2["cap_source"], t2["type_refusal"]), (0, None, "D3 NO_CAP (0)"))
+
+    def test_fuse_is_written_on_a_live_run(self):
+        q, b = Q([cand(1), cand(2)]), Brevo()
+        with mock.patch.object(SD.time, "sleep"):
+            t = day(q, b, env=LIVE_ENV, pd=mock.Mock(return_value=5)).run(TUE)["types"][0]
+        rows = q.inserts(SD.T_CAP)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("'reorder_1', 3, 'engine_fuse'", rows[0])
+        self.assertEqual((t["cap"], t["chosen"]), (3, 2))
 
     def test_not_a_send_day(self):
         q = Q([cand(1)])

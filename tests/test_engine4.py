@@ -376,7 +376,13 @@ class SelfCheck(unittest.TestCase):
         ok = plan("a", "winback_1", False, "EN_PENDING", offer_rung=1, offer_valid_until="2026-10-18")
         self.assertEqual(self.failed(self.run_([ok])), [])
         akc = [{"master_key": "a", "in_audience": True, "send_date": "2026-10-06", "excluded_reason": None}]
-        self.assertEqual(self.failed(self.run_([plan("a")], akc)), ["personal_letter_and_akcija_same_week"])
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-08")], akc)),
+                         ["personal_letter_and_akcija_same_week"])
+        # WA11 window = send Tuesday .. next Monday: the Monday BEFORE (same ISO week) and the next Monday
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-05")], akc)), [])
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-12")], akc)),
+                         ["personal_letter_and_akcija_same_week"])
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-13")], akc)), [])
 
     def test_a_gated_letter_is_not_a_hard_failure(self):
         out = self.run_([plan("a", "winback_1", gate="NO_PRICE_ROW", offer_rung=1, offer_valid_until="2026-10-18")])
