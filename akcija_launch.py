@@ -66,13 +66,15 @@ def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, s
     import campaign as CAMP
     payload = {"name": name[:200], "subject": subject_prefix + b["subject"], "sender": {"id": CAMP.SENDER_ID},
                "replyTo": "info@tiktik.lv", "htmlContent": b["html"],
-               "recipients": {"listIds": [int(list_id)], "exclusionListIds": [int(x) for x in exclusions]},
+               "recipients": ({"listIds": [int(list_id)], "exclusionListIds": [int(x) for x in exclusions]}
+                              if exclusions else {"listIds": [int(list_id)]}),        # Brevo refuses an empty list
                "inlineImageActivation": False}
     cid = int(brevo("POST", "/emailCampaigns", payload)["id"])
     hits = CAMP.placeholder_hits(payload["subject"], None, b["html"])
     got = brevo("GET", f"/emailCampaigns/{cid}", None) or {}
     rec = got.get("recipients") or {}
-    if sorted(rec.get("lists") or []) != [int(list_id)] or sorted(rec.get("exclusionLists") or []) != sorted(exclusions):
+    if sorted(rec.get("lists") or []) != [int(list_id)] or \
+            sorted(rec.get("exclusionLists") or []) != sorted(int(x) for x in exclusions):
         return {"campaign_id": cid, "sent": False, "refused": f"RECIPIENTS_READ_BACK_DIFFER {rec}"}
     brevo("POST", f"/emailCampaigns/{cid}/sendNow", None)
     return {"campaign_id": cid, "sent": True, "unfilled_marks_in_frame_text": hits[:5]}
