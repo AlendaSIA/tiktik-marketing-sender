@@ -13,8 +13,9 @@ What it does, once a day AFTER the 08:55 send-time run (WA8 v1.4: at send time, 
               week = that maker by rnk_maker, MIX week = every maker by rnk; at most 12 (WA7b).
   blocks    = mkt_control.akcija_week_blocks rows of the maker (owner MAIN; no rows = DEFAULT auto_cat:1..4, top 4),
               filled from the week's goods on sale, ordered by buyers (WA7d v1.5: COUNT(DISTINCT master_key) per
-              handle in business_marts.customer_bought_products), after the drop of WA6 (a good SHOWN in the own
-              block is not shown below; a block is filled from the next goods; a block with 0 goods is not shown).
+              handle in business_marts.customer_bought_products). D38 (Raivis 07.10, MAIN 2 12.10 13:25): the
+              blocks are the SAME for everyone - an own good MAY be shown again below (the WA6 drop against the own
+              block is removed); a good is still never repeated between two blocks; a block with 0 goods is not shown.
   result    = mkt_control.akcija_assembled, grain (plan_date, email), params = uzruna, h1, lidz, main_url, own[],
               blocks[] (WA8 v1.4).
 
@@ -238,7 +239,7 @@ def own_block(rows, maker: str) -> list:
 
 def assemble_one(aud, own_rows, greeting, *, maker, week_id, end, rules, pools, cat_names, plan_date) -> dict:
     own = own_block(own_rows, maker)
-    blocks = pick_blocks(rules, pools, {r["handle"] for r in own}, cat_names)
+    blocks = pick_blocks(rules, pools, set(), cat_names)          # D38: no drop against the own block
     uz = uzruna(greeting)
     subj = subject(uz, own[0]["name_short"] if own else None, maker)
     params = {"uzruna": uz, "h1": h1(maker), "lidz": lidz(end), "main_url": MAIN_URL,
@@ -273,8 +274,10 @@ def checks(rows, *, audience_n, week_id, maker, rules_source, goods_n, goods_dro
     p95 = sizes[min(len(sizes) - 1, int(len(sizes) * 0.95))]
     twice, cab, bang = [], [], []
     for r in rows:
-        urls = [i["url"] for i in r["params"]["own"]] + [i["url"] for b in r["params"]["blocks"] for i in b["items"]]
-        if len(urls) != len(set(urls)):
+        own_u = [i["url"] for i in r["params"]["own"]]
+        blk_u = [i["url"] for b in r["params"]["blocks"] for i in b["items"]]
+        urls = own_u + blk_u
+        if len(own_u) != len(set(own_u)) or len(blk_u) != len(set(blk_u)):     # D38: own vs blocks may repeat
             twice.append(r["email"])
         if any(CABINET.search(u or "") for u in urls + [r["params"]["main_url"]]):
             cab.append(r["email"])

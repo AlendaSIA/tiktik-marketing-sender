@@ -127,9 +127,9 @@ class Assembly(unittest.TestCase):
         self.assertEqual(set(x["params"]["blocks"][0]), {"title", "items"})
         self.assertEqual(x["params"]["own"], [{"name": "N a", "img": "i", "url": "https://www.tiktik.lv/veikals/item/a/",
                                                "sale": "1,49 €", "std": "1,99 €"}])
-        self.assertEqual((x["n_own"], x["n_blocks"], x["n_block_goods"], x["status"]), (1, 3, 5, "OK"))
+        self.assertEqual((x["n_own"], x["n_blocks"], x["n_block_goods"], x["status"]), (1, 3, 6, "OK"))  # D38: a too
         self.assertEqual(x["subject"], "Inga, s a un citas ZARYS preces šonedēļ par īpaši labām cenām")
-        self.assertNotIn("a", [i["name"] for b in x["params"]["blocks"] for i in b["items"]])
+        self.assertIn("a", [i["name"] for b in x["params"]["blocks"] for i in b["items"]])  # D38: own good shown again below
 
     def test_cap_12_and_the_13th_may_appear_below(self):
         rows = [own(f"o{i}", rm=i) for i in range(1, 14)] + [own("a", rm=14)]
@@ -245,8 +245,16 @@ class MixList(unittest.TestCase):
         blocks = A.pick_blocks(rules, A.build_pools(rules, goods, []), set(), {})
         self.assertEqual([(b["title"], [i["handle"] for i in b["items"]]) for b in blocks],
                          [("Cimdi", ["z"]), ("Papīrs", ["a", "b"])])      # leaf shop categories do not matter
-        blocks = A.pick_blocks(rules, A.build_pools(rules, goods, []), {"a"}, {})
-        self.assertEqual([i["handle"] for i in blocks[1]["items"]], ["b"])   # WA6: own good not repeated below
+
+    def test_d38_own_good_is_shown_again_in_the_blocks_and_blocks_are_the_same_for_everyone(self):
+        with_own = Assembly().one([own("a", rm=1), own("c", rm=2)])
+        without = Assembly().one([])
+        self.assertEqual(with_own["params"]["blocks"], without["params"]["blocks"])
+        self.assertIn("a", [i["url"].split("/")[-2] for b in with_own["params"]["blocks"] for i in b["items"]])
+        self.assertEqual((with_own["_short"], with_own["_missing"]), (without["_short"], without["_missing"]))
+        chk = {c["check_name"]: c["ok"] for c in A.checks([with_own], audience_n=1, week_id="w", maker="m",
+               rules_source="d", goods_n=6, goods_dropped={}, audience_week="w")}
+        self.assertTrue(chk["akcija_asm_good_shown_twice"])                  # own + block repeat is allowed
 
 
 if __name__ == "__main__":
