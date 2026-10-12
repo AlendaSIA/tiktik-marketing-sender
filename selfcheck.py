@@ -130,10 +130,12 @@ def run(plan_rows, akcija_rows, *, prev_counts, flows, en_masters, suppressed_se
 
 def _in_akcija_window(planned: str, send_tuesday: str) -> bool:
     """WA11 (contract 1f5092311c3e), the same window as sequence_job.akcija_week(): the send Tuesday through the
-    following Monday, both included. (The ISO-week test flagged a Monday letter before a Tuesday akcija - MAIN 2 12.10.)"""
+    following Monday, both included. (The ISO-week test flagged a Monday letter before a Tuesday akcija - MAIN 2 12.10.)
+    D46 (MAIN 2 12.10 18:35): commercial letters go only on Tuesdays - a letter planned on or before the send
+    Tuesday goes THAT Tuesday (12.10 -> 13.10), one planned after it goes a later Tuesday."""
     import datetime as dt
     p, t = dt.date.fromisoformat(str(planned)[:10]), dt.date.fromisoformat(str(send_tuesday)[:10])
-    return t <= p <= t + dt.timedelta(days=6)
+    return p <= t
 
 
 def _same_week(a: str, b: str) -> bool:

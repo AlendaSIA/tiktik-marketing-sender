@@ -188,19 +188,46 @@ def sync_one(brevo, lid, want, chunk=150) -> dict:
             "members_now": len(now)}
 
 
-def excl_sql(send_date: str) -> str:
-    """Members of the Tuesday exclusion list for send_date. (b) = the latest plan run's reorder_1 would-send rows due
-    on or before the date (before 08:05 that is the day before's plan - a superset is the safe side)."""
+# RAIVIS D46 (12.10 18:28, MAIN 2 18:35): every marketing-eligible LV contact gets EXACTLY ONE Tuesday letter - the
+# personal letter if it really goes, otherwise 236. Part (b) is therefore EVERY personal letter of the day, read from
+# the send day's own per-row outcome (mkt_control.send_outcome), never from the plan: a letter held at send time (L7,
+# L8, block_empty, any hold) is not in (b), so that contact gets 236 the same day. No send-day run for the date ->
+# no list (fail closed: a 236 on a guessed list would double or drop people).
+# forecast=True (DRY / the morning preview only): a type refused ONLY by D1 (track not yet enabled) counts as going.
+
+
+class NoSendDayRun(RuntimeError):
+    pass
+
+
+def personal_sql(send_date: str, forecast: bool = False, outcome_table: str | None = None) -> str:
+    """Emails that receive a personal letter on send_date. LIVE: every row SENT by any send-day run of that date (a
+    letter that went, went - several runs per day add up). FORECAST: the latest run of the date, DRY_WOULD_SEND plus a
+    type refused ONLY by D1. One row per email (letters = how many personal types that email got - must be 1)."""
+    t = outcome_table or f"{M}.send_outcome"
+    if forecast:
+        where = (f"run_id = (SELECT run_id FROM `{t}` WHERE send_date = DATE '{send_date}' GROUP BY run_id "
+                 f"ORDER BY MAX(created_at) DESC LIMIT 1) AND (outcome IN ('SENT', 'DRY_WOULD_SEND') "
+                 f"OR (outcome = 'TYPE_REFUSED' AND STARTS_WITH(IFNULL(reason, ''), 'D1 TRACK')))")
+    else:
+        where = f"send_date = DATE '{send_date}' AND outcome = 'SENT'"
+    return f"""
+SELECT LOWER(TRIM(email)) AS email, MIN(email_type) AS email_type, COUNT(DISTINCT email_type) AS letters,
+       ANY_VALUE(run_id) AS send_run
+FROM `{t}` WHERE {where} AND email LIKE '%@%'
+GROUP BY 1"""
+
+
+def excl_sql(send_date: str, forecast: bool = False, outcome_table: str | None = None) -> str:
+    """Members of the Tuesday exclusion list for send_date. (b) = D46: every personal letter of that send day
+    (personal_sql), all types - not only reorder_1 (the 18:20 defect: winback_1 / active_xsell / 244 got 236 too)."""
     import edu
     return f"""
 WITH it AS (SELECT MAX(plan_date) AS pd FROM `{M}.info_track_shadow` WHERE slot_date = DATE '{send_date}'),
 a AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'a_info_slot' AS why FROM `{M}.info_track_shadow`
       WHERE slot_date = DATE '{send_date}' AND plan_date = (SELECT pd FROM it) AND slot = 'INFO'),
-run AS (SELECT run_id FROM `{M}.shadow_send_plan` WHERE plan_date <= DATE '{send_date}'
-        GROUP BY run_id, plan_date ORDER BY plan_date DESC, MAX(planned_at) DESC LIMIT 1),
-b AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'b_reorder_1' AS why FROM `{M}.shadow_send_plan`
-      WHERE run_id = (SELECT run_id FROM run) AND email_type = 'reorder_1' AND would_send
-        AND planned_send_date <= DATE '{send_date}'),
+pl AS ({personal_sql(send_date, forecast, outcome_table)}),
+b AS (SELECT email, CONCAT('b_personal_', email_type) AS why FROM pl),
 l3 AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{edu.T_BLIST}` WHERE list_id = 3),
 c AS (SELECT DISTINCT l.email, 'c_cold_b2b_lead' AS why FROM `{edu.T_LEAD}` l JOIN l3 USING (email) WHERE l.is_lead),
 d AS (SELECT DISTINCT q.email, 'd_quiet_never_buyer' AS why FROM `{T_QUIET}` q JOIN l3 USING (email)),
@@ -209,15 +236,21 @@ SELECT DATE '{send_date}' AS send_date, email, STRING_AGG(DISTINCT why ORDER BY 
 FROM x WHERE REGEXP_CONTAINS(email, r'^[-a-z0-9._%+]+@[-a-z0-9.]+[.][a-z]{{2,}}$') GROUP BY email"""
 
 
-def build_excl(q, send_date: str, refresh_leads=True) -> dict:
-    """BigQuery only. The cold-lead table is rebuilt with edu's own text first (it is otherwise only rebuilt by hand)."""
+def build_excl(q, send_date: str, refresh_leads=True, forecast=False, table=None, outcome_table=None) -> dict:
+    """BigQuery only. The cold-lead table is rebuilt with edu's own text first (it is otherwise only rebuilt by hand).
+    D46: refuses (NoSendDayRun) when the send day has not run for send_date - the list is built from its outcome."""
     import edu
+    ot = outcome_table or f"{M}.send_outcome"
+    if not q(f"SELECT 1 AS x FROM `{ot}` WHERE send_date = DATE '{send_date}' LIMIT 1"):
+        raise NoSendDayRun(f"D46: no send-day run for {send_date} in {ot} - list 98 is built only from the send "
+                           f"day's outcome; no 236 before it")
+    T_EXCL = table or globals()["T_EXCL"]
     if refresh_leads:
         q(edu.LEADS_SQL)
         q(QUIET_SQL)
     q(f"CREATE TABLE IF NOT EXISTS `{T_EXCL}` (send_date DATE, email STRING, why STRING, built_at TIMESTAMP)")
     q(f"DELETE FROM `{T_EXCL}` WHERE send_date = DATE '{send_date}'")
-    q(f"INSERT INTO `{T_EXCL}` (send_date, email, why, built_at) " + excl_sql(send_date))
+    q(f"INSERT INTO `{T_EXCL}` (send_date, email, why, built_at) " + excl_sql(send_date, forecast, outcome_table))
     split = {r["k"]: int(r["n"]) for r in q(
         f"SELECT k, COUNT(*) AS n FROM `{T_EXCL}`, UNNEST(SPLIT(why, ',')) k WHERE send_date = DATE '{send_date}' "
         f"GROUP BY k")}
@@ -285,8 +318,11 @@ def main(argv) -> int:
         day = __import__("datetime").date.fromisoformat(d) if d else None
         it = info_track.shadow(iq, ins, weeks=4)
         res = {"info_track": {k: v for k, v in it.items() if k != "catalog"},
-               "build": build_excl(q, (day or __import__("datetime").date.fromisoformat(min(it["per_tuesday"]))).isoformat())}
-        res["brevo"] = sync_excl(q, brevo, res["build"]["send_date"]) if "build-only" not in args else None
+               "build": build_excl(q, (day or __import__("datetime").date.fromisoformat(min(it["per_tuesday"]))).isoformat(),
+                                   forecast="forecast" in args)}
+        # a forecast list is never pushed to Brevo: only the send day's real outcome may fill list 98
+        res["brevo"] = sync_excl(q, brevo, res["build"]["send_date"]) \
+            if "build-only" not in args and "forecast" not in args else None
     elif "notify-test" in args:
         res = notify_test(brevo, os.environ)
     elif "notify" in args:

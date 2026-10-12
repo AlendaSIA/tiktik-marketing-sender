@@ -101,7 +101,7 @@ def main():
     runs = bq(f"SELECT run_id FROM `{P}.mkt_control.shadow_run_report` WHERE plan_date = CURRENT_DATE() "
               f"ORDER BY finished_at DESC LIMIT 1")
     fg_err = flow_gate_lists(os.environ.get("DRY") == "1") if runs else None   # members come from today's plan run
-    fg_err = fg_err or (akcija_excl(os.environ.get("DRY") == "1") if runs else None)
+    # D46: list 98 is refilled by the send day itself from its outcome (send_day.refill_akcija_excl), not here
     if bq(f"SELECT 1 FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
           f"AND check_name = '_dash_row_posted' LIMIT 1"):
         print("already posted today"); return 0

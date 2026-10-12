@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 
 import flow_gate as FG
 
@@ -182,10 +183,20 @@ class AkcijaExclusion(unittest.TestCase):
 
     def test_sql_has_the_three_sources_for_the_date(self):
         s = FG.excl_sql("2026-10-13")
-        for must in ("slot = 'INFO'", "slot_date = DATE '2026-10-13'", "email_type = 'reorder_1' AND would_send",
-                     "planned_send_date <= DATE '2026-10-13'", "l.is_lead", "list_id = 3",
-                     "'a_info_slot'", "'b_reorder_1'", "'c_cold_b2b_lead'"):
+        for must in ("slot = 'INFO'", "slot_date = DATE '2026-10-13'", "send_outcome", "outcome = 'SENT'",
+                     "send_date = DATE '2026-10-13'", "l.is_lead", "list_id = 3",
+                     "'a_info_slot'", "'b_personal_'", "'c_cold_b2b_lead'"):
             self.assertIn(must, s)
+        self.assertNotIn("email_type = 'reorder_1'", s)                       # D46: every personal type, not one
+        f = FG.excl_sql("2026-10-13", forecast=True)
+        self.assertIn("'D1 TRACK'", f)
+        self.assertIn("DRY_WOULD_SEND", f)
+
+    def test_d46_no_send_day_run_no_list(self):
+        q = mock.Mock(return_value=[])
+        with self.assertRaises(FG.NoSendDayRun):
+            FG.build_excl(q, "2026-10-13")
+        self.assertEqual(q.call_count, 1)                                   # nothing built, nothing deleted
 
     def test_sync_one_adds_and_removes_and_the_list_is_its_own(self):
         b = Brevo(have={501: {"old@x.lv"}})

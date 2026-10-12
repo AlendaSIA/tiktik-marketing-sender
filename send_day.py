@@ -409,9 +409,28 @@ class Day:
             res = self._one(t, send_date, plan_date, plan_run, live, cap_rows, track_rows, appr_rows, caps_override)
             result["types"].append(res)
         result["outcome"] = self.write_outcome(plan_run, send_date, live, result["types"], only)
+        result["akcija_excl"] = self.refill_akcija_excl(send_date, live)
         for t in result["types"]:
             t.pop("decisions", None)
         return result
+
+    def refill_akcija_excl(self, d, live) -> dict:
+        """RAIVIS D46 (MAIN 2 12.10 18:35): right after the personal letters of a Tuesday, list 98 (AKCIJA IZSLĒGT) is
+        rebuilt from THIS day's outcome - every personal letter that went (all types), plus (a)/(c)/(d) - so the
+        hand-sent 236 reaches exactly the eligible LV contacts without a personal letter; a letter held at send time
+        leaves its contact in the 236 audience. LIVE pushes to Brevo; DRY builds the forecast table only."""
+        if d.weekday() != TUESDAY:
+            return {"skipped": "not a Tuesday"}
+        import flow_gate as FG
+        try:
+            b = FG.build_excl(self.q, d.isoformat(), forecast=not live)
+            b["brevo"] = FG.sync_excl(self.q, self.brevo, d.isoformat()) if live else None
+            return b
+        except Exception as e:  # noqa: BLE001 - reported, and the 236 checklist refuses without a fresh list
+            msg = f"{type(e).__name__}: {str(e)[:300]}"
+            if live:
+                self.dash("KĻŪDA", f"Akcijas 236 izslēgšanas saraksts (98) {d} nav atjaunots - {msg} - 236 nesūtīt")
+            return {"error": msg}
 
     def write_outcome(self, plan_run, d, live, types, only=None) -> dict:
         plan = [dict(r) for r in self.q(

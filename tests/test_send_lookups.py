@@ -317,12 +317,12 @@ class EvaluateAndRecord(unittest.TestCase):
         wh = WH(q)
         personal = L.personal_this_week(wh, D, NOW)
         self.assertEqual(personal, {"m1": ("winback_1", "2026-10-06", "deliverable_today"),
-                                    "m6": (S.XSELL, "2026-10-06", "deliverable_today"),
-                                    "m9": ("reorder_1", "2026-10-07", "planned_later_this_week")})
+                                    "m6": (S.XSELL, "2026-10-06", "deliverable_today")})
+        # D46: m9 (due Wed 07.10) goes the NEXT Tuesday 13.10 - this Tuesday it gets the akcija (exactly one letter)
         plan = L.akcija_plan(wh, D, personal)
         self.assertEqual((plan["rows"], plan["before_in_audience"], plan["before_personal"], plan["in_audience"],
-                          plan["personal"]), (9, 6, 1, 4, 3))
-        self.assertEqual(plan["personal_by_rule"], {"deliverable_today": 2, "planned_later_this_week": 1})
+                          plan["personal"]), (9, 6, 1, 5, 2))
+        self.assertEqual(plan["personal_by_rule"], {"deliverable_today": 2})
         # SG7a: a later letter of the week excludes even when it could not pass a gate today (no writer row, template
         # not approved); a letter planned OUTSIDE the week (13.10; WA11: the week is Tue 06.10 .. Mon 12.10) does not; a held (would_send false) one does not
         later = [dict(p) for p in PLAN]
@@ -335,7 +335,7 @@ class EvaluateAndRecord(unittest.TestCase):
                 p["planned_send_date"] = "2026-10-08"
         with unittest.mock.patch(__name__ + ".PLAN", later):
             p2 = L.personal_this_week(WH(Fake(approved=[], lf=[])), D, NOW)
-        self.assertEqual(p2, {"m9": ("reorder_1", "2026-10-12", "planned_later_this_week")})   # the Monday is inside
+        self.assertEqual(p2, {})   # D46: letters due after the send Tuesday (08.10, 12.10, 13.10) go a LATER Tuesday
         q.calls.clear()
         L.akcija_record(q, D, plan)
         self.assertEqual(len(q.calls), 2)

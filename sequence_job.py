@@ -425,10 +425,13 @@ def akcija_week(today):
     """The next weekly akcija: Tuesday on/after today, its ISO week label and the akcija week it owns.
     WA11 (contract 1f5092311c3e): the week in which a personal sales letter excludes a contact from the weekly letter
     is the send Tuesday through the following Monday, both included - not Monday..Sunday around the Tuesday.
+    D46 (MAIN 2 12.10 18:35, the 18:20 defect): commercial letters go ONLY on Tuesdays (send_day D2), so a letter
+    planned Wed..Mon goes on the NEXT Tuesday and an overdue one on THIS Tuesday. The window is therefore every
+    planned date up to and including the send Tuesday (the 12.10 letters go 13.10 and were missed by Tue..Mon).
     -> (send tuesday, week label, first day of the window, last day of the window)."""
     tue = today + dt.timedelta(days=(1 - today.weekday()) % 7)
     iso = tue.isocalendar()
-    return tue, f"{iso[0]}-W{iso[1]:02d}", tue, tue + dt.timedelta(days=6)
+    return tue, f"{iso[0]}-W{iso[1]:02d}", dt.date(1, 1, 1), tue
 
 
 def akcija_row(*, mk, email, stage, suppressed, flow, is_en, plan, week, is_buyer=True, gate=None):

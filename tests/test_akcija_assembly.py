@@ -41,8 +41,7 @@ class Week(unittest.TestCase):
         for d in (dt.date(2026, 10, 5), dt.date(2026, 10, 6), dt.date(2026, 10, 7), dt.date(2026, 12, 30)):
             tue, label, first, last = J.akcija_week(d)
             self.assertEqual((tue, label), A.week_of(d)[:2])
-            self.assertEqual((first, last), (tue, tue + dt.timedelta(days=6)))       # Tuesday .. Monday
-            self.assertEqual((first.weekday(), last.weekday()), (1, 0))
+            self.assertEqual((first, last), (dt.date(1, 1, 1), tue))   # D46: every letter due by the send Tuesday
 
     def test_texts(self):
         self.assertEqual(A.lidz(dt.date(2026, 10, 12)), "pirmdienai, 12. oktobrim")

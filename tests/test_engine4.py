@@ -308,16 +308,19 @@ class Akcija(unittest.TestCase):
         return self.J.akcija_row(**base)
 
     def test_week(self):
-        self.assertEqual(self.week, (D(2026, 10, 6), "2026-W41", D(2026, 10, 6), D(2026, 10, 12)))   # WA11: Tuesday..Monday
+        self.assertEqual(self.week, (D(2026, 10, 6), "2026-W41", D(1, 1, 1), D(2026, 10, 6)))   # D46: due by the Tuesday
         self.assertEqual(self.J.akcija_week(D(2026, 10, 6))[0], D(2026, 10, 6))
         self.assertEqual(self.J.akcija_week(D(2026, 10, 7))[0], D(2026, 10, 13))
 
     def test_personal_sales_letter_or_akcija_never_both(self):
-        p = {"email_type": "winback_1", "would_deliver": True, "planned_send_date": "2026-10-08"}
+        p = {"email_type": "winback_1", "would_deliver": True, "planned_send_date": "2026-10-05"}   # D46: Mon -> Tue
         r = self.row(plan=p)
         self.assertEqual((r["in_audience"], r["excluded_reason"], r["personal_email_type"]),
                          (False, "PERSONAL_LETTER_THIS_WEEK", "winback_1"))
-        self.assertTrue(self.row(plan={**p, "planned_send_date": "2026-10-13"})["in_audience"])   # next week
+        for d in ("2026-10-06", "2026-09-20"):                              # the Tuesday itself, an overdue letter
+            self.assertFalse(self.row(plan={**p, "planned_send_date": d})["in_audience"], d)
+        for d in ("2026-10-07", "2026-10-12", "2026-10-13"):               # goes a LATER Tuesday -> akcija now
+            self.assertTrue(self.row(plan={**p, "planned_send_date": d})["in_audience"], d)
         self.assertTrue(self.row(plan={**p, "would_deliver": False})["in_audience"])   # blocked letter -> akcija
         self.assertTrue(self.row(plan={**p, "email_type": S.PP1})["in_audience"])      # 244 is not a sales letter
         for et in S.SALES_TYPES:
@@ -376,12 +379,13 @@ class SelfCheck(unittest.TestCase):
         ok = plan("a", "winback_1", False, "EN_PENDING", offer_rung=1, offer_valid_until="2026-10-18")
         self.assertEqual(self.failed(self.run_([ok])), [])
         akc = [{"master_key": "a", "in_audience": True, "send_date": "2026-10-06", "excluded_reason": None}]
-        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-08")], akc)),
+        # D46: a letter due on or before the send Tuesday goes THAT Tuesday (12.10 -> 13.10 was the defect)
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-05")], akc)),
                          ["personal_letter_and_akcija_same_week"])
-        # WA11 window = send Tuesday .. next Monday: the Monday BEFORE (same ISO week) and the next Monday
-        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-05")], akc)), [])
-        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-12")], akc)),
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-06")], akc)),
                          ["personal_letter_and_akcija_same_week"])
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-08")], akc)), [])
+        self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-12")], akc)), [])
         self.assertEqual(self.failed(self.run_([plan("a", planned_send_date="2026-10-13")], akc)), [])
 
     def test_a_gated_letter_is_not_a_hard_failure(self):

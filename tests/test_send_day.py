@@ -18,12 +18,21 @@ import block_gate as _BG  # noqa: E402
 _PROD_RULES_SHA = _BG.FLOW_RULES_APPROVED_SHA
 
 
+_REFILL = None
+
+
 def setUpModule():          # the fixtures below predate the v1.3 config: they run with it off unless a test turns it on
+    global _REFILL
     _BG.FLOW_RULES_APPROVED_SHA = None
+    import send_day as _SD           # D46 list-98 refill has its own tests (RefillAkcijaExcl); off for the old fixtures
+    _REFILL = _SD.Day.refill_akcija_excl
+    _SD.Day.refill_akcija_excl = lambda self, d, live: {"skipped": "test"}
 
 
 def tearDownModule():
     _BG.FLOW_RULES_APPROVED_SHA = _PROD_RULES_SHA
+    import send_day as _SD
+    _SD.Day.refill_akcija_excl = _REFILL
 import send_path as SP  # noqa: E402
 
 TUE = dt.date(2026, 10, 13)
@@ -773,3 +782,43 @@ class GateDate(unittest.TestCase):
         live.env = {"DRY_RUN": "false", "ALLOW_SEND": "true", "GLOBAL_SEND_ENABLED": "true"}
         with self.assertRaises(SD.SP.SendLocked):
             live.run(TUE, mode="live", gate_date=dt.date(2026, 10, 11))
+
+
+class RefillAkcijaExcl(unittest.TestCase):
+    """RAIVIS D46: list 98 is refilled from the send day's own outcome right after a Tuesday's personal letters."""
+    def _day(self, live_q):
+        d = SD.Day.__new__(SD.Day)
+        d.q, d.brevo, d.dash = live_q, mock.Mock(), mock.Mock()
+        return d
+
+    def test_tuesday_dry_builds_the_forecast_and_pushes_nothing(self):
+        import flow_gate as FG
+        d = self._day(mock.Mock())
+        with mock.patch.object(FG, "build_excl", return_value={"members": 7}) as b, \
+                mock.patch.object(FG, "sync_excl") as s:
+            r = _REFILL(d, TUE, False)
+        b.assert_called_once_with(d.q, "2026-10-13", forecast=True)
+        s.assert_not_called()
+        self.assertEqual(r, {"members": 7, "brevo": None})
+
+    def test_tuesday_live_builds_from_sent_and_pushes(self):
+        import flow_gate as FG
+        d = self._day(mock.Mock())
+        with mock.patch.object(FG, "build_excl", return_value={"members": 7}) as b, \
+                mock.patch.object(FG, "sync_excl", return_value={"members_now": 7}) as s:
+            r = _REFILL(d, TUE, True)
+        b.assert_called_once_with(d.q, "2026-10-13", forecast=False)
+        s.assert_called_once()
+        self.assertEqual(r["brevo"], {"members_now": 7})
+
+    def test_live_failure_posts_kluda_dry_failure_does_not(self):
+        import flow_gate as FG
+        for live, posts in ((True, 1), (False, 0)):
+            d = self._day(mock.Mock())
+            with mock.patch.object(FG, "build_excl", side_effect=FG.NoSendDayRun("x")):
+                r = _REFILL(d, TUE, live)
+            self.assertIn("NoSendDayRun", r["error"])
+            self.assertEqual(d.dash.call_count, posts)
+
+    def test_not_a_tuesday(self):
+        self.assertEqual(_REFILL(self._day(mock.Mock()), TUE + dt.timedelta(days=2), True), {"skipped": "not a Tuesday"})
