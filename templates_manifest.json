@@ -179,9 +179,9 @@
    "episode": "E2",
    "e1_template_id": 232,
    "file": "templates/winback_2_e2.html",
-   "git_blob": "c724da2218ee6300032582bf6bd9fad9d3c93a1e",
-   "sha256": "38d48d91f829c26a8617b5989979f07b92ea9c2934126d9c4881ddc1ae63ab25",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_PRICE }} — {{ contact.P1_SHORT | default : 'tavām precēm' }}",
+   "git_blob": "3b243029ede50410ae56fd8ee5d24dbfe4e05c39",
+   "sha256": "a32ac552b1a5edd948b412e826506d69ab3871e03fa440d9bedd2c94b9b9bc96",
+   "subject": "{% if contact.UZRUNA %}{{ contact.UZRUNA }}, tavas īpašās cenas vēl 7 dienas{% else %}Tavas īpašās cenas vēl 7 dienas{% endif %}",
    "name": "money:winback_2_e2 v4 — rezervācija 3 dienas (Raivis 11.10 13:18)"
   },
   {
