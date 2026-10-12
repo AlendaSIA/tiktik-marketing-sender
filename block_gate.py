@@ -53,7 +53,10 @@ _REF = re.compile(r"\{\{\s*contact\.(AK2?_HTML|FLOW2?_HTML|FLOWS2?_HTML|FLOWR_HT
 # reads = groups the letter's template reads; product = groups that count for "all product fields empty" (7b note:
 # the letter needs FLOW_HTML, the ROWS letters FLOW_HTML or FLOWS_HTML; FLOWR = companion goods, not counted).
 FLOW_RULES_SOURCE_SHA = "b34fcb1d56f8"
-FLOW_RULES_APPROVED_SHA = None                               # set ONLY to the sha MAIN hands over -> config active
+FLOW_RULES_APPROVED_SHA = "b34fcb1d56f8"                     # MAIN 2 12.10 16:15: approved -> config ACTIVE
+# MAIN 2 12.10 16:15 item 2: "Nakts sinhronizācija 11" writes all 5 FLOW* fields inside the FLOW_HTML block push - the
+# FLOW_HTML push-log row covers FLOWS_HTML / FLOWR_HTML too (no separate rows are written or awaited).
+PUSH_ROW = {"AK_HTML": "AK_HTML", "FLOW_HTML": "FLOW_HTML", "FLOWS_HTML": "FLOW_HTML", "FLOWR_HTML": "FLOW_HTML"}
 _GRID = {"reads": ("FLOW_HTML", "FLOWR_HTML"), "product": ("FLOW_HTML",)}
 _ROWS = {"reads": ("FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"), "product": ("FLOW_HTML", "FLOWS_HTML")}
 FLOW_RULES = {179: _GRID, 180: _GRID, 255: _GRID, 229: _GRID, 230: _GRID, 235: _GRID,
@@ -122,7 +125,7 @@ def push_ok(q, send_date: str, block: str) -> str | None:
     """None when the LATEST push row of `block` today is LIVE / OK / 0 errors, else why it is held."""
     if not _exists(q, T_BLOCK_LOG):
         return f"HOLD {block}: {T_BLOCK_LOG} does not exist yet"
-    r = latest_push(q, send_date, block)
+    r = latest_push(q, send_date, PUSH_ROW.get(block, block))
     if not r:
         return f"HOLD {block}: no push row for {send_date}"
     if not row_ok(r):

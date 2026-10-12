@@ -13,6 +13,17 @@ sys.path.insert(0, ROOT)
 
 import presend  # noqa: E402
 import send_day as SD  # noqa: E402
+import block_gate as _BG  # noqa: E402
+
+_PROD_RULES_SHA = _BG.FLOW_RULES_APPROVED_SHA
+
+
+def setUpModule():          # the fixtures below predate the v1.3 config: they run with it off unless a test turns it on
+    _BG.FLOW_RULES_APPROVED_SHA = None
+
+
+def tearDownModule():
+    _BG.FLOW_RULES_APPROVED_SHA = _PROD_RULES_SHA
 import send_path as SP  # noqa: E402
 
 TUE = dt.date(2026, 10, 13)
@@ -686,6 +697,20 @@ class FlowV13(unittest.TestCase):
     def tearDown(self):
         import block_gate as BG
         BG.FLOW_RULES_APPROVED_SHA = None
+
+    def test_production_config_is_active_and_flow_row_covers_flows_flowr(self):     # MAIN 2 12.10 16:15
+        import block_gate as BG
+        self.assertEqual((_PROD_RULES_SHA, BG.FLOW_RULES_SOURCE_SHA), ("b34fcb1d56f8", "b34fcb1d56f8"))
+        asked = []
+
+        def q(sql):
+            asked.append(sql)
+            if "INFORMATION_SCHEMA" in sql:
+                return [{"x": 1}]
+            return [{"mode": "LIVE", "status": "OK", "errors": 0, "finished_at": "t"}] if "block = 'FLOW_HTML'" in sql else []
+        for b in ("FLOW_HTML", "FLOWS_HTML", "FLOWR_HTML"):
+            self.assertIsNone(BG.push_ok(q, "2026-10-13", b))
+        self.assertFalse(any("block = 'FLOWS_HTML'" in a or "block = 'FLOWR_HTML'" in a for a in asked))
 
     def test_new_fields_are_groups(self):
         import block_gate as BG
