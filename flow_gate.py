@@ -200,6 +200,11 @@ class NoSendDayRun(RuntimeError):
     pass
 
 
+def _edu():
+    import edu
+    return edu
+
+
 def personal_sql(send_date: str, forecast: bool = False, outcome_table: str | None = None) -> str:
     """Emails that receive a personal letter on send_date. LIVE: every row SENT by any send-day run of that date (a
     letter that went, went - several runs per day add up). FORECAST: the latest run of the date, DRY_WOULD_SEND plus a
@@ -218,20 +223,34 @@ FROM `{t}` WHERE {where} AND email LIKE '%@%'
 GROUP BY 1"""
 
 
+# D47 (Raivis 12.10 18:59): 98c / 98d read the LIVE Brevo list 3, snapshot by the send day itself right before the
+# build (snapshot_l3), never the edu_brevo_list snapshot of another day.
+T_L3LIVE = f"{M}.brevo_list3_live"
+
+
+def snapshot_l3(q, brevo, send_date: str) -> int:
+    """Brevo list 3 members NOW -> mkt_control.brevo_list3_live (send_date rows replaced). GET only."""
+    emails = sorted(e for e in list_members(brevo, 3) if e)
+    q(f"CREATE TABLE IF NOT EXISTS `{T_L3LIVE}` (send_date DATE, email STRING, fetched_at TIMESTAMP)")
+    q(f"DELETE FROM `{T_L3LIVE}` WHERE send_date = DATE '{send_date}'")
+    for i in range(0, len(emails), 2000):
+        q(f"INSERT INTO `{T_L3LIVE}` (send_date, email, fetched_at) VALUES " + ", ".join(
+            f"(DATE '{send_date}', {_s(e)}, CURRENT_TIMESTAMP())" for e in emails[i:i + 2000]))
+    return len(emails)
+
+
 def excl_sql(send_date: str, forecast: bool = False, outcome_table: str | None = None) -> str:
     """Members of the Tuesday exclusion list for send_date. (b) = D46: every personal letter of that send day
-    (personal_sql), all types - not only reorder_1 (the 18:20 defect: winback_1 / active_xsell / 244 got 236 too)."""
-    import edu
+    (personal_sql), all types - not only reorder_1 (the 18:20 defect: winback_1 / active_xsell / 244 got 236 too).
+    D47 (Raivis 18:59): INFO letters go on THURSDAY, never on a Tuesday - the old part (a) "INFO slot instead of 236"
+    is gone (it left those contacts with no letter at all). (c)/(d) use the live list 3 of the send day."""
     return f"""
-WITH it AS (SELECT MAX(plan_date) AS pd FROM `{M}.info_track_shadow` WHERE slot_date = DATE '{send_date}'),
-a AS (SELECT DISTINCT LOWER(TRIM(email)) AS email, 'a_info_slot' AS why FROM `{M}.info_track_shadow`
-      WHERE slot_date = DATE '{send_date}' AND plan_date = (SELECT pd FROM it) AND slot = 'INFO'),
-pl AS ({personal_sql(send_date, forecast, outcome_table)}),
+WITH pl AS ({personal_sql(send_date, forecast, outcome_table)}),
 b AS (SELECT email, CONCAT('b_personal_', email_type) AS why FROM pl),
-l3 AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{edu.T_BLIST}` WHERE list_id = 3),
-c AS (SELECT DISTINCT l.email, 'c_cold_b2b_lead' AS why FROM `{edu.T_LEAD}` l JOIN l3 USING (email) WHERE l.is_lead),
+l3 AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{T_L3LIVE}` WHERE send_date = DATE '{send_date}'),
+c AS (SELECT DISTINCT l.email, 'c_cold_b2b_lead' AS why FROM `{_edu().T_LEAD}` l JOIN l3 USING (email) WHERE l.is_lead),
 d AS (SELECT DISTINCT q.email, 'd_quiet_never_buyer' AS why FROM `{T_QUIET}` q JOIN l3 USING (email)),
-x AS (SELECT * FROM a UNION ALL SELECT * FROM b UNION ALL SELECT * FROM c UNION ALL SELECT * FROM d)
+x AS (SELECT * FROM b UNION ALL SELECT * FROM c UNION ALL SELECT * FROM d)
 SELECT DATE '{send_date}' AS send_date, email, STRING_AGG(DISTINCT why ORDER BY why) AS why, CURRENT_TIMESTAMP() AS built_at
 FROM x WHERE REGEXP_CONTAINS(email, r'^[-a-z0-9._%+]+@[-a-z0-9.]+[.][a-z]{{2,}}$') GROUP BY email"""
 
@@ -245,6 +264,8 @@ def build_excl(q, send_date: str, refresh_leads=True, forecast=False, table=None
         raise NoSendDayRun(f"D46: no send-day run for {send_date} in {ot} - list 98 is built only from the send "
                            f"day's outcome; no 236 before it")
     T_EXCL = table or globals()["T_EXCL"]
+    if not q(f"SELECT 1 AS x FROM `{T_L3LIVE}` WHERE send_date = DATE '{send_date}' LIMIT 1"):
+        raise NoSendDayRun(f"D47: no live Brevo list 3 snapshot for {send_date} - run snapshot_l3 first")
     if refresh_leads:
         q(edu.LEADS_SQL)
         q(QUIET_SQL)

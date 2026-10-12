@@ -183,10 +183,11 @@ class AkcijaExclusion(unittest.TestCase):
 
     def test_sql_has_the_three_sources_for_the_date(self):
         s = FG.excl_sql("2026-10-13")
-        for must in ("slot = 'INFO'", "slot_date = DATE '2026-10-13'", "send_outcome", "outcome = 'SENT'",
-                     "send_date = DATE '2026-10-13'", "l.is_lead", "list_id = 3",
-                     "'a_info_slot'", "'b_personal_'", "'c_cold_b2b_lead'"):
+        for must in ("send_outcome", "outcome = 'SENT'", "send_date = DATE '2026-10-13'", "l.is_lead",
+                     FG.T_L3LIVE, "'b_personal_'", "'c_cold_b2b_lead'", "'d_quiet_never_buyer'"):
             self.assertIn(must, s)
+        self.assertNotIn("a_info_slot", s)                                    # D47: INFO never on a Tuesday
+        self.assertNotIn("edu_brevo_list", s)                                 # D47: live list 3 only
         self.assertNotIn("email_type = 'reorder_1'", s)                       # D46: every personal type, not one
         f = FG.excl_sql("2026-10-13", forecast=True)
         self.assertIn("'D1 TRACK'", f)

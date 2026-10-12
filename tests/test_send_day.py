@@ -19,6 +19,7 @@ _PROD_RULES_SHA = _BG.FLOW_RULES_APPROVED_SHA
 
 
 _REFILL = None
+_GUARD = None
 
 
 def setUpModule():          # the fixtures below predate the v1.3 config: they run with it off unless a test turns it on
@@ -27,12 +28,16 @@ def setUpModule():          # the fixtures below predate the v1.3 config: they r
     import send_day as _SD           # D46 list-98 refill has its own tests (RefillAkcijaExcl); off for the old fixtures
     _REFILL = _SD.Day.refill_akcija_excl
     _SD.Day.refill_akcija_excl = lambda self, d, live: {"skipped": "test"}
+    global _GUARD
+    _GUARD = _SD.Day.day_guard                # D47 / cab link have their own tests (tests/test_day_guard.py)
+    _SD.Day.day_guard = lambda self, d, live: {"skipped": "test"}
 
 
 def tearDownModule():
     _BG.FLOW_RULES_APPROVED_SHA = _PROD_RULES_SHA
     import send_day as _SD
     _SD.Day.refill_akcija_excl = _REFILL
+    _SD.Day.day_guard = _GUARD
 import send_path as SP  # noqa: E402
 
 TUE = dt.date(2026, 10, 13)
@@ -795,16 +800,18 @@ class RefillAkcijaExcl(unittest.TestCase):
         import flow_gate as FG
         d = self._day(mock.Mock())
         with mock.patch.object(FG, "build_excl", return_value={"members": 7}) as b, \
+                mock.patch.object(FG, "snapshot_l3", return_value=11180), \
                 mock.patch.object(FG, "sync_excl") as s:
             r = _REFILL(d, TUE, False)
         b.assert_called_once_with(d.q, "2026-10-13", forecast=True)
         s.assert_not_called()
-        self.assertEqual(r, {"members": 7, "brevo": None})
+        self.assertEqual(r, {"members": 7, "brevo": None, "list3_live": 11180})
 
     def test_tuesday_live_builds_from_sent_and_pushes(self):
         import flow_gate as FG
         d = self._day(mock.Mock())
         with mock.patch.object(FG, "build_excl", return_value={"members": 7}) as b, \
+                mock.patch.object(FG, "snapshot_l3", return_value=11180), \
                 mock.patch.object(FG, "sync_excl", return_value={"members_now": 7}) as s:
             r = _REFILL(d, TUE, True)
         b.assert_called_once_with(d.q, "2026-10-13", forecast=False)
@@ -815,7 +822,8 @@ class RefillAkcijaExcl(unittest.TestCase):
         import flow_gate as FG
         for live, posts in ((True, 1), (False, 0)):
             d = self._day(mock.Mock())
-            with mock.patch.object(FG, "build_excl", side_effect=FG.NoSendDayRun("x")):
+            with mock.patch.object(FG, "build_excl", side_effect=FG.NoSendDayRun("x")), \
+                    mock.patch.object(FG, "snapshot_l3", return_value=1):
                 r = _REFILL(d, TUE, live)
             self.assertIn("NoSendDayRun", r["error"])
             self.assertEqual(d.dash.call_count, posts)

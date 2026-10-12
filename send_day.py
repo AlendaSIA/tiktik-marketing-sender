@@ -56,6 +56,7 @@ import uuid
 import zoneinfo
 
 import block_gate as BG
+import day_guard as DG
 import pd_record
 import presend as G
 import send_path as SP
@@ -402,6 +403,10 @@ class Day:
         types = self.types_of(plan_run, send_date)
         # MAIN 18:50: letters without blocks never wait - they go first; block letters may wait for the push row
         types = sorted(types, key=lambda t: bool(_i(t["template_id"]) and BG.fields_in(self.template_html(_i(t["template_id"])))))
+        # D47 / D46 cab link: the whole day is looked at once, before any type goes
+        self._cands = {t["email_type"]: [dict(r) for r in self.q(candidates_sql(plan_run, send_date, t["email_type"]))]
+                       for t in types if (not only or t["email_type"] in only) and is_send_day(t["email_type"], send_date)}
+        result["day_guard"] = self.day_guard(send_date, live)
         for t in types:
             et = t["email_type"]
             if only and et not in only:
@@ -414,6 +419,50 @@ class Day:
             t.pop("decisions", None)
         return result
 
+    def day_guard(self, d, live) -> dict:
+        """D47_DOUBLE + D47_UNEXPLAINED_CHANGE (held in every type, one alert mail) and D46_CAB_LINK_MISMATCH
+        (priced letters only). Sets self._guard / self._cab for _one. Never picks one letter of a double."""
+        cands = self._cands
+        double = DG.doubles(cands)
+        mon = [dict(r) for r in self.q(DG.monday_sql(d))]
+        out = {"monday_run": mon[0]["run_id"] if mon else None, "monday_rows": len(mon)}
+        if mon:
+            since = {r["k"] for r in self.q(DG.ordered_since_sql(str(mon[0]["planned_at"])))}
+            unexpl = DG.unexplained(cands, {(r["master_key"], r["email_type"]) for r in mon}, since)
+            today = {(c["master_key"], et) for et, rows in cands.items() for c in rows}
+            out["monday_not_today"] = len({(r["master_key"], r["email_type"]) for r in mon} - today)
+            out["ordered_since_monday_plan"] = len(since)
+        else:
+            unexpl = {c["master_key"]: "no Monday plan to compare with" for rows in cands.values() for c in rows}
+        self._guard = {mk: f"{DG.DOUBLE} {','.join(ts)}" for mk, ts in double.items()}
+        for mk, why in unexpl.items():
+            self._guard.setdefault(mk, f"{DG.UNEXPLAINED} {why}")
+        out.update({"d47_double": len(double), "d47_unexplained": len(unexpl)})
+        priced = [c for et, rows in cands.items() if et in DG.PRICED_TYPES for c in rows]
+        self._cab = {}
+        if priced:
+            toks = {r["master_key"]: (r["token"], r["email"]) for r in self.q(DG.cab_tokens_sql(d))}
+            urls = DG.brevo_attr(self.brevo)
+            self._cab = DG.cab_check(priced, toks, urls)
+            out.update({"cab_checked": len({c["master_key"] for c in priced}),
+                        "cab_mismatch": sum("another token" in v or "!=" in v for v in self._cab.values()),
+                        "cab_no_link": sum("another token" not in v and "!=" not in v for v in self._cab.values()),
+                        "cab_reasons": dict(sorted(((v.split(" ", 1)[1].split(" for ")[0], 0) for v in self._cab.values())))})
+            for v in self._cab.values():
+                k = v.split(" ", 1)[1].split(" for ")[0]
+                out["cab_reasons"][k] = out["cab_reasons"].get(k, 0) + 1
+        if double or unexpl:
+            em = {c["master_key"]: c.get("email") for rows in cands.values() for c in rows}
+            subj, text = DG.alert_text(d, double, unexpl, em)
+            out["alert"] = {"to": DG.ALERT_TO, "subject": subj, "lines": text.count("\n") - 1, "sent": False,
+                            "text": text[:3000]}
+            if live:
+                self.brevo("POST", "/smtp/email", {"sender": {"id": 2}, "to": [{"email": DG.ALERT_TO}],
+                                                   "subject": subj, "textContent": text, "tags": ["d47-guard"]})
+                out["alert"]["sent"] = True
+                self.dash("KĻŪDA", f"Sūtīšanas diena {d}: D47 aizturēti {len(self._guard)} kontakti - vēstule Raivim")
+        return out
+
     def refill_akcija_excl(self, d, live) -> dict:
         """RAIVIS D46 (MAIN 2 12.10 18:35): right after the personal letters of a Tuesday, list 98 (AKCIJA IZSLĒGT) is
         rebuilt from THIS day's outcome - every personal letter that went (all types), plus (a)/(c)/(d) - so the
@@ -423,7 +472,9 @@ class Day:
             return {"skipped": "not a Tuesday"}
         import flow_gate as FG
         try:
+            l3 = FG.snapshot_l3(self.q, self.brevo, d.isoformat())      # D47: live list 3 (GET only)
             b = FG.build_excl(self.q, d.isoformat(), forecast=not live)
+            b["list3_live"] = l3
             b["brevo"] = FG.sync_excl(self.q, self.brevo, d.isoformat()) if live else None
             return b
         except Exception as e:  # noqa: BLE001 - reported, and the 236 checklist refuses without a fresh list
@@ -459,7 +510,8 @@ class Day:
         if not is_send_day(et, d):
             res["type_refusal"] = f"NOT_A_SEND_DAY ({d:%a}; {et} goes on weekday {send_weekday(et)})"
             return self._record(res, d, live, [], {})
-        cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
+        cached = getattr(self, "_cands", None) or {}
+        cands = cached[et] if et in cached else [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
         res["candidates"] = len(cands)
         cap = int((caps_override or {}).get(et, 0)) if caps_override is not None else cap_of(cap_rows, et, d)
         res["cap_source"] = "override" if caps_override is not None else ("send_cap" if cap else None)
@@ -495,8 +547,14 @@ class Day:
                 res["gate_date"] = str(gd)
             if res["block_hold"] and not res["type_refusal"]:
                 res["type_refusal"] = res["block_hold"]
-        refuse = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
-                                        blocks_needed=blocks_needed, product=cfg["product"]) if cands else (lambda c: None)
+        refuse0 = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands,
+                                         blocks_needed=blocks_needed, product=cfg["product"]) if cands else (lambda c: None)
+        guard = getattr(self, "_guard", None) or {}
+        cab = getattr(self, "_cab", None) or {}
+
+        def refuse(c):   # day guards first: D47 holds the contact in EVERY type; the cab link only priced letters
+            return (guard.get(c["master_key"]) or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None)
+                    or refuse0(c))
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
         chosen, decisions = select_audience(cands, 0 if (live and res["type_refusal"]) else cap, refuse)
