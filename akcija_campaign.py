@@ -206,10 +206,10 @@ def _prod():
     def q(s):
         return [dict(r) for r in c.query(s).result()]
 
-    def put(path, text):
-        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as f:
-            f.write(text)
-        subprocess.run(["gsutil", "-q", "cp", f.name, path], check=True)
+    def put(path, text):                 # the job image has no gsutil: the storage client (requirements.txt)
+        from google.cloud import storage
+        bucket, name = path[len("gs://"):].split("/", 1)
+        storage.Client(project=P).bucket(bucket).blob(name).upload_from_string(text, content_type="text/html")
         return path
     return q, put
 
