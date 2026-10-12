@@ -209,7 +209,8 @@ class MixList(unittest.TestCase):
             if "INFORMATION_SCHEMA.TABLES" in sql:
                 return [{"x": 1}]
             if "week_price_mix16" in sql:
-                return [{"product_handle": h, "category": c, "rank": r} for h, c, r in mix]
+                return [{"product_handle": h, "category": c, "rank": r, "units_30d": u} for h, c, r, *u in mix
+                        for u in [u[0] if u else 0]]
             if "product_catalog" in sql and "eff_price < c.std_price" in sql and "ORDER BY buyers DESC, c.handle" in sql:
                 return [good("a", "c1"), good("b", "c1"), good("z", "c2")]
             if "akcija_own_goods`" in sql:
@@ -230,6 +231,22 @@ class MixList(unittest.TestCase):
         self.assertEqual(res["week_goods"], 2)                                  # "z" is not in the MIX list
         wk = [c for c in res["checks"] if c["check_name"] == "akcija_asm_week"][0]
         self.assertIn('"mix_list_not_on_sale": 0', wk["detail"])
+        self.assertEqual(res["rules"], "week_price_mix16")
+
+    def test_d37_blocks_are_the_mix16_categories_in_rank_order(self):
+        rules = A.mix_rules([{"product_handle": "b", "category": "Papīrs", "rank": 2, "units_30d": 5},
+                             {"product_handle": "a", "category": "Papīrs", "rank": 1, "units_30d": 5},
+                             {"product_handle": "z", "category": "Cimdi", "rank": 1, "units_30d": 50}])
+        self.assertEqual([(r["block_no"], r["title"], r["top_n"], r["parts"][0]["arg"]) for r in rules],
+                         [(1, "Cimdi", 4, ["z"]), (2, "Papīrs", 4, ["a", "b"])])
+        g = lambda h, c: {"handle": h, "name": h, "category": c, "kind": "k", "img": "i", "url": "u",  # noqa: E731
+                          "sale": "1", "std": "2"}
+        goods = [g("z", "leaf1"), g("a", "leaf2"), g("b", "leaf3")]
+        blocks = A.pick_blocks(rules, A.build_pools(rules, goods, []), set(), {})
+        self.assertEqual([(b["title"], [i["handle"] for i in b["items"]]) for b in blocks],
+                         [("Cimdi", ["z"]), ("Papīrs", ["a", "b"])])      # leaf shop categories do not matter
+        blocks = A.pick_blocks(rules, A.build_pools(rules, goods, []), {"a"}, {})
+        self.assertEqual([i["handle"] for i in blocks[1]["items"]], ["b"])   # WA6: own good not repeated below
 
 
 if __name__ == "__main__":

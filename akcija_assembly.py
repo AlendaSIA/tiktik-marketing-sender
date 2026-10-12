@@ -209,6 +209,20 @@ def pick_blocks(rules, pools, shown_own: set, cat_names: dict) -> list:
 
 
 # --------------------------------------------------------------------------------------------------- assembly
+def mix_rules(mrows) -> list:
+    """D37: a MIX week's blocks = the week_price_mix16 categories, each block = that category's goods in mix16 rank
+    order, top_n 4. Categories ordered by their 30-day units (desc), then name. Same rule shape as akcija_week_blocks."""
+    cats = {}
+    for r in mrows:
+        c = cats.setdefault(r["category"], {"units": 0, "goods": []})
+        c["units"] += int(r.get("units_30d") or 0)
+        c["goods"].append((int(r.get("rank") or 0), r["product_handle"]))
+    order = sorted(cats, key=lambda k: (-cats[k]["units"], k))
+    return parse_rules([{"block_no": i + 1, "title": k, "top_n": 4, "max_per_kind": None, "max_per_category": None,
+                         "selector": "handles:" + ",".join(h for _, h in sorted(cats[k]["goods"]))}
+                        for i, k in enumerate(order)])
+
+
 def _item(name, img, url, sale, std) -> dict:
     return {"name": name, "img": img, "url": url, "sale": price(sale), "std": price(std)}
 
@@ -280,7 +294,8 @@ def checks(rows, *, audience_n, week_id, maker, rules_source, goods_n, goods_dro
              {"max": sizes[-1], "p95": p95, "limit": PARAMS_LIMIT}),
         _row("akcija_asm_nothing_to_show", "warn", nothing == 0, nothing),
         _row("akcija_asm_short_blocks", "info", True, sum(r["_short"] > 0 for r in rows),
-             {"contacts_with_a_short_block": sum(r["_short"] > 0 for r in rows),
+             {"contacts_with_all_blocks_full": sum(r["_short"] == 0 and r["_missing"] == 0 for r in rows),
+              "contacts_with_a_short_block": sum(r["_short"] > 0 for r in rows),
               "contacts_with_a_block_not_shown": sum(r["_missing"] > 0 for r in rows),
               "contacts_with_no_block": sum(r["n_blocks"] == 0 for r in rows)}),
         _row("akcija_asm_own_goods", "info", True, sum(r["n_own"] > 0 for r in rows),
@@ -409,6 +424,7 @@ def run(query, day: dt.date, record: bool, what_if_maker=None, as_week_of=None) 
             return stop("akcija_asm_mix_list_missing", "hard", why)
         order = {r["product_handle"]: i for i, r in enumerate(mrows)}
         mix_keep = set(order)
+        rules, brows = mix_rules(mrows), [{"source": "week_price_mix16"}]          # Raivis D37 (MAIN 2 12.10 12:50)
         all_goods = sorted((g for g in all_goods if g["handle"] in mix_keep), key=lambda g: order[g["handle"]])
     goods = [g for g in all_goods if _b(g["sellable"]) and g["url"] and g["img"]]
     dropped = {"mix_list_not_on_sale": (len(mix_keep) - len({g["handle"] for g in all_goods})) if mix_keep else 0,
@@ -432,11 +448,13 @@ def run(query, day: dt.date, record: bool, what_if_maker=None, as_week_of=None) 
     rows = [assemble_one(a, own.get(a["email"], []), greet.get(a["email"]), maker=maker, week_id=week_id, end=end,
                          rules=rules, pools=pools, cat_names=cat_names, plan_date=day) for a in aud]
     cs = checks(rows, audience_n=len(aud), week_id=week_id, maker=maker,
-                rules_source="akcija_week_blocks" if brows else "DEFAULT", goods_n=len(goods), goods_dropped=dropped,
+                rules_source=("week_price_mix16" if mix_keep is not None else "akcija_week_blocks") if brows
+                else "DEFAULT", goods_n=len(goods), goods_dropped=dropped,
                 audience_week=aud_run[0]["offer_week"])
     res.update({"status": "ASSEMBLED", "maker": maker, "rows": len(rows), "ok": sum(r["status"] == "OK" for r in rows),
                 "refused": sum(r["status"] != "OK" for r in rows), "week_goods": len(goods), "categories": cats,
-                "rules": "akcija_week_blocks" if brows else "DEFAULT", "checks": cs})
+                "rules": ("week_price_mix16" if mix_keep is not None else "akcija_week_blocks") if brows else "DEFAULT",
+                "checks": cs})
     if record:
         load_partition(day, rows)
         record_checks(query, day, run_id, cs)

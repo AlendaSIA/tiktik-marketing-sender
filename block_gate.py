@@ -216,6 +216,6 @@ def mix_rows(q, week_id: str):
     -> (rows, None) or ([], "HOLD MIX ...")."""
     if not _exists(q, T_MIX):
         return [], f"HOLD MIX: {T_MIX} does not exist"
-    rows = q(f"SELECT product_handle, category, rank FROM `{T_MIX}` WHERE week_id = '{week_id}' "
+    rows = q(f"SELECT product_handle, category, rank, units_30d FROM `{T_MIX}` WHERE week_id = '{week_id}' "
              f"ORDER BY category, rank")
     return (rows, None) if rows else ([], f"HOLD MIX: no week_price_mix16 rows for {week_id}")
