@@ -416,6 +416,8 @@ class Day:
             result["types"].append(res)
         result["outcome"] = self.write_outcome(plan_run, send_date, live, result["types"], only)
         result["akcija_excl"] = self.refill_akcija_excl(send_date, live)
+        if send_date.weekday() == TUESDAY and not only:          # D48: the engine launches 236 itself, after 98
+            result["akcija_236"] = self.launch_236(send_date, live, result["akcija_excl"])
         for t in result["types"]:
             t.pop("decisions", None)
         return result
@@ -474,6 +476,17 @@ class Day:
             self.dash("KĻŪDA", f"Sūtīšanas diena {d}: D44 cenu ķēde nav pareizā secībā - "
                                + "; ".join(self._d44["commercial"]) + " - komerciālās vēstules aizturētas")
         return out
+
+    def launch_236(self, d, live, refill) -> dict:
+        import akcija_launch as AL
+        try:
+            return AL.launch(self.q, self.brevo, d, live, refill, getattr(self, "_d44", None), self.dash,
+                             gate_date=getattr(self, "gate_date", None))
+        except Exception as e:  # noqa: BLE001 - a failed launch is reported, never retried blind
+            msg = f"{type(e).__name__}: {str(e)[:300]}"
+            if live:
+                self.dash("KĻŪDA", f"236 {d} nav palaists - {msg}")
+            return {"launched": False, "error": msg}
 
     def refill_akcija_excl(self, d, live) -> dict:
         """RAIVIS D46 (MAIN 2 12.10 18:35): right after the personal letters of a Tuesday, list 98 (AKCIJA IZSLĒGT) is
@@ -1073,6 +1086,12 @@ def main(argv) -> int:
             print("PROOF_REFUSED " + str(e)[:800])
             return 3
         print("PROOF " + json.dumps({"run_id": day.run_id, **res}, ensure_ascii=False, default=str)[:20000])
+        return 0
+    if args.get("test-236"):                       # D48 test: real campaign to the 2 test addresses only
+        import akcija_launch as AL
+        q, wh, brevo, pd_post, dash = _prod()
+        gd = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
+        print("TEST_236 " + json.dumps(AL.test(q, brevo, d, gate_date=gd), ensure_ascii=False, default=str)[:6000])
         return 0
     only = set(args["only"].split(",")) if args.get("only") else None
     q, wh, brevo, pd_post, dash = _prod()

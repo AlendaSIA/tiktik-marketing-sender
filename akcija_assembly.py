@@ -384,6 +384,17 @@ def run(query, day: dt.date, record: bool, what_if_maker=None, as_week_of=None) 
     if (what_if_maker or as_week_of) and record:
         raise ValueError("a what-if maker / week is never recorded")
     d = day.isoformat()
+    # D44 / MAIN 2 19:10 step 3b: on a Tuesday the 06:30 run builds today's partition right after the mirror and
+    # NS11 builds AK_HTML from it; a later run (08:55 dash) must NOT rebuild it (AK-H1 matches the built time).
+    if record and day.weekday() == 1:
+        try:
+            built = query(f"SELECT 1 AS x FROM `{P}.mkt_control.ak_tuesday_log` WHERE run_date = DATE '{d}' "
+                          f"AND mode = 'LIVE' AND status = 'BUILT' LIMIT 1")
+        except Exception:  # noqa: BLE001 - no log table: nothing is frozen
+            built = []
+        if built:
+            return {"plan_date": d, "recorded": False, "status": "FROZEN",
+                    "why": "Tuesday: AK already built by NS11 from this partition - not rebuilt"}
     tue, week_id, end = week_of(as_week_of or day)
     aud_run = query(f"SELECT run_id, ANY_VALUE(offer_week) AS offer_week FROM `{T_AUD}` WHERE plan_date = DATE '{d}' "
                     f"GROUP BY run_id ORDER BY MAX(planned_at) DESC LIMIT 1")
