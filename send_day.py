@@ -543,12 +543,12 @@ class Day:
         priced = [c for et, rows in cands.items() if et in DG.PRICED_TYPES for c in rows]
         self._cab = {}
         if priced:
-            toks = {r["master_key"]: (r["token"], r["email"]) for r in self.q(DG.cab_tokens_sql(d))}
+            toks = {r["email"]: r["token"] for r in self.q(DG.cab_tokens_sql(d)) if int(r.get("n") or 1) == 1}
             urls = DG.brevo_attr(self.brevo)
             self._cab = DG.cab_check(priced, toks, urls)
             out.update({"cab_checked": len({c["master_key"] for c in priced}),
-                        "cab_mismatch": sum("another token" in v or "!=" in v for v in self._cab.values()),
-                        "cab_no_link": sum("another token" not in v and "!=" not in v for v in self._cab.values()),
+                        "cab_mismatch": sum("another token" in v for v in self._cab.values()),
+                        "cab_no_link": sum("another token" not in v for v in self._cab.values()),
                         "cab_reasons": dict(sorted(((v.split(" ", 1)[1].split(" for ")[0], 0) for v in self._cab.values())))})
             for v in self._cab.values():
                 k = v.split(" ", 1)[1].split(" for ")[0]

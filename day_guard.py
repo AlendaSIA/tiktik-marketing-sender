@@ -70,17 +70,18 @@ def token_in(url, token) -> bool:
 
 
 def cab_check(rows, tokens: dict, urls: dict) -> dict:
-    """rows = chosen personal-price candidates (master_key, email); tokens = {master_key: (token, email)} of the cab
-    run; urls = {email: KABINETS_URL in Brevo}. -> {master_key: reason} for no link / foreign link."""
+    """rows = chosen personal-price candidates (master_key, email); tokens = {email: the contact's OWN cabinet link
+    token} from business_marts.kabinets_links (the link registry the cabinet itself issues); urls = {email:
+    KABINETS_URL read back from Brevo}. -> {master_key: reason} for no own link / a link carrying another token.
+    NOTE (measured 12.10): cabinet_price_current.token is the PRICE BOOK token (18 hex), not the link token in
+    KABINETS_URL (k=, 32 hex) - comparing those two always differs, so the link registry is the reference."""
     out = {}
     for c in rows:
         mk, em = c["master_key"], _e(c.get("email"))
-        tok, tok_em = tokens.get(mk, (None, None))
+        tok = tokens.get(em)
         url = urls.get(em)
         if not tok:
-            out[mk] = f"{CAB} no cabinet token for {mk}"
-        elif tok_em and _e(tok_em) != em:
-            out[mk] = f"{CAB} cabinet e-mail {tok_em} != letter e-mail {em}"
+            out[mk] = f"{CAB} no own cabinet link registered for {em}"
         elif not url:
             out[mk] = f"{CAB} no {CAB_ATTR} in Brevo"
         elif not token_in(url, tok):
@@ -104,12 +105,10 @@ def brevo_attr(brevo, attr=CAB_ATTR, page=1000) -> dict:
 
 
 def cab_tokens_sql(d: dt.date) -> str:
+    """The contact's own cabinet link token, by e-mail (business_marts.kabinets_links, refreshed nightly 02:10 UTC)."""
     return f"""
-WITH r AS (SELECT run_id FROM `{M}.cabinet_price_current`
-           WHERE REGEXP_CONTAINS(run_id, r'^cab-[0-9]{{8}}$') AND run_id <= 'cab-{d:%Y%m%d}'
-           GROUP BY run_id ORDER BY run_id DESC LIMIT 1)
-SELECT master_key, ANY_VALUE(token) AS token, ANY_VALUE(LOWER(TRIM(email))) AS email, ANY_VALUE(run_id) AS run_id
-FROM `{M}.cabinet_price_current` WHERE run_id = (SELECT run_id FROM r) GROUP BY master_key"""
+SELECT LOWER(TRIM(email_norm)) AS email, ANY_VALUE(token) AS token, COUNT(DISTINCT token) AS n
+FROM `{P}.business_marts.kabinets_links` WHERE email_norm LIKE '%@%' AND token IS NOT NULL GROUP BY 1"""
 
 
 def monday_sql(d: dt.date) -> str:
