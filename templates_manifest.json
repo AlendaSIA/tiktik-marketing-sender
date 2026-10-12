@@ -54,9 +54,9 @@
    "variant": "winback_3",
    "id": 233,
    "file": "templates/winback_3.html",
-   "git_blob": "066b4d1b59ac4aa14bdf0597070c2404f2c6b7f3",
-   "sha256": "61a8cfd0d9b520839568d447c303481f1add9ba1ca03f69eaac5ae0e233628ee",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavai biežāk pirktajai precei' }} — {{ contact.P1_PRICE }}{% if contact.OFFER_VALID_UNTIL %}, līdz {{ contact.OFFER_VALID_UNTIL }}{% endif %}",
+   "git_blob": "82e9f3366bb7ead6ed171008d77c10ef756e443c",
+   "sha256": "6b1b57574a6a28a6fd3942a2bfec54fbdc41fc0f7b3c880893bdcfeaa44ec0c7",
+   "subject": "{% if contact.UZRUNA %}{{ contact.UZRUNA }}, tev{% else %}Tev{% endif %} {{ contact.P1_PRICE }} — {{ contact.P1_SHORT | default : 'tava biežāk pirktā prece' }}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Tava cena spēkā līdz {{ contact.OFFER_VALID_UNTIL }} — kamēr prece ir noliktavā.{% endif %}",
    "name": "money:winback_3 v6 — līdz OVU tematā tikai ar OVU (MAIN 11.10 11:57)",
    "purpose": "Third and last winback rung: calm, the batch is still in stock and the customer price still holds until OFFER_VALID_UNTIL (contract v2.8); shorter than 180."
@@ -192,9 +192,9 @@
    "episode": "E2",
    "e1_template_id": 233,
    "file": "templates/winback_3_e2.html",
-   "git_blob": "e425bc72b95a026ed3cd792a0ceb0e658a832bc5",
-   "sha256": "8499bfa1c195e8e5e26311b50517425913bac5b1075ccaa1d6b18a939976a9b7",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_SHORT | default : 'tava biežāk pirktā prece' }} — {{ contact.P1_PRICE }}, tikai tev",
+   "git_blob": "8ef414d34998477a18fb54ea09215431e68880c7",
+   "sha256": "4f5530291bd7b243e284c644857202ff0eaf5be80683085f014c386a6cab3e90",
+   "subject": "{% if contact.UZRUNA %}{{ contact.UZRUNA }}, vēl{% else %}Vēl{% endif %} 7 dienas tev {{ contact.P1_PRICE }} — {{ contact.P1_SHORT | default : 'tava biežāk pirktā prece' }}",
    "name": "money:winback_3_e2 v3 — rezervācija 3 dienas (Raivis 11.10 13:18)"
   }
  ],
