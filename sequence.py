@@ -406,6 +406,14 @@ LOST_REPEATS = True               # lost_quarterly repeats - LQ3: at most once p
 # cycle. Only 234 (rung "dead" = OFFER_RUNG 4) may carry MIN prices - priced by PAP, not here.
 LOST_AFTER_CHAIN_DAYS = 180
 HOLD_LOST_NO_OPENS = "LOST_NO_OPENS_SINCE_CHAIN"
+# D45 (Raivis 12.10 18:10, MAIN 2 18:15) REPLACES D41's letter: the farewell letter at MIN (234, offer_rung 4) is
+# CANCELLED. -20 % is the absolute maximum. After the rung-3 episode the SAME r3 letter (winback_3, -20 %) repeats once
+# every ~6 months (R3_REPEAT_DAYS after the last letter), only for contacts who opened a marketing letter since the last
+# letter and did not buy. A repeat is the letter alone (no E2). 234 / offer_rung 4 are never planned. Cadence between
+# rungs unchanged (Raivis decides it separately).
+R3_REPEAT_DAYS = 180
+R3_REPEAT = "winback_3"
+HOLD_R3_NO_OPENS = "R3_REPEAT_NO_OPENS"
 
 # GATE 232/233 (MAIN 2026-09-28 COMMAND 1 item 3, Vēstuļu šabloni pre-send row 13): winback_2 and
 # winback_3 are planned only for a contact whose letter will carry a non-empty OFFER_VALID_UNTIL.
@@ -520,17 +528,14 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         nxt, due = e2
     elif track == "winback":
         nxt = next_episode_letter(s, f)
-        if nxt is None and s.last_email_type == LOST:          # D41: 234 once per cycle
-            return Decision(s, None, None, 0, f"track={track} chain + 234 done", "SEQUENCE_DONE", changes)
-        if nxt is None:                                       # D41: rung-3 episode done -> 234 at chain end + 180 d
-            nxt = LOST
-            due = max(today, s.last_sent_on + dt.timedelta(days=LOST_AFTER_CHAIN_DAYS))
+        if nxt is None:                                       # D45: rung-3 episode done -> r3 repeat every ~6 months
+            nxt = R3_REPEAT
+            due = max(today, s.last_sent_on + dt.timedelta(days=R3_REPEAT_DAYS))
             if floor:
                 due = max(due, floor)
             if not (f.last_real_open_on and f.last_real_open_on > s.last_sent_on):
-                return Decision(s, nxt, due, LOST_OFFER_RUNG,
-                                f"track={track} chain done {s.last_sent_on}, no open since", HOLD_LOST_NO_OPENS,
-                                changes)
+                return Decision(s, nxt, due, 3, f"track={track} r3 done {s.last_sent_on}, no open since",
+                                HOLD_R3_NO_OPENS, changes)
         else:
             due = max(today, floor) if floor else today
         # L8: reorder worked in an earlier cycle -> winback_1 no earlier than 2 x the configured gap
@@ -602,6 +607,8 @@ def pending_e2(s: State, f: Facts, today: dt.date):
     A missed E2 is skipped - its text says "7 more days" and the OFFER_VALID_UNTIL is fixed by E1."""
     if s.last_email_type not in E1_TYPES or s.last_sent_on is None:
         return None
+    if s.last_email_type == R3_REPEAT and s.rung_set_on and s.last_sent_on > s.rung_set_on + dt.timedelta(days=60):
+        return None                                                # D45: an r3 repeat is the letter alone, no E2
     if f.last_order_on is not None and f.last_order_on >= s.last_sent_on:
         return None                                                # K6
     due = s.last_sent_on + dt.timedelta(days=E2_AFTER_DAYS)
@@ -617,7 +624,7 @@ def next_episode_letter(s: State, f: Facts):
     purchased = f.last_order_on is not None and s.last_sent_on is not None and f.last_order_on >= s.last_sent_on
     last = s.last_email_type if (s.last_sent_on and not purchased) else None
     if last == LOST:
-        return None                                               # D41: 234 closes the cycle
+        return None                                               # legacy 234 in history: treated as chain done (D45)
     if last not in RUNG_OF:
         return E1_BY_RUNG[1]
     r = RUNG_OF[last]

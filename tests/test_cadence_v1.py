@@ -108,18 +108,20 @@ class K4K5Episodes(unittest.TestCase):
         lo, thr = D(2026, 1, 1), 30
         out = C.project(S, S.State("k5"), stage_today="winback", last_order=lo, first_order=None, thr=thr,
                         start=lo + dt.timedelta(days=thr + 57), days=400, opens=True)
-        wb = [o for o in out if o[1].startswith("winback")]
+        wb = [o for o in out if o[1].startswith("winback")][:6]
         self.assertEqual([(o[1], o[2]) for o in wb], [("winback_1", 1), ("winback_1_e2", 1), ("winback_2", 2),
                                                       ("winback_2_e2", 2), ("winback_3", 3), ("winback_3_e2", 3)])
         e1 = [o[0] for o in wb if not o[1].endswith("_e2")]
         self.assertEqual([(b - a).days for a, b in zip(e1, e1[1:])], [42, 42])        # K5 >= 6 weeks
         for a, b in zip(wb[::2], wb[1::2]):
             self.assertEqual(((b[0] - a[0]).days, a[3], b[3]), (7, a[0] + dt.timedelta(days=13), a[3]))
-        lost = [o for o in out if o[1] == "lost_quarterly"]
-        self.assertEqual([(o[0], o[2]) for o in lost], [(wb[-1][0] + dt.timedelta(days=180), 4)])   # D41: once, +180
+        self.assertEqual([o for o in out if o[1] == "lost_quarterly" or o[2] == 4], [])       # D45: 234 / rung 4 retired
+        rep = [o for o in out if o[0] > wb[-1][0]]
+        self.assertEqual([(o[0], o[1], o[2]) for o in rep],
+                         [(wb[-1][0] + dt.timedelta(days=180), "winback_3", 3)])            # D45: r3 repeat, no E2
         none = C.project(S, S.State("k5n"), stage_today="winback", last_order=lo, first_order=None, thr=thr,
                          start=lo + dt.timedelta(days=thr + 57), days=400)
-        self.assertEqual([o for o in none if o[1] == "lost_quarterly"], [])                # D41: no opens, no 234
+        self.assertEqual(len([o for o in none if o[1].startswith("winback")]), 6)             # no opens -> no repeat
 
     def test_history_e1_before_track_entered_on_still_counts(self):
         # real state 30.09: track_entered_on 25.09 (first engine run), E1 = campaign 221 on 22.09
@@ -129,24 +131,26 @@ class K4K5Episodes(unittest.TestCase):
         d = S.advance(st, F("winback", last_order=D(2026, 9, 23)), D(2026, 12, 1))       # bought after it: new walk
         self.assertEqual(d.next_email_type, "winback_1")
 
-    def test_after_rung_3_episode_234_at_plus_180_only_for_openers(self):       # D41
+    def test_after_rung_3_episode_r3_repeats_every_180_days_for_openers(self):       # D45
         st = S.State("k5b", "winback", D(2026, 1, 1), 6, 3, D(2026, 12, 18), "2026-12", None,
                      "winback_3_e2", D(2026, 12, 25))
         for stage in ("winback", "lost"):
             d = S.advance(st, F(stage), D(2027, 3, 1))
             self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung, d.hold_reason),
-                             ("lost_quarterly", D(2027, 6, 23), 4, S.HOLD_LOST_NO_OPENS))
-            f = F(stage)
+                             ("winback_3", D(2027, 6, 23), 3, S.HOLD_R3_NO_OPENS))
+            f = F(stage, rungs={3: D(2099, 1, 1)})
             f.last_real_open_on = D(2027, 2, 1)
             d = S.advance(st, f, D(2027, 3, 1))
             self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung, d.hold_reason),
-                             ("lost_quarterly", D(2027, 6, 23), 4, None))
-        f = F("lost")
-        f.last_real_open_on = D(2026, 12, 20)                                   # an open BEFORE the chain ended
-        self.assertEqual(S.advance(st, f, D(2027, 3, 1)).hold_reason, S.HOLD_LOST_NO_OPENS)
-        done = S.record_sent(st, "lost_quarterly", D(2027, 6, 23), 4)
-        f.last_real_open_on = D(2027, 8, 1)
-        self.assertEqual(S.advance(done, f, D(2027, 12, 1)).hold_reason, "SEQUENCE_DONE")   # once per cycle
+                             ("winback_3", D(2027, 6, 23), 3, None))
+        rep = S.record_sent(st, "winback_3", D(2027, 6, 23), 3)
+        f = F("lost", rungs={3: D(2099, 1, 1)})
+        f.last_real_open_on = D(2027, 7, 1)
+        self.assertIsNone(S.pending_e2(rep, f, D(2027, 6, 30)))                    # a repeat has no E2
+        d = S.advance(rep, f, D(2027, 8, 1))
+        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("winback_3", D(2027, 12, 20), 3))
+        f.last_real_open_on = D(2027, 6, 1)                                         # no open after the repeat
+        self.assertEqual(S.advance(rep, f, D(2027, 8, 1)).hold_reason, S.HOLD_R3_NO_OPENS)
 
     def test_d40_lost_contact_enters_the_winback_chain_at_r1(self):
         d = S.advance(S.State("lost1"), F("lost"), D(2026, 10, 13))

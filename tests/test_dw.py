@@ -43,15 +43,14 @@ class DW1Dates(unittest.TestCase):
         d = S.advance(st, WF("winback"), D(2026, 10, 6))
         self.assertEqual((d.next_email_type, d.offer_valid_until - d.next_due_on), ("winback_3", TD(days=13)))
 
-    def test_234_send_plus_13_dw7(self):
+    def test_r3_repeat_send_plus_13(self):                                     # D45 replaces the 234 letter
         done = S.State("l", "winback", D(2025, 9, 1), 6, 3, D(2026, 3, 25), "2026-03", None, "winback_3_e2", D(2026, 4, 1))
-        for rungs in (None, {4: D(2099, 1, 1)}):
-            f = WF("lost", D(2025, 1, 1), rungs)
-            f.last_real_open_on = D(2026, 5, 1)
-            d = S.advance(done, f, D(2026, 10, 6))                               # D41: chain end + 180 = 28.09 -> today
-            self.assertEqual((d.next_email_type, d.offer_valid_until), ("lost_quarterly", D(2026, 10, 19)))
-            later = S.advance(done, f, D(2026, 6, 1))                           # planned for 28.09
-            self.assertEqual((later.next_due_on, later.offer_valid_until), (D(2026, 9, 28), D(2026, 10, 11)))
+        f = WF("lost", D(2025, 1, 1), {3: D(2099, 1, 1)})
+        f.last_real_open_on = D(2026, 5, 1)
+        d = S.advance(done, f, D(2026, 10, 6))                                   # chain end + 180 = 28.09 -> today
+        self.assertEqual((d.next_email_type, d.offer_rung, d.offer_valid_until), ("winback_3", 3, D(2026, 10, 19)))
+        later = S.advance(done, f, D(2026, 6, 1))                               # planned for 28.09
+        self.assertEqual((later.next_due_on, later.offer_valid_until), (D(2026, 9, 28), D(2026, 10, 11)))
 
     def test_235_xsell_valid_until_send_plus_13_in_its_own_column(self):
         d = S.advance(S.State("x"), PF(nr=None, order_on=None, ship=None), D(2026, 10, 5))
