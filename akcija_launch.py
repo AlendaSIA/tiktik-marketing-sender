@@ -108,10 +108,11 @@ def final_audience(q, brevo, d: dt.date, excl98_emails: set, list98_id) -> dict:
             "excluded_by_98": len((set(l3) - bl - ex) & excl98_emails), "final": len(final)}
 
 
-def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, dash, gate_date=None) -> dict:
+def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, dash, gate_date=None, pace=None,
+           extra_holds=()) -> dict:
     import flow_gate as FG
     b = build(q, brevo, d, gate_date)
-    holds = list(b["holds"])
+    holds = list(b["holds"]) + list(extra_holds)
     holds += [c for c in (d44 or {}).get("akcija_236", [])]
     if not refill or refill.get("error"):
         holds.append(f"LIST_98_NOT_REBUILT {(refill or {}).get('error') or 'no refill'}")
@@ -136,6 +137,8 @@ def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, das
         out["dry"] = "built and measured; DRY never creates a campaign on list 3"
         return out
     lid98 = refill["brevo"]["list_id"]
+    if pace:
+        pace()                                   # D49: 236 last, >= 10 min after the last personal campaign
     out.update(create_and_send(brevo, b, AC.LIST_ALL, EXCLUSIONS + [int(lid98)], f"236 {d} {b['week_id']} (engine)"))
     out["launched"] = out.get("sent", False)
     return out

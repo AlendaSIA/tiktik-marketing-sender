@@ -71,6 +71,7 @@ T_LOG, T_ADV, T_STATE = f"{M}.send_log", f"{M}.send_state_advance", f"{M}.contac
 T_PDW, T_SUPP = f"{M}.shadow_pd_writes", f"{P}.business_marts.email_suppression_all"
 RIGA = zoneinfo.ZoneInfo("Europe/Riga")
 APPROVER = "Raivis"
+INTERNAL_NOTICE_TO = {"raivis@alenda.lv"}      # D47/D48 notices may go while L1 is closed - never to a client
 TUESDAY, THURSDAY = 1, 3                     # date.weekday(): Monday = 0
 EDUCATIONAL_TYPES = frozenset()              # the new plan holds no educational letter today (Thursday = block 2)
 SUPPRESSION_LIST_ID = 4
@@ -118,6 +119,57 @@ DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRI
        f"""CREATE TABLE IF NOT EXISTS `{T_OUTCOME}` (send_date DATE, run_id STRING, mode STRING, plan_run STRING,
   master_key STRING, email STRING, email_type STRING, template_id INT64, planned_send_date DATE, outcome STRING,
   reason STRING, plan_reason STRING, created_at TIMESTAMP)"""]
+
+
+# RAIVIS D50 (MAIN 2 19:50): 244 is not sent on a Tuesday any more (it moves to the delivery pipeline) - its contacts
+# get 236; active_xsell only when the last order is at most 30 days before the send day (else -> 236).
+D50_FEEDBACK, D50_XSELL, D50_XSELL_MAX_DAYS = "post_purchase_feedback", "active_xsell", 30
+# RAIVIS D49: campaigns 10 min apart, smallest first, each after the previous one is 'sent'; 236 last.
+D49_GAP_MIN, D49_FINISH_MAX_MIN = 10, 40
+
+
+def d50_xsell_refusal(c, send_date) -> str | None:
+    import re
+    m = re.search(r"last_order=(\d{4}-\d{2}-\d{2})", str(c.get("reason") or ""))
+    if not m:
+        return "D50_XSELL_ORDER_OLD no last order known"
+    lo = dt.date.fromisoformat(m.group(1))
+    days = (send_date - lo).days
+    return None if days <= D50_XSELL_MAX_DAYS else f"D50_XSELL_ORDER_OLD last order {lo} ({days} d)"
+
+
+def report_mail(result, kind) -> tuple:
+    """Latvian, short. kind 'check' = 08:05 Rīta pārbaude (GO / HOLD per campaign), 'sent' = Izsūtīts."""
+    d = result.get("send_date")
+    lines, hold = [], False
+    for t in result.get("types", []):
+        why = t.get("type_refusal")
+        if kind == "check":
+            dry_only = bool(why) and why.startswith("D1 TRACK") and result.get("mode") == "dry"
+            go = (not why or dry_only) and t.get("chosen", 0) > 0
+            hold = hold or not go
+            lines.append(f"{t['email_type']}: {'GO' if go else 'HOLD'} - izvēlēti {t.get('chosen', 0)} no "
+                         f"{t.get('candidates', 0)}" + (f"; iemesls: {why}" if why and not dry_only else "")
+                         + (f"; aizturēti: {t.get('refused')}" if t.get('refused') else ""))
+        else:
+            lines.append(f"{t['email_type']}: nosūtīti {t.get('sent', 0)}, kampaņa {t.get('campaign_id')}"
+                         + (f"; nesūtīts: {why}" if why else "") + (f"; aizturēti: {t.get('refused')}" if t.get('refused') else ""))
+    a = result.get("akcija_236") or {}
+    a_hold = a.get("holds") or ([a["error"]] if a.get("error") else [])
+    if kind == "check":
+        hold = hold or bool(a_hold)
+        lines.append(f"236: {'HOLD - ' + '; '.join(a_hold) if a_hold else 'GO'} - auditorija {(a.get('audience') or {}).get('final')}")
+    else:
+        lines.append(f"236: {'palaists, kampaņa ' + str(a.get('campaign_id')) if a.get('launched') else 'NAV palaists - ' + '; '.join(a_hold)}")
+    g = result.get("day_guard") or {}
+    lines.append(f"2+ vēstules vienam kontaktam: {g.get('d47_double', '?')} (jābūt 0); nepaskaidrotas izmaiņas: "
+                 f"{g.get('d47_unexplained', '?')}; kabineta saites neatbilst: {g.get('cab_mismatch', 0)}, nav saites: "
+                 f"{g.get('cab_no_link', 0)}")
+    if (result.get("d44") or {}).get("commercial"):
+        lines.append("D44: " + "; ".join(result["d44"]["commercial"]))
+    title = (f"Rīta pārbaude {d}: {'IR AIZTURĒTAIS' if hold else 'viss GO'}" if kind == "check"
+             else f"Izsūtīts {d}")
+    return title, "\n".join(lines)
 
 
 def outcome_rows(plan_rows, results, send_date, live) -> list:
@@ -406,8 +458,25 @@ class Day:
         # D47 / D46 cab link: the whole day is looked at once, before any type goes
         self._cands = {t["email_type"]: [dict(r) for r in self.q(candidates_sql(plan_run, send_date, t["email_type"]))]
                        for t in types if (not only or t["email_type"] in only) and is_send_day(t["email_type"], send_date)}
+        fd = getattr(self, "d47_force_double", None)
+        if fd and not live:                                # DRY proof: copy one contact into a second type
+            src = next((c for rows in self._cands.values() for c in rows if c["master_key"] == fd), None)
+            other = next((et for et, rows in self._cands.items() if src and all(c["master_key"] != fd for c in rows)), None)
+            if src and other:
+                self._cands[other] = self._cands[other] + [dict(src)]
+                result["d47_forced_double"] = {"master_key": fd, "added_to": other}
         result["day_guard"] = self.day_guard(send_date, live)
         result["d44"] = self.d44(send_date, live)
+        if getattr(self, "d44_simulate_pass", False) and not live:        # DRY only: "what if the chain were in order"
+            result["d44"]["simulated_pass"] = True
+            self._d44 = {"commercial": [], "akcija_236": []}
+        self._d50 = {c["master_key"]: why for c in self._cands.get(D50_XSELL, [])
+                     for why in [d50_xsell_refusal(c, send_date)] if why}
+        result["d50"] = {"feedback_moved": len(self._cands.get(D50_FEEDBACK, [])), "xsell_order_old": len(self._d50)}
+        # D49 (Raivis): personal campaigns go smallest first, 10 min apart, each after the previous one finished
+        types = sorted(types, key=lambda t: len(self._cands.get(t["email_type"], [])))
+        result["d49_order"] = [(t["email_type"], len(self._cands.get(t["email_type"], []))) for t in types]
+        self._track_rows = track_rows
         for t in types:
             et = t["email_type"]
             if only and et not in only:
@@ -420,7 +489,37 @@ class Day:
             result["akcija_236"] = self.launch_236(send_date, live, result["akcija_excl"])
         for t in result["types"]:
             t.pop("decisions", None)
+        if live:
+            self.notify(*report_mail(result, "sent"))
         return result
+
+    # -- D49 pacing (LIVE): 10 min between campaigns, each only after the previous one is 'sent' in Brevo
+    def pace(self):
+        last = getattr(self, "_last_campaign", None)
+        if not last:
+            return
+        cid, started = last
+        deadline = self.clock() + dt.timedelta(minutes=D49_FINISH_MAX_MIN)
+        while True:
+            st = (self.brevo("GET", f"/emailCampaigns/{int(cid)}", None) or {}).get("status")
+            if st == "sent":
+                break
+            if self.clock() > deadline:
+                raise SP.SendLocked([("D49", f"campaign {cid} not finished (status {st}) - the next one does not start")])
+            self.sleep(30)
+        wait = (started + dt.timedelta(minutes=D49_GAP_MIN) - self.clock()).total_seconds()
+        if wait > 0:
+            self.sleep(wait)
+
+    def notify(self, subject, text):
+        """Internal notice to raivis@alenda.lv (the only allowed non-client mail while flags are DRY)."""
+        try:
+            self.brevo("POST", "/smtp/email", {"sender": {"id": 2}, "to": [{"email": DG.ALERT_TO}],
+                                               "subject": subject, "textContent": text, "tags": ["send-day-report"]})
+            return True
+        except Exception as e:  # noqa: BLE001 - a notice never stops the day
+            print(f"NOTIFY_FAILED {type(e).__name__}: {str(e)[:200]}")
+            return False
 
     def day_guard(self, d, live) -> dict:
         """D47_DOUBLE + D47_UNEXPLAINED_CHANGE (held in every type, one alert mail) and D46_CAB_LINK_MISMATCH
@@ -480,8 +579,10 @@ class Day:
     def launch_236(self, d, live, refill) -> dict:
         import akcija_launch as AL
         try:
+            extra = [] if track_enabled("akcija", getattr(self, "_track_rows", None) or []) \
+                else ["D1 TRACK_NOT_ENABLED_BY_RAIVIS track=akcija"]
             return AL.launch(self.q, self.brevo, d, live, refill, getattr(self, "_d44", None), self.dash,
-                             gate_date=getattr(self, "gate_date", None))
+                             gate_date=getattr(self, "gate_date", None), pace=self.pace, extra_holds=extra)
         except Exception as e:  # noqa: BLE001 - a failed launch is reported, never retried blind
             msg = f"{type(e).__name__}: {str(e)[:300]}"
             if live:
@@ -552,7 +653,9 @@ class Day:
         res["cap"] = cap
         d1 = standing_approval(et, track, tid, track_rows, appr_rows, self.live_hash)
         d44 = (getattr(self, "_d44", None) or {}).get("commercial") if et in DG.COMMERCIAL else None
-        if d44:
+        if et == D50_FEEDBACK:
+            res["type_refusal"] = "D50_FEEDBACK_MOVED (244 moves to the delivery pipeline; these contacts get 236)"
+        elif d44:
             res["type_refusal"] = "D44 " + "; ".join(d44)
         elif d1:
             res["type_refusal"] = "D1 " + "; ".join(d1)
@@ -580,9 +683,11 @@ class Day:
         guard = getattr(self, "_guard", None) or {}
         cab = getattr(self, "_cab", None) or {}
 
+        d50 = getattr(self, "_d50", None) or {}
+
         def refuse(c):   # day guards first: D47 holds the contact in EVERY type; the cab link only priced letters
-            return (guard.get(c["master_key"]) or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None)
-                    or refuse0(c))
+            return (guard.get(c["master_key"]) or (d50.get(c["master_key"]) if et == D50_XSELL else None)
+                    or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None) or refuse0(c))
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
         chosen, decisions = select_audience(cands, 0 if (live and res["type_refusal"]) else cap, refuse)
@@ -601,7 +706,9 @@ class Day:
             self.dash("KĻŪDA", f"Sūtīšanas diena {d}: {et} - Mozello pasūtījumu spogulis vecāks par 60 min, "
                                f"{res['refused']['L9_' + S.HOLD_PAID_SOURCE_MISSING]} vēstules aizturētas")
         if live and chosen and not res["type_refusal"]:
+            self.pace()
             res.update(self._send(et, tid, track, d, chosen, plan_run))
+            self._last_campaign = (res["campaign_id"], self.clock())
         return self._record(res, d, live, cands, decisions)
 
     def block_gate(self, d, blocks, wait) -> dict:
@@ -1026,7 +1133,10 @@ def _prod():
     q = lambda sql: [dict(r) for r in c.query(sql).result()]  # noqa: E731
 
     def brevo(method, path, payload):
-        if method != "GET" and not l1_open(os.environ):
+        internal = path == "/smtp/email" and payload and \
+            all((r.get("email") or "").lower() in INTERNAL_NOTICE_TO for r in payload.get("to") or [{}]) \
+            and not payload.get("cc") and not payload.get("bcc")
+        if method != "GET" and not l1_open(os.environ) and not internal:
             raise SP.SendLocked([("L1", f"Brevo {method} {path} refused while L1 is closed")])
         return CAMP._call(method, path, payload)
 
@@ -1094,11 +1204,21 @@ def main(argv) -> int:
         print("TEST_236 " + json.dumps(AL.test(q, brevo, d, gate_date=gd), ensure_ascii=False, default=str)[:6000])
         return 0
     only = set(args["only"].split(",")) if args.get("only") else None
+    sim = args.get("d44-simulate-pass") == "1"
+    force_double = args.get("d47-force-double")
     q, wh, brevo, pd_post, dash = _prod()
     day = Day(q, wh, brevo, pd_post, dash, os.environ)
     try:
         gd = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
+        day.d44_simulate_pass = sim
+        day.d47_force_double = force_double
         res = day.run(d, mode=mode, caps_override=caps, only=only, gate_date=gd)
+        if args.get("notify") == "check":                  # 08:05 Rīta pārbaude
+            subj, text = report_mail(res, "check")
+            day.notify(subj, text)
+            if "IR AIZTURĒTAIS" in subj:
+                dash("KĻŪDA", f"{subj}: " + text.replace("\n", " | ")[:350])
+            res["notice"] = subj
     except SP.SendLocked as e:
         print("SEND_DAY_REFUSED " + str(e)[:800])
         dash("KĻŪDA", f"Sūtīšanas diena {d}: atteikts - {str(e)[:250]} - nekas nav sūtīts")
