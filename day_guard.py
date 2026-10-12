@@ -116,9 +116,9 @@ def monday_sql(d: dt.date) -> str:
     """The latest plan run of the day before: {(master_key, email_type)} due by d that would go, + its planned_at."""
     prev = d - dt.timedelta(days=1)
     return f"""
-WITH r AS (SELECT run_id, MAX(planned_at) AS at FROM `{M}.shadow_send_plan` WHERE plan_date = DATE '{prev}'
-           GROUP BY run_id ORDER BY at DESC LIMIT 1)
-SELECT p.master_key, p.email_type, (SELECT at FROM r) AS planned_at, (SELECT run_id FROM r) AS run_id
+WITH r AS (SELECT run_id, MAX(planned_at) AS p_at FROM `{M}.shadow_send_plan` WHERE plan_date = DATE '{prev}'
+           GROUP BY run_id ORDER BY p_at DESC LIMIT 1)
+SELECT p.master_key, p.email_type, (SELECT p_at FROM r) AS planned_at, (SELECT run_id FROM r) AS run_id
 FROM `{M}.shadow_send_plan` p WHERE p.run_id = (SELECT run_id FROM r) AND p.would_send
   AND p.planned_send_date <= DATE '{d}' AND p.email_type IS NOT NULL"""
 
@@ -163,7 +163,7 @@ def d44_facts_sql(d: dt.date) -> str:
 WITH wp AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`
             WHERE kind = 'weekly' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(n_mismatch, 0) = 0
               AND DATE(finished_at, 'Europe/Riga') = DATE '{d}' ORDER BY finished_at DESC LIMIT 1),
-cab AS (SELECT MAX(written_at) AS at,
+cab AS (SELECT MAX(written_at) AS t_at,
                COUNTIF(cabinet_price_gross < min_gross - 0.005) AS below_min,
                COUNTIF(cabinet_price_gross >= shop_gross) AS ge_shop,
                COUNTIF(SAFE_DIVIDE(shop_gross - cabinet_price_gross, shop_gross) >
@@ -171,13 +171,13 @@ cab AS (SELECT MAX(written_at) AS at,
                                        WHEN 'r3' THEN {RUNG_DEPTH['r3']} WHEN 'xs_intro' THEN {RUNG_DEPTH['xs_intro']}
                                        ELSE 0 END + 0.0005) AS too_deep
         FROM `{M}.cabinet_price_current` WHERE run_id = '{cab}'),
-lf AS (SELECT MAX(finished_at) AS at FROM `{M}.letter_fields_log` WHERE plan_date = DATE '{d}' AND status = 'OK'),
-ak AS (SELECT MAX(finished_at) AS at FROM `{M}.block_push_log`
+lf AS (SELECT MAX(finished_at) AS t_at FROM `{M}.letter_fields_log` WHERE plan_date = DATE '{d}' AND status = 'OK'),
+ak AS (SELECT MAX(finished_at) AS t_at FROM `{M}.block_push_log`
        WHERE run_date = DATE '{d}' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(errors, 0) = 0),
 tl AS (SELECT status, week_price_run_id, mirror_ingested_at, assembled_built_at FROM `{M}.ak_tuesday_log`
        WHERE run_date = DATE '{d}' AND mode = 'LIVE' ORDER BY logged_at DESC LIMIT 1)
-SELECT (SELECT run_id FROM wp) AS wp_run, (SELECT finished_at FROM wp) AS wp_at, cab.at AS cab_at,
-       cab.below_min, cab.ge_shop, cab.too_deep, lf.at AS lf_at, ak.at AS ak_at,
+SELECT (SELECT run_id FROM wp) AS wp_run, (SELECT finished_at FROM wp) AS wp_at, cab.t_at AS cab_at,
+       cab.below_min, cab.ge_shop, cab.too_deep, lf.t_at AS lf_at, ak.t_at AS ak_at,
        (SELECT status FROM tl) AS ak_status, (SELECT week_price_run_id FROM tl) AS ak_wp_run,
        (SELECT mirror_ingested_at FROM tl) AS ak_mirror_at, (SELECT assembled_built_at FROM tl) AS ak_assembled_at
 FROM cab, lf, ak"""
