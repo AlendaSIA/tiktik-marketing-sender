@@ -20,6 +20,7 @@ _PROD_RULES_SHA = _BG.FLOW_RULES_APPROVED_SHA
 
 _REFILL = None
 _GUARD = None
+_D44 = None
 
 
 def setUpModule():          # the fixtures below predate the v1.3 config: they run with it off unless a test turns it on
@@ -31,6 +32,9 @@ def setUpModule():          # the fixtures below predate the v1.3 config: they r
     global _GUARD
     _GUARD = _SD.Day.day_guard                # D47 / cab link have their own tests (tests/test_day_guard.py)
     _SD.Day.day_guard = lambda self, d, live: {"skipped": "test"}
+    global _D44
+    _D44 = _SD.Day.d44
+    _SD.Day.d44 = lambda self, d, live: {"skipped": "test"}
 
 
 def tearDownModule():
@@ -38,6 +42,7 @@ def tearDownModule():
     import send_day as _SD
     _SD.Day.refill_akcija_excl = _REFILL
     _SD.Day.day_guard = _GUARD
+    _SD.Day.d44 = _D44
 import send_path as SP  # noqa: E402
 
 TUE = dt.date(2026, 10, 13)

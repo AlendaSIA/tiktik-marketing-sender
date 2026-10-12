@@ -111,3 +111,34 @@ class Wiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class D44(unittest.TestCase):
+    OK = {"wp_run": "wp-1", "wp_at": "2026-10-13 00:31:00", "cab_at": "2026-10-13 02:50:00",
+          "lf_at": "2026-10-13 03:30:00", "ak_at": "2026-10-13 03:50:00", "below_min": 0, "ge_shop": 0, "too_deep": 0,
+          "ak_status": "BUILT", "ak_wp_run": "wp-1", "ak_mirror_at": "2026-10-13 02:20:00",
+          "ak_assembled_at": "2026-10-13 03:40:00"}
+
+    def test_correct_order_passes(self):
+        self.assertEqual(DG.d44_eval(self.OK), {"commercial": [], "akcija_236": []})
+
+    def test_no_tuesday_week_price_run_holds(self):
+        f = {**self.OK, "wp_run": None, "wp_at": None, "ak_status": "KLUDA", "ak_wp_run": None}
+        r = DG.d44_eval(f)
+        self.assertEqual(r["commercial"], ["D44_WEEK_PRICE_NOT_OK"])
+        self.assertIn("D44_AK_NOT_BUILT", r["akcija_236"])
+
+    def test_each_order_break_and_price_rule(self):
+        self.assertIn("D44_CAB_BEFORE_WEEK_PRICE", DG.d44_eval({**self.OK, "cab_at": "2026-10-13 00:00:00"})["commercial"])
+        self.assertIn("D44_LETTER_FIELDS_BEFORE_CAB", DG.d44_eval({**self.OK, "lf_at": "2026-10-13 02:00:00"})["commercial"])
+        self.assertIn("D44_AK_WRITER_BEFORE_LETTER_FIELDS",
+                      DG.d44_eval({**self.OK, "ak_at": "2026-10-13 03:00:00"})["commercial"])
+        self.assertIn("D44_PRICE_BELOW_MIN 2", DG.d44_eval({**self.OK, "below_min": 2})["commercial"])
+        self.assertIn("D44_AK_NOT_BUILT", DG.d44_eval({**self.OK, "ak_assembled_at": "2026-10-13 02:00:00"})["akcija_236"])
+        self.assertEqual(DG.d44_eval({**self.OK, "ak_assembled_at": "2026-10-13 02:00:00"})["commercial"], [])
+
+    def test_sql_reads_the_chain_of_the_day(self):
+        s = DG.d44_facts_sql(dt.date(2026, 10, 13))
+        for must in ("kind = 'weekly'", "mode = 'LIVE'", "cab-20261013", "letter_fields_log", "block_push_log",
+                     "ak_tuesday_log", "min_gross", "shop_gross"):
+            self.assertIn(must, s)

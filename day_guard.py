@@ -142,3 +142,82 @@ def alert_text(d, double: dict, unexpl: dict, emails: dict) -> tuple:
         lines.append(f"{UNEXPLAINED}  {mk}  {emails.get(mk, '')}  {why}  (nav pirmdienas plānā, nav pasūtījuma)")
     subj = f"D47 sūtīšanas diena {d}: {len(double)} dubulti, {len(unexpl)} nepaskaidrotas izmaiņas - nekas nav sūtīts"
     return subj, "\n".join(lines)
+
+
+# ------------------------------------------------------------------------------------------------ D44
+# RAIVIS D44 (18:05): "first the shop prices are calculated, then the cabinet, then it appears in Brevo." On a send
+# day the commercial letters (and 236) go only when the whole chain ran TODAY and IN ORDER:
+#   week-price run (kind weekly, LIVE, finished today, OK, 0 mismatches)
+#   < cabinet run written (cab-YYYYMMDD of today)  < letter_fields run (today, OK)  < ak-writer push (today, LIVE OK)
+#   236 also: ak_tuesday_log today BUILT with today's week-price run and assembled_built_at > mirror_ingested_at
+#   and today's cabinet prices: 0 below MIN, 0 at/above the NEW shop price, 0 deeper than the rung.
+# Any fail -> those types are held (non-commercial types unaffected) + KĻŪDA; reason codes D44_*.
+COMMERCIAL = {"reorder_1", "active_xsell", "winback_1", "winback_2", "winback_3",
+              "winback_1_e2", "winback_2_e2", "winback_3_e2", "akcija_236"}
+RUNG_DEPTH = {"r1": 0.10, "r2": 0.15, "r3": 0.20, "xs_intro": 0.105}   # xs_intro: 10 % + rounding to x9 (measured 10.42 %)
+
+
+def d44_facts_sql(d: dt.date) -> str:
+    cab = f"cab-{d:%Y%m%d}"
+    return f"""
+WITH wp AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`
+            WHERE kind = 'weekly' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(n_mismatch, 0) = 0
+              AND DATE(finished_at, 'Europe/Riga') = DATE '{d}' ORDER BY finished_at DESC LIMIT 1),
+cab AS (SELECT MAX(written_at) AS at,
+               COUNTIF(cabinet_price_gross < min_gross - 0.005) AS below_min,
+               COUNTIF(cabinet_price_gross >= shop_gross) AS ge_shop,
+               COUNTIF(SAFE_DIVIDE(shop_gross - cabinet_price_gross, shop_gross) >
+                       CASE price_role WHEN 'r1' THEN {RUNG_DEPTH['r1']} WHEN 'r2' THEN {RUNG_DEPTH['r2']}
+                                       WHEN 'r3' THEN {RUNG_DEPTH['r3']} WHEN 'xs_intro' THEN {RUNG_DEPTH['xs_intro']}
+                                       ELSE 0 END + 0.0005) AS too_deep
+        FROM `{M}.cabinet_price_current` WHERE run_id = '{cab}'),
+lf AS (SELECT MAX(finished_at) AS at FROM `{M}.letter_fields_log` WHERE plan_date = DATE '{d}' AND status = 'OK'),
+ak AS (SELECT MAX(finished_at) AS at FROM `{M}.block_push_log`
+       WHERE run_date = DATE '{d}' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(errors, 0) = 0),
+tl AS (SELECT status, week_price_run_id, mirror_ingested_at, assembled_built_at FROM `{M}.ak_tuesday_log`
+       WHERE run_date = DATE '{d}' AND mode = 'LIVE' ORDER BY logged_at DESC LIMIT 1)
+SELECT (SELECT run_id FROM wp) AS wp_run, (SELECT finished_at FROM wp) AS wp_at, cab.at AS cab_at,
+       cab.below_min, cab.ge_shop, cab.too_deep, lf.at AS lf_at, ak.at AS ak_at,
+       (SELECT status FROM tl) AS ak_status, (SELECT week_price_run_id FROM tl) AS ak_wp_run,
+       (SELECT mirror_ingested_at FROM tl) AS ak_mirror_at, (SELECT assembled_built_at FROM tl) AS ak_assembled_at
+FROM cab, lf, ak"""
+
+
+def _t(v):
+    if v in (None, ""):
+        return None
+    if isinstance(v, dt.datetime):
+        return v if v.tzinfo else v.replace(tzinfo=dt.timezone.utc)
+    s = str(v).replace(" UTC", "").replace("Z", "+00:00")
+    x = dt.datetime.fromisoformat(s)
+    return x if x.tzinfo else x.replace(tzinfo=dt.timezone.utc)
+
+
+def d44_eval(f: dict) -> dict:
+    """f = one row of d44_facts_sql. -> {"commercial": [codes], "akcija_236": [codes]} (empty lists = pass)."""
+    wp, cab, lf, ak = _t(f.get("wp_at")), _t(f.get("cab_at")), _t(f.get("lf_at")), _t(f.get("ak_at"))
+    c = []
+    if not wp:
+        c.append("D44_WEEK_PRICE_NOT_OK")
+    if not cab:
+        c.append("D44_NO_CAB_RUN_TODAY")
+    elif wp and cab <= wp:
+        c.append("D44_CAB_BEFORE_WEEK_PRICE")
+    if not lf:
+        c.append("D44_NO_LETTER_FIELDS_TODAY")
+    elif cab and lf <= cab:
+        c.append("D44_LETTER_FIELDS_BEFORE_CAB")
+    if not ak:
+        c.append("D44_NO_AK_WRITER_TODAY")
+    elif lf and ak <= lf:
+        c.append("D44_AK_WRITER_BEFORE_LETTER_FIELDS")
+    for k, code in (("below_min", "D44_PRICE_BELOW_MIN"), ("ge_shop", "D44_PRICE_NOT_BELOW_NEW_SHOP"),
+                    ("too_deep", "D44_PRICE_DEEPER_THAN_RUNG")):
+        if int(f.get(k) or 0):
+            c.append(f"{code} {int(f[k])}")
+    a = list(c)
+    if not (f.get("ak_status") == "BUILT" and f.get("wp_run") and f.get("ak_wp_run") == f.get("wp_run")
+            and _t(f.get("ak_assembled_at")) and _t(f.get("ak_mirror_at"))
+            and _t(f.get("ak_assembled_at")) > _t(f.get("ak_mirror_at"))):
+        a.append("D44_AK_NOT_BUILT")
+    return {"commercial": c, "akcija_236": a}

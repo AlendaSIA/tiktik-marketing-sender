@@ -407,6 +407,7 @@ class Day:
         self._cands = {t["email_type"]: [dict(r) for r in self.q(candidates_sql(plan_run, send_date, t["email_type"]))]
                        for t in types if (not only or t["email_type"] in only) and is_send_day(t["email_type"], send_date)}
         result["day_guard"] = self.day_guard(send_date, live)
+        result["d44"] = self.d44(send_date, live)
         for t in types:
             et = t["email_type"]
             if only and et not in only:
@@ -461,6 +462,17 @@ class Day:
                                                    "subject": subj, "textContent": text, "tags": ["d47-guard"]})
                 out["alert"]["sent"] = True
                 self.dash("KĻŪDA", f"Sūtīšanas diena {d}: D47 aizturēti {len(self._guard)} kontakti - vēstule Raivim")
+        return out
+
+    def d44(self, d, live) -> dict:
+        """RAIVIS D44: the Tuesday price chain must have run today and in order; else commercial types are held."""
+        rows = [dict(r) for r in self.q(DG.d44_facts_sql(d))]
+        self._d44 = DG.d44_eval(rows[0] if rows else {})
+        out = {"facts": {k: (str(v) if v is not None else None) for k, v in (rows[0] if rows else {}).items()},
+               **self._d44}
+        if live and self._d44["commercial"]:
+            self.dash("KĻŪDA", f"Sūtīšanas diena {d}: D44 cenu ķēde nav pareizā secībā - "
+                               + "; ".join(self._d44["commercial"]) + " - komerciālās vēstules aizturētas")
         return out
 
     def refill_akcija_excl(self, d, live) -> dict:
@@ -526,7 +538,10 @@ class Day:
                        f"{_s(f'plan {len(cands)} + 5 % (MAIN 2 12.10 15:40)')})")
         res["cap"] = cap
         d1 = standing_approval(et, track, tid, track_rows, appr_rows, self.live_hash)
-        if d1:
+        d44 = (getattr(self, "_d44", None) or {}).get("commercial") if et in DG.COMMERCIAL else None
+        if d44:
+            res["type_refusal"] = "D44 " + "; ".join(d44)
+        elif d1:
             res["type_refusal"] = "D1 " + "; ".join(d1)
             if live and cap > 0:
                 self.dash("KĻŪDA", f"Sūtīšanas diena {d}: {et} atteikts - " + "; ".join(d1) + " - nekas nav sūtīts")
