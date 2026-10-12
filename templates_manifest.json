@@ -66,9 +66,9 @@
    "variant": "lost_quarterly",
    "id": 234,
    "file": "templates/lost_quarterly.html",
-   "git_blob": "e330a50f2393aeeb7168c48299c87e768f9c90f9",
-   "sha256": "6974fab7f46b480283de0785386d6d8f935a0bcd7a0854a4c256484dd27a6b23",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, tikai tev: {{ contact.P1_SHORT | default : 'tavas preces' }} — {{ contact.P1_PRICE }}{% if contact.OFFER_VALID_UNTIL %}, līdz {{ contact.OFFER_VALID_UNTIL }}{% endif %}",
+   "git_blob": "73d7ed736224af440ec07b43b07167dfac806e42",
+   "sha256": "c5eb70b8195cc74c674ac65c86c7246aca7ecac4e51d3b10512bce731a23beca",
+   "subject": "{% if contact.UZRUNA %}{{ contact.UZRUNA }}, {% endif %}{{ contact.P1_PRICE }} — {{ contact.P1_SHORT | default : 'tavas preces' }}",
    "preheader": "{% if contact.OFFER_VALID_UNTIL %}Speciālas cenas tavām precēm — spēkā līdz {{ contact.OFFER_VALID_UNTIL }}.{% endif %}",
    "name": "money:lost_quarterly v6 — 232 rāmis (3 daļas), Raivja stils (2026-10-01)",
    "purpose": "Quarterly wave to customers with no order for 12+ months: warm re-introduction, their restocked goods at a personal price until OFFER_VALID_UNTIL (contract v2.8), ordering via the cabinet."
