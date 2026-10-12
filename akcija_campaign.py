@@ -142,6 +142,14 @@ def frame_order_ok(frame: str) -> bool:
     return i > 0 and "contact.AK_HTML" in frame[:i]
 
 
+def _put_safe(put, path, text):
+    """The GCS copy is only for review; a write that is refused never hides the result."""
+    try:
+        return put(path, text)
+    except Exception as e:  # noqa: BLE001
+        return f"NOT_WRITTEN {type(e).__name__}: {str(e)[:120]}"
+
+
 def shadow(query, put, day=None, frame_fn=None, gate_date=None) -> dict:
     """v1.2 DRY: gate (AK-H1 + ak_maker_html), the campaign HTML = 236 frame with the writer's maker html at
     <!--MAKER_BLOCKS--> (written to GCS only), and the audience funnel. No Brevo write, no campaign."""
@@ -187,7 +195,7 @@ def shadow(query, put, day=None, frame_fn=None, gate_date=None) -> dict:
             out = fill_frame(frame or "", h)
             res["campaign"] = {"frame_order_ok": frame_order_ok(frame), "bytes": len(out.encode("utf-8")),
                                "sha256": hashlib.sha256(out.encode("utf-8")).hexdigest()[:12],
-                               "gcs": put(CAMPAIGN_GCS.format(week=week_id), out)}
+                               "gcs": _put_safe(put, CAMPAIGN_GCS.format(week=week_id), out)}
         except ValueError as e:
             res["campaign"] = f"HOLD FRAME: {e}"
     funnel = {}

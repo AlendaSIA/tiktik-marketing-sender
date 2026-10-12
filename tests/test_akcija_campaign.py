@@ -134,3 +134,14 @@ class FrameFromApproval(ShadowV12):
         r, _ = self._run(({"template_id": 313, "approved_sha256": "ab" * 32},))
         self.assertIn("brevo", r["campaign"])
         self.assertIn("!= approved abababababab", r["campaign"])
+
+
+class PutRefused(ShadowV12):
+    def test_refused_gcs_write_does_not_hide_the_result(self):
+        import datetime as dt
+
+        def put(p, t):
+            raise PermissionError("403")
+        r = C.shadow(self._q(), put, dt.date(2026, 10, 12), frame_fn=lambda t: self.FRAME)
+        self.assertTrue(r["campaign"]["gcs"].startswith("NOT_WRITTEN PermissionError"))
+        self.assertTrue(r["campaign"]["frame_order_ok"])
