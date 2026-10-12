@@ -15,11 +15,11 @@ D = dt.date
 
 
 class LostQuarterly(unittest.TestCase):
-    def test_second_lost_letter_waits_90_days(self):
-        st = S.record_sent(S.State("lq", "lost_wave", D(2026, 10, 1)), "lost_quarterly", D(2026, 10, 1), 4)
-        for today in (D(2026, 10, 2), D(2026, 11, 2), D(2026, 12, 29)):
-            self.assertEqual(S.advance(st, F("lost"), today).next_due_on, D(2026, 12, 30))
-        self.assertEqual(S.advance(st, F("lost"), D(2027, 2, 1)).next_due_on, D(2027, 2, 1))
+    def test_no_second_lost_letter_in_a_cycle(self):                          # D41 replaces LQ3 (90 d repeats)
+        st = S.record_sent(S.State("lq", "winback", D(2026, 1, 1), 5, 3, D(2026, 3, 1), "2026-03", None,
+                                   "winback_3_e2", D(2026, 3, 8)), "lost_quarterly", D(2026, 10, 1), 4)
+        for today in (D(2026, 10, 2), D(2027, 2, 1), D(2027, 9, 1)):
+            self.assertEqual(S.advance(st, F("lost"), today).hold_reason, "SEQUENCE_DONE")
 
     def test_lost_price_gate_capped_reads_rung_1_uncapped_any_row(self):
         far = D(2027, 1, 1)
@@ -43,8 +43,11 @@ class LostQuarterly(unittest.TestCase):
     def test_rung_cap_read_back_from_a_string_column(self):
         J = _job()
         self.assertEqual((J._int("1"), J._int(None), J._int("")), (1, None, None))
-        st = S.State("s", rung_cap=J._int("1"), rung_cap_until=D(2027, 1, 1))
-        self.assertTrue(S.advance(st, F("lost"), D(2026, 10, 1)).lost_capped)
+        st = S.State("s", "winback", D(2025, 9, 1), 6, 3, D(2026, 3, 25), "2026-03", None, "winback_3_e2", D(2026, 4, 1),
+                     rung_cap=J._int("1"), rung_cap_until=D(2027, 1, 1))
+        f = F("lost")
+        f.last_real_open_on = D(2026, 5, 1)
+        self.assertTrue(S.advance(st, f, D(2026, 10, 1)).lost_capped)
         src = open(os.path.join(ROOT, "sequence_job.py")).read()
         self.assertIn('_int(p.get("rung_cap"))', src)
 

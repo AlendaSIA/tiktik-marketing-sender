@@ -30,13 +30,14 @@ def stage_on(day, stage_today, last_order, thr, first_order=None):
     return "active"
 
 
-def project(S, state, *, stage_today, last_order, first_order, thr, suppressed=False, start, days=98, rungs=FAR):
+def project(S, state, *, stage_today, last_order, first_order, thr, suppressed=False, start, days=98, rungs=FAR,
+            opens=False):
     """-> [(date, email_type, rung, offer_valid_until)] the planner would send in [start, start+days)."""
     st, out = state, []
     for i in range(days):
         day = start + dt.timedelta(days=i)
         f = S.Facts(stage_on(day, stage_today, last_order, thr, first_order), last_order, first_order,
-                    suppressed, rungs, thr)
+                    suppressed, rungs, thr, last_real_open_on=day if opens else None)   # D41: opens=True = opens daily
         d = S.advance(st, f, day)
         if d.next_email_type and d.next_due_on == day and d.hold_reason is None:
             out.append((day, d.next_email_type, d.offer_rung, d.offer_valid_until))

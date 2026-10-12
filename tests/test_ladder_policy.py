@@ -54,21 +54,28 @@ class L2RungByStage(unittest.TestCase):
 class L3Lost(unittest.TestCase):
     # LOST QUARTERLY v1 (contract 17a8936613da): L3 retired for lost_quarterly - OFFER_RUNG 4, every 90 days,
     # the ladder rung is never moved by a lost letter.
-    def test_lost_is_rung_4_every_90_days_ladder_untouched(self):
+    # D40/D41 (Raivis 12.10): lost walks the winback chain; 234 = rung 4 ("dead") once, chain end + 180, openers only;
+    # the ladder rung is never moved by the 234 letter.
+    def test_lost_continues_the_chain_then_one_234_ladder_untouched(self):
         st = S.State("c", "winback", D(2026, 9, 1), 2, 2, D(2026, 10, 1), "2026-10", None, "winback_2", D(2026, 10, 1))
         got, day = [], D(2026, 11, 3)
-        while day < D(2027, 9, 1):
-            st, d = walk(st, "lost", day)
+        while day < D(2027, 12, 1):
+            f = F("lost")
+            f.last_real_open_on = day
+            d = S.advance(st, f, day)
             if d.next_due_on == day and d.hold_reason is None:
-                got.append((day, d.offer_rung))
+                got.append((day, d.next_email_type, d.offer_rung))
+                st = S.record_sent(d.state, d.next_email_type, day, d.offer_rung)
+            else:
+                st = d.state
             day += dt.timedelta(days=1)
-        self.assertEqual({r for _, r in got}, {4})
+        self.assertEqual([(g[1], g[2]) for g in got], [("winback_3", 3), ("winback_3_e2", 3), ("lost_quarterly", 4)])
         self.assertEqual(got[0][0], D(2026, 11, 12))                     # K8 floor after an E1 without its E2
-        self.assertEqual([(b[0] - a[0]).days for a, b in zip(got, got[1:])], [90, 90, 90])
-        self.assertEqual((st.rung, st.rung_month), (2, "2026-10"))
+        self.assertEqual(got[2][0], got[1][0] + dt.timedelta(days=180))
+        self.assertEqual(st.rung, 3)
 
-    def test_lost_without_reached_rung_is_rung_4(self):
-        self.assertEqual(S.advance(S.State("c2"), F("lost"), D(2026, 10, 1)).offer_rung, S.LOST_OFFER_RUNG)
+    def test_lost_without_reached_rung_starts_at_r1(self):
+        self.assertEqual(S.advance(S.State("c2"), F("lost"), D(2026, 10, 1)).offer_rung, 1)
 
 
 class L4Window(unittest.TestCase):
@@ -110,15 +117,18 @@ class L6AntiWaitingCap(unittest.TestCase):
         for day in (D(2027, 3, 1), D(2027, 4, 1), D(2027, 5, 3), D(2027, 6, 1)):
             st, d = walk(st, "winback" if day < D(2027, 6, 1) else "lost", day)
             got.append((d.offer_rung, d.lost_capped))
-        # winback capped at 1; the lost letter is rung 4 and carries lost_capped = true (LQ6, the writer prices rung 1)
-        self.assertEqual(got, [(1, None), (1, None), (1, None), (4, True)])
+        # winback capped at 1; D40: a lost contact walks the same chain -> also capped at 1
+        self.assertEqual(got, [(1, None), (1, None), (1, None), (1, None)])
 
     def test_lost_capped_follows_the_send_date(self):
-        st = S.State("lc", rung_cap=1, rung_cap_until=D(2026, 10, 10))
-        self.assertTrue(S.advance(st, F("lost"), D(2026, 10, 10)).lost_capped)
-        self.assertFalse(S.advance(st, F("lost"), D(2026, 10, 11)).lost_capped)
-        self.assertFalse(S.advance(S.State("lc2"), F("lost"), D(2026, 10, 1)).lost_capped)
-        self.assertIsNone(S.advance(st, F("winback"), D(2026, 10, 1)).lost_capped)   # only on lost plans
+        st = S.State("lc", "winback", D(2025, 9, 1), 6, 3, D(2026, 3, 25), "2026-03", None, "winback_3_e2",
+                     D(2026, 4, 1), rung_cap=1, rung_cap_until=D(2026, 10, 10))
+        f = F("lost")
+        f.last_real_open_on = D(2026, 5, 1)
+        self.assertTrue(S.advance(st, f, D(2026, 10, 10)).lost_capped)          # 234 due today (chain end + 180 < today)
+        self.assertFalse(S.advance(st, f, D(2026, 10, 11)).lost_capped)
+        self.assertIsNone(S.advance(S.State("lc2"), F("lost"), D(2026, 10, 1)).lost_capped)   # 180 r1, not a 234 plan
+        self.assertIsNone(S.advance(st, F("winback"), D(2026, 10, 1)).lost_capped) # held 234 (no opens) carries no flag
 
     def test_a_lost_letter_never_creates_a_cap(self):
         self.assertEqual(S.ladder_marks([{"email_type": "lost_quarterly", "rung": 4, "sent_on": D(2026, 11, 2)}],
@@ -131,10 +141,10 @@ class L6AntiWaitingCap(unittest.TestCase):
 
 
 class L7NoRestart(unittest.TestCase):
-    def test_lost_back_to_winback_without_purchase_is_held(self):
+    def test_after_234_no_restart_without_purchase(self):                    # D41: 234 closes the cycle
         st = S.State("r", "lost_wave", D(2026, 12, 1), 1, 3, D(2026, 12, 1), "2026-12", None, "lost_quarterly", D(2026, 12, 1))
         d = S.advance(st, F("winback", last_order=D(2026, 3, 1)), D(2027, 1, 5))
-        self.assertEqual((d.hold_reason, d.next_email_type), ("LADDER_NO_RESTART", None))
+        self.assertEqual((d.hold_reason, d.next_email_type), ("SEQUENCE_DONE", None))
 
     def test_after_a_purchase_a_new_walk_is_allowed(self):
         st = S.State("r2", "lost_wave", D(2026, 12, 1), 1, None, None, None, D(2027, 1, 2), "lost_quarterly", D(2026, 12, 1))

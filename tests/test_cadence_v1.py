@@ -107,7 +107,7 @@ class K4K5Episodes(unittest.TestCase):
     def test_full_walk_rungs_dates_and_windows(self):
         lo, thr = D(2026, 1, 1), 30
         out = C.project(S, S.State("k5"), stage_today="winback", last_order=lo, first_order=None, thr=thr,
-                        start=lo + dt.timedelta(days=thr + 57), days=400)
+                        start=lo + dt.timedelta(days=thr + 57), days=400, opens=True)
         wb = [o for o in out if o[1].startswith("winback")]
         self.assertEqual([(o[1], o[2]) for o in wb], [("winback_1", 1), ("winback_1_e2", 1), ("winback_2", 2),
                                                       ("winback_2_e2", 2), ("winback_3", 3), ("winback_3_e2", 3)])
@@ -116,9 +116,10 @@ class K4K5Episodes(unittest.TestCase):
         for a, b in zip(wb[::2], wb[1::2]):
             self.assertEqual(((b[0] - a[0]).days, a[3], b[3]), (7, a[0] + dt.timedelta(days=13), a[3]))
         lost = [o for o in out if o[1] == "lost_quarterly"]
-        self.assertGreaterEqual((lost[0][0] - wb[-1][0]).days, S.QUIET_GAP_DAYS)       # K4 before lost
-        self.assertEqual({o[2] for o in lost}, {4})                                     # LQ7 rung 4
-        self.assertTrue(all((b[0] - a[0]).days >= S.LOST_GAP_DAYS for a, b in zip(lost, lost[1:])))   # LQ3
+        self.assertEqual([(o[0], o[2]) for o in lost], [(wb[-1][0] + dt.timedelta(days=180), 4)])   # D41: once, +180
+        none = C.project(S, S.State("k5n"), stage_today="winback", last_order=lo, first_order=None, thr=thr,
+                         start=lo + dt.timedelta(days=thr + 57), days=400)
+        self.assertEqual([o for o in none if o[1] == "lost_quarterly"], [])                # D41: no opens, no 234
 
     def test_history_e1_before_track_entered_on_still_counts(self):
         # real state 30.09: track_entered_on 25.09 (first engine run), E1 = campaign 221 on 22.09
@@ -128,12 +129,32 @@ class K4K5Episodes(unittest.TestCase):
         d = S.advance(st, F("winback", last_order=D(2026, 9, 23)), D(2026, 12, 1))       # bought after it: new walk
         self.assertEqual(d.next_email_type, "winback_1")
 
-    def test_after_rung_3_episode_quiet_until_lost(self):
+    def test_after_rung_3_episode_234_at_plus_180_only_for_openers(self):       # D41
         st = S.State("k5b", "winback", D(2026, 1, 1), 6, 3, D(2026, 12, 18), "2026-12", None,
                      "winback_3_e2", D(2026, 12, 25))
-        self.assertEqual(S.advance(st, F("winback"), D(2027, 3, 1)).hold_reason, "SEQUENCE_DONE")
-        d = S.advance(st, F("lost"), D(2027, 1, 5))
-        self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung), ("lost_quarterly", D(2027, 1, 29), 4))
+        for stage in ("winback", "lost"):
+            d = S.advance(st, F(stage), D(2027, 3, 1))
+            self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung, d.hold_reason),
+                             ("lost_quarterly", D(2027, 6, 23), 4, S.HOLD_LOST_NO_OPENS))
+            f = F(stage)
+            f.last_real_open_on = D(2027, 2, 1)
+            d = S.advance(st, f, D(2027, 3, 1))
+            self.assertEqual((d.next_email_type, d.next_due_on, d.offer_rung, d.hold_reason),
+                             ("lost_quarterly", D(2027, 6, 23), 4, None))
+        f = F("lost")
+        f.last_real_open_on = D(2026, 12, 20)                                   # an open BEFORE the chain ended
+        self.assertEqual(S.advance(st, f, D(2027, 3, 1)).hold_reason, S.HOLD_LOST_NO_OPENS)
+        done = S.record_sent(st, "lost_quarterly", D(2027, 6, 23), 4)
+        f.last_real_open_on = D(2027, 8, 1)
+        self.assertEqual(S.advance(done, f, D(2027, 12, 1)).hold_reason, "SEQUENCE_DONE")   # once per cycle
+
+    def test_d40_lost_contact_enters_the_winback_chain_at_r1(self):
+        d = S.advance(S.State("lost1"), F("lost"), D(2026, 10, 13))
+        self.assertEqual((d.state.track, d.next_email_type, d.offer_rung, d.hold_reason), ("winback", "winback_1", 1, None))
+        self.assertEqual(S.TRACKS["lost"], S.TRACKS["winback"])
+        legacy = S.State("lw", "lost_wave", D(2026, 9, 25), 1, 1, D(2026, 9, 22), "2026-09", None, "winback_1", D(2026, 9, 22))
+        d = S.advance(legacy, F("lost"), D(2026, 10, 13))                      # legacy lost_wave state: chain goes on
+        self.assertEqual((d.state.track, d.next_email_type, d.offer_rung), ("winback", "winback_2", 2))
 
 
 class K6Purchase(unittest.TestCase):

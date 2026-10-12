@@ -325,6 +325,13 @@ ASSIGN_SQL = f"""SELECT master_key, ANY_VALUE(email_type) AS email_type, CAST(MA
 FROM `{P}.business_marts.contact_weekly_assignment` WHERE layer = 'commercial' GROUP BY 1"""
 # PA4 (known one-day lag, counted only): the letter type the price chain priced each person for.
 PRICED_TYPE_SQL = f"SELECT master_key, ANY_VALUE(email_type) AS email_type FROM `{RUNG_PRICE_SOURCE}` GROUP BY 1"
+# D41 (Raivis 12.10): 234 only for contacts who keep OPENING marketing letters without buying. Source = Brevo
+# webhook events business_marts.brevo_events_classified (is_marketing, 'opened' or 'clicks'), per master_key.
+# LIMIT (reported to MAIN 2): these 'opened' events carry no Apple MPP flag, so an automatic MPP open counts here;
+# the MPP split exists only in mkt_control.brevo_campaign_recipients_hist (campaigns 21.05-24.09, not refreshed).
+OPENS_SQL = f"""SELECT master_key, DATE(MAX(ts), 'Europe/Riga') AS last_open_on
+FROM `{P}.business_marts.brevo_events_classified`
+WHERE is_marketing AND event IN ('opened', 'clicks') AND master_key IS NOT NULL GROUP BY 1"""
 OFFERED_SQL = f"SELECT master_key, ARRAY_AGG(DISTINCT handle) AS handles FROM `{T_OFFERED}` GROUP BY 1"
 # TEMPLATE CONTENT v1 (contract bce3bccbc46b, TC1-TC5): an approval is of a CONTENT. A (template id, email type) counts
 # as approved only when mkt_control.template_approval.approved_sha256 (written by the templates conversation, TC2)
@@ -552,6 +559,7 @@ def main():
     tmap = {r["email_type"]: r["template_id"] for r in bq.query(
         f"SELECT email_type, ANY_VALUE(template_id) AS template_id FROM `{P}.mkt_control.email_template_map` "
         f"GROUP BY 1").result()}
+    opens = {r["master_key"]: r["last_open_on"] for r in bq.query(OPENS_SQL).result()}
     history = {}
     for r in bq.query(HISTORY_SQL).result():
         history.setdefault(r["master_key"], []).append(r)
@@ -656,7 +664,8 @@ def main():
         pp_nr, pp_on, pp_ship = pp_facts(pp_orders.get(mk), _d(f["last_order"]))
         d = S.advance(st, S.Facts(f["lifecycle_stage"], _d(f["last_order"]), _d(f["first_order"]),
                                   bool(f["suppressed"]), pr or None, f["entry_threshold_days"],
-                                  pp_nr, pp_on, pp_ship, last_sent(hist, S.PP1), last_sent(hist, S.XSELL)), today)
+                                  pp_nr, pp_on, pp_ship, last_sent(hist, S.PP1), last_sent(hist, S.XSELL),
+                                  _d(opens.get(mk))), today)
         tid, hold, tsrc = plan_template(d, tmap, TEMPLATES)
         # G15.2 (contract 73e8f700b2e2): the planner only REPORTS G15; the hard gate is send_path L7 (pre-send).
         w0 = letter_row(lf_rows, f["send_email"], d.next_email_type)

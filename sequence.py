@@ -261,7 +261,10 @@ TRACKS = {
     "reorder_due": ("reorder", ["reorder_1"]),                                  # K1
     "winback": ("winback", ["winback_1", "winback_1_e2", "winback_2", "winback_2_e2",
                             "winback_3", "winback_3_e2"]),                     # K3/K5 (order by last letter)
-    "lost": ("lost_wave", ["lost_quarterly"]),
+    # D40 (Raivis 12.10, MAIN 2 14:30): lost is NOT a separate flow - a lost contact walks the SAME winback chain
+    # from its start (180 r1 -> 232 r2 -> 233 r3, E2 variants). The lost_wave track is retired (no separate wave).
+    "lost": ("winback", ["winback_1", "winback_1_e2", "winback_2", "winback_2_e2",
+                         "winback_3", "winback_3_e2"]),
     "active": ("post_purchase", [PP1, XSELL]),                                  # POST-PURCHASE v1.2
 }
 
@@ -397,7 +400,12 @@ def lost_capped(s: "State", due: dt.date) -> bool:
 
 # Minimum gap between two letters of the same track. UNCONFIRMED where marked.
 ACTIVE_XSELL_GAP_DAYS = 28        # RETIRED 2026-10-05 (POST-PURCHASE v1.2: 235 once per purchase); history only
-LOST_REPEATS = True               # lost_quarterly repeats - LQ3: at most once per 90 days
+LOST_REPEATS = True               # lost_quarterly repeats - LQ3: at most once per 90 days (lost_wave only - retired by D40)
+# D41 (Raivis 12.10, MAIN 2 14:30): 234 is planned ~180 days AFTER the contact received the whole winback chain (the
+# rung-3 episode), only if the contact keeps OPENING letters but does not buy (a purchase ends the cycle, K6). Once per
+# cycle. Only 234 (rung "dead" = OFFER_RUNG 4) may carry MIN prices - priced by PAP, not here.
+LOST_AFTER_CHAIN_DAYS = 180
+HOLD_LOST_NO_OPENS = "LOST_NO_OPENS_SINCE_CHAIN"
 
 # GATE 232/233 (MAIN 2026-09-28 COMMAND 1 item 3, Vēstuļu šabloni pre-send row 13): winback_2 and
 # winback_3 are planned only for a contact whose letter will carry a non-empty OFFER_VALID_UNTIL.
@@ -442,6 +450,7 @@ class Facts:
     pp_ship_on: dt.date | None = None            # handed to the courier (P6 stage 62 / parcel staged) or picked up
     last_pp_sent_on: dt.date | None = None       # last 244
     last_xsell_sent_on: dt.date | None = None    # last 235
+    last_real_open_on: dt.date | None = None     # D41: latest open / click of a marketing letter (234 eligibility)
 
 
 @dc.dataclass
@@ -493,10 +502,8 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         setf("track", None)
         return Decision(s, None, None, 0, f"stage={f.lifecycle_stage}", "BLOCKED_OR_UNKNOWN", changes)
     track, letters = TRACKS[f.lifecycle_stage]
-    # L7: a ladder is walked once per cycle - back from lost to winback only after a purchase.
-    if track == "winback" and s.track == "lost_wave" and not (
-            f.last_order_on and s.track_entered_on and f.last_order_on > s.track_entered_on):
-        return Decision(s, None, None, 0, "lost -> winback without a purchase", HOLD_NO_RESTART, changes)
+    # L7 (one walk per cycle) is kept by next_episode_letter (the cycle is bounded by the last purchase). The old
+    # "lost -> winback only after a purchase" guard is retired with the lost_wave track (D40: one chain for both).
     if s.track != track:
         setf("track", track); setf("track_entered_on", today); setf("step", 0)
     # A purchase inside a track restarts it (the person's clock restarted).
@@ -513,9 +520,19 @@ def advance(prev: State, f: Facts, today: dt.date) -> Decision:
         nxt, due = e2
     elif track == "winback":
         nxt = next_episode_letter(s, f)
-        if nxt is None:                                       # K5: rung-3 episode done -> wait for stage lost
-            return Decision(s, None, None, 0, f"track={track} rung-3 episode done", "SEQUENCE_DONE", changes)
-        due = max(today, floor) if floor else today
+        if nxt is None and s.last_email_type == LOST:          # D41: 234 once per cycle
+            return Decision(s, None, None, 0, f"track={track} chain + 234 done", "SEQUENCE_DONE", changes)
+        if nxt is None:                                       # D41: rung-3 episode done -> 234 at chain end + 180 d
+            nxt = LOST
+            due = max(today, s.last_sent_on + dt.timedelta(days=LOST_AFTER_CHAIN_DAYS))
+            if floor:
+                due = max(due, floor)
+            if not (f.last_real_open_on and f.last_real_open_on > s.last_sent_on):
+                return Decision(s, nxt, due, LOST_OFFER_RUNG,
+                                f"track={track} chain done {s.last_sent_on}, no open since", HOLD_LOST_NO_OPENS,
+                                changes)
+        else:
+            due = max(today, floor) if floor else today
         # L8: reorder worked in an earlier cycle -> winback_1 no earlier than 2 x the configured gap
         # ("later cycle" = the cycle that the worked order itself started, or any after it)
         if nxt == "winback_1" and s.reorder_worked_at and f.last_order_on and f.entry_threshold_days is not None \
@@ -599,6 +616,8 @@ def next_episode_letter(s: State, f: Facts):
     track_entered_on 25.09 AFTER campaign 221 (22.09) was applied from history (measured 30.09, 72 contacts)."""
     purchased = f.last_order_on is not None and s.last_sent_on is not None and f.last_order_on >= s.last_sent_on
     last = s.last_email_type if (s.last_sent_on and not purchased) else None
+    if last == LOST:
+        return None                                               # D41: 234 closes the cycle
     if last not in RUNG_OF:
         return E1_BY_RUNG[1]
     r = RUNG_OF[last]

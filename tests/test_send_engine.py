@@ -68,7 +68,9 @@ class Ladder(unittest.TestCase):
         st, got, day = S.State("m2"), [], D(2026, 9, 25)
         while day < D(2027, 3, 1):
             stage = "winback" if day < D(2027, 1, 1) else "lost"
-            d = S.advance(st, facts(stage, D(2026, 3, 1), rungs=far), day)
+            f = facts(stage, D(2026, 3, 1), rungs=far)
+            f.last_real_open_on = day                                        # D41: an opener
+            d = S.advance(st, f, day)
             if d.next_due_on == day and d.hold_reason is None:
                 got.append((d.next_email_type, d.offer_rung, day))
                 st = S.record_sent(d.state, d.next_email_type, day, d.offer_rung)
@@ -77,9 +79,10 @@ class Ladder(unittest.TestCase):
             day += dt.timedelta(days=1)
         self.assertEqual([g[:2] for g in got[:7]], [
             ("winback_1", 1), ("winback_1_e2", 1), ("winback_2", 2), ("winback_2_e2", 2),
-            ("winback_3", 3), ("winback_3_e2", 3), ("lost_quarterly", 4)])     # LQ7: lost offer = rung 4
-        self.assertEqual([g[2] for g in got[:7]], [D(2026, 9, 25), D(2026, 10, 2), D(2026, 11, 6), D(2026, 11, 13),
-                                                  D(2026, 12, 18), D(2026, 12, 25), D(2027, 1, 29)])
+            ("winback_3", 3), ("winback_3_e2", 3)])
+        self.assertEqual([g[2] for g in got[:6]], [D(2026, 9, 25), D(2026, 10, 2), D(2026, 11, 6), D(2026, 11, 13),
+                                                  D(2026, 12, 18), D(2026, 12, 25)])
+        self.assertEqual(len(got), 6)                 # D41: the 234 comes only at chain end + 180 (23.06.2027)
 
     def test_never_two_letters_or_two_drops_in_one_month(self):
         st = S.State("m3")
