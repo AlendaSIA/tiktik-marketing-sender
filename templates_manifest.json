@@ -168,7 +168,7 @@
    "file": "templates/winback_1_e2.html",
    "git_blob": "d6448b46decbf057ab8723d11ec0d511c1dac699",
    "sha256": "c39acc66a0c483907bac691a76733308346a84cc3914a153fa4d187e5739f2a0",
-   "subject": "{{ contact.UZRUNA | default : 'Sveiki' }}, vēl 7 dienas: {{ contact.P1_SHORT | default : 'tavām ierastajām precēm' }} — {{ contact.P1_PRICE }}, tikai tev",
+   "subject": "{% if contact.UZRUNA %}{{ contact.UZRUNA }}, tavas cenas tavām precēm vēl 7 dienas{% else %}Tavas cenas tavām precēm vēl 7 dienas{% endif %}",
    "name": "money:winback_1_e2 v5 — P1 tematā un H1 (Raivis 11.10 10:29)"
   },
   {
