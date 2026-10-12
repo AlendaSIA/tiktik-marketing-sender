@@ -119,7 +119,20 @@ FROM x LEFT JOIN s USING (email) LEFT JOIN bs USING (email) LEFT JOIN sg USING (
 WHERE x.l3"""
 
 
-TEMPLATE_ID = 236
+TEMPLATE_ID = 236                  # legacy id of the weekly letter; the CAMPAIGN frame is never taken from it
+EMAIL_TYPE = "akcija_weekly"       # MAIN 11.10 19:55 (C) via MAIN 2 12.10: frame = the approval row of this type
+T_APPROVAL = f"{M}.template_approval"
+
+
+def frame_template(query):
+    """The 236 campaign frame id from the approval rows: exactly ONE approved row (by Raivis) of email_type
+    'akcija_weekly' with a sha. -> ({"template_id", "approved_sha256"}, None) or (None, "HOLD FRAME_ID ...")."""
+    rows = query(f"SELECT template_id, approved_sha256 FROM `{T_APPROVAL}` WHERE email_type = '{EMAIL_TYPE}' "
+                 f"AND approved AND approved_by = 'Raivis' AND approved_sha256 IS NOT NULL")
+    if len(rows) != 1:
+        return None, f"HOLD FRAME_ID: {len(rows)} approved rows for {EMAIL_TYPE} (exactly one needed)"
+    r = rows[0]
+    return {"template_id": int(r["template_id"]), "approved_sha256": str(r["approved_sha256"]).strip().lower()}, None
 CAMPAIGN_GCS = "gs://jaunais-za-aizv04022026-brevo-history/_akcija/campaign_{week}.html"
 
 
@@ -135,7 +148,9 @@ def shadow(query, put, day=None, frame_fn=None, gate_date=None) -> dict:
     import block_gate as BG
     day = day or dt.date.today()
     tue, week_id, _end = A.week_of(day)
-    res = {"week_id": week_id, "send_date": tue.isoformat(), "template_id": TEMPLATE_ID}
+    res = {"week_id": week_id, "send_date": tue.isoformat()}
+    frame_row, frame_why = frame_template(query)
+    res["template_id"] = frame_row["template_id"] if frame_row else None
     gd = str(gate_date or res["send_date"])      # MAIN 19:05: DRY may test the gate against another day's push rows
     if gd != res["send_date"]:
         res["gate_date"] = gd
@@ -161,8 +176,14 @@ def shadow(query, put, day=None, frame_fn=None, gate_date=None) -> dict:
         res["maker"] = {"html_bytes": len(h.encode("utf-8")), "html_sha256": str(row["html_sha256"])[:12],
                         "sha_matches_html": full.startswith(str(row["html_sha256"]).strip().lower()),
                         "built_at": str(row.get("built_at"))}
-        frame = frame_fn(TEMPLATE_ID) if frame_fn else ""
+        frame = frame_fn(frame_row["template_id"]) if (frame_fn and frame_row) else ""
+        live_sha = hashlib.sha256((frame or "").encode("utf-8")).hexdigest()
         try:
+            if frame_why:
+                raise ValueError(frame_why[len("HOLD FRAME: "):] if frame_why.startswith("HOLD FRAME: ") else frame_why)
+            if live_sha != frame_row["approved_sha256"]:
+                raise ValueError(f"template {frame_row['template_id']} brevo {live_sha[:12]} != approved "
+                                 f"{frame_row['approved_sha256'][:12]}")
             out = fill_frame(frame or "", h)
             res["campaign"] = {"frame_order_ok": frame_order_ok(frame), "bytes": len(out.encode("utf-8")),
                                "sha256": hashlib.sha256(out.encode("utf-8")).hexdigest()[:12],
