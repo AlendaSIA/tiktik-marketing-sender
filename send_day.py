@@ -69,6 +69,7 @@ T_CAP, T_AUD, T_RUN = f"{M}.send_cap", f"{M}.send_day_audience", f"{M}.send_day_
 T_TRACK, T_APPROVAL = f"{M}.track_enabled", f"{M}.template_approval"
 T_LOG, T_ADV, T_STATE = f"{M}.send_log", f"{M}.send_state_advance", f"{M}.contact_sequence_state"
 T_PDW, T_SUPP = f"{M}.shadow_pd_writes", f"{P}.business_marts.email_suppression_all"
+T_OFFERED = f"{M}.xsell_offered"     # R7 PP3: one row per (recipient, R product) of every sent 235
 RIGA = zoneinfo.ZoneInfo("Europe/Riga")
 APPROVER = "Raivis"
 INTERNAL_NOTICE_TO = {"raivis@alenda.lv"}      # D47/D48 notices may go while L1 is closed - never to a client
@@ -77,6 +78,8 @@ EDUCATIONAL_TYPES = frozenset()              # the new plan holds no educational
 SUPPRESSION_LIST_ID = 4
 LIST_FOLDER_ID = 1
 ADD_CHUNK = 150
+BQ_CHUNK = 500                               # R6: rows per batched INSERT / keys per UPDATE (query size < 1 MB)
+PD_WORKERS_DEFAULT = 4                       # R6: parallel Pipedrive activity writes (env PD_WORKERS overrides)
 DUE_LOOKBACK_DAYS = 90
 # THE PROOF RECIPIENT is ONE configured value: env PROOF_RECIPIENT on the Cloud Run job tiktik-send-day (MAIN
 # 2026-10-09 18:49: alenda.jurmala@gmail.com). Unset or not one address -> every proof path refuses. A proof's rows
@@ -607,14 +610,32 @@ class Day:
         try:
             extra = [] if track_enabled("akcija", getattr(self, "_track_rows", None) or []) \
                 else ["D1 TRACK_NOT_ENABLED_BY_RAIVIS track=akcija"]
-            return AL.launch(self.q, self.brevo, d, live, refill, getattr(self, "_d44", None), self.dash,
-                             gate_date=getattr(self, "gate_date", None), pace=self.pace, extra_holds=extra,
-                             exclude_sent_today=exclude_sent_today)
+            out = AL.launch(self.q, self.brevo, d, live, refill, getattr(self, "_d44", None), self.dash,
+                            gate_date=getattr(self, "gate_date", None), pace=self.pace, extra_holds=extra,
+                            exclude_sent_today=exclude_sent_today)
         except Exception as e:  # noqa: BLE001 - a failed launch is reported, never retried blind
             msg = f"{type(e).__name__}: {str(e)[:300]}"
             if live:
                 self.dash("KĻŪDA", f"236 {d} nav palaists - {msg}")
-            return {"launched": False, "error": msg}
+            out = {"launched": False, "error": msg}
+        if live:
+            self.record_236(d, out)
+        return out
+
+    def record_236(self, d, out):
+        """R6: the 236 launch leaves its send_day_run row too (email_type 'akcija_236', template 236; sent = the
+        audience Brevo counts at launch - list 3 minus blacklist and exclusions)."""
+        aud = (out or {}).get("audience") or {}
+        res = {"email_type": "akcija_236", "template_id": 236, "track": "akcija", "cap": None,
+               "candidates": int(aud.get("final") or 0), "chosen": int(aud.get("final") or 0) if out.get("launched") else 0,
+               "refused": {}, "type_refusal": None if out.get("launched") else
+               ("236_NOT_LAUNCHED " + str(out.get("error") or out.get("refused") or out.get("holds") or "")[:250]),
+               "campaign_id": out.get("campaign_id"), "list_id": 3,
+               "sent": int(aud.get("final") or 0) if out.get("launched") else 0}
+        try:
+            self._record(res, d, True, [], {})
+        except Exception as e:  # noqa: BLE001 - the row is bookkeeping; the launch already happened
+            print(f"RECORD_236_FAILED {type(e).__name__}: {str(e)[:200]}")
 
     def refill_akcija_excl(self, d, live) -> dict:
         """RAIVIS D46 (MAIN 2 12.10 18:35): right after the personal letters of a Tuesday, list 98 (AKCIJA IZSLĒGT) is
@@ -736,7 +757,13 @@ class Day:
                                f"{res['refused']['L9_' + S.HOLD_PAID_SOURCE_MISSING]} vēstules aizturētas")
         if live and chosen and not res["type_refusal"]:
             self.pace()
-            res.update(self._send(et, tid, track, d, chosen, plan_run))
+            try:
+                res.update(self._send(et, tid, track, d, chosen, plan_run))
+            except Exception as e:  # noqa: BLE001 - R6: a LIVE run ALWAYS leaves its send_day_run row, then raises
+                res["type_refusal"] = f"SEND_ERROR {type(e).__name__}: {str(e)[:250]}"
+                res["chosen"] = 0
+                self._record(res, d, live, cands, decisions)
+                raise
             self._last_campaign = (res["campaign_id"], self.clock())
             gone = set(res.get("not_in_brevo") or [])
             for c in chosen:
@@ -811,9 +838,11 @@ class Day:
                           brevo_send=lambda cid: self.brevo("POST", f"/emailCampaigns/{int(cid)}/sendNow", None),
                           log_sink=self.write_send_log, pd_writer=self._pd,
                           state_advance=lambda mk, e, on, rung: self.advance(mk, e, on, rung, batch, camp),
-                          offered_sink=None, now=self.now)
+                          state_advance_batch=lambda items: self.advance_batch(items, batch, camp),
+                          offered_sink=self.write_offered, now=self.now, pd_workers=self.pd_workers())
         return {"batch_id": batch, "list_id": lst["list_id"], "campaign_id": camp, "sent": out["sent"], "not_in_brevo": gone,
-                "pd_writes": out["pd_writes"], "pd_activity_ids": list(self.pd_ids)}
+                "pd_writes": out["pd_writes"], "pd_errors": out.get("pd_errors", 0),
+                "pd_activity_ids": list(self.pd_ids)}
 
     # -- PROOF (decision 2)
     def attr_types(self):
@@ -1050,7 +1079,18 @@ class Day:
         return int(self.brevo("POST", "/emailCampaigns", payload)["id"])
 
     # -- writers
+    def pd_workers(self):
+        try:
+            return max(1, int(self.env.get("PD_WORKERS") or PD_WORKERS_DEFAULT))
+        except ValueError:
+            return PD_WORKERS_DEFAULT
+
     def write_send_log(self, rows):
+        """R6: one INSERT per BQ_CHUNK rows (2550 rows = 6 statements, was one per run but only after ~2 h)."""
+        for i in range(0, len(rows or []), BQ_CHUNK):
+            self._write_send_log(rows[i:i + BQ_CHUNK])
+
+    def _write_send_log(self, rows):
         if not rows:
             return
         vals = ",".join(
@@ -1061,6 +1101,29 @@ class Day:
                             _s(r.get("reason"))]) + ")" for r in rows)
         self.q(f"INSERT INTO `{T_LOG}` (master_key, email, campaign_id, brevo_list_id, email_type, template_id, track, "
                f"step, rung, sent_at, source, run_id, brevo_message_id, utm_campaign, reason) VALUES {vals}")
+
+    def advance_batch(self, items, batch, camp):
+        """R6: the per-contact advance() for a whole campaign in 2 statements per BQ_CHUNK contacts (was 2 per contact,
+        ~22 contacts/min). items = [(master_key, email_type, sent_on, rung)] - one email_type and one sent_on per
+        campaign, so the UPDATE carries the same values advance() wrote one by one."""
+        items = list(items or [])
+        for i in range(0, len(items), BQ_CHUNK):
+            part = items[i:i + BQ_CHUNK]
+            vals = ",".join(f"({_s(mk)}, {_s(et)}, DATE '{on}', {int(rung or 0)}, {_s(batch)}, {int(camp)}, "
+                            f"CURRENT_TIMESTAMP())" for mk, et, on, rung in part)
+            self.q(f"INSERT INTO `{T_ADV}` VALUES {vals}")
+            for (et, on) in sorted({(et, str(on)) for _, et, on, _ in part}):
+                keys = ",".join(_s(mk) for mk, e, o, _ in part if e == et and str(o) == on)
+                self.q(f"UPDATE `{T_STATE}` SET last_email_type = {_s(et)}, last_sent_on = DATE '{on}', "
+                       f"step = IFNULL(step, 0) + 1, last_send_source = 'engine_live' WHERE master_key IN ({keys})")
+
+    def write_offered(self, rows):
+        """R7 PP3: every R product a sent 235 showed, so the next 235 never offers it again (presend XS_REPEAT)."""
+        rows = list(rows or [])
+        for i in range(0, len(rows), BQ_CHUNK):
+            vals = ",".join(f"({_s(r['master_key'])}, {_s(r['email'])}, {_s(r['handle'])}, TIMESTAMP {_s(r['sent_at'])}, "
+                            f"{int(r['campaign_id'])}, {_s(r['run_id'])})" for r in rows[i:i + BQ_CHUNK])
+            self.q(f"INSERT INTO `{T_OFFERED}` (master_key, email, handle, sent_at, campaign_id, run_id) VALUES {vals}")
 
     def advance(self, mk, et, on, rung, batch, camp):
         self.q(f"INSERT INTO `{T_ADV}` VALUES ({_s(mk)}, {_s(et)}, DATE '{on}', {int(rung or 0)}, {_s(batch)}, "
@@ -1201,10 +1264,15 @@ def _prod():
             raise SP.SendLocked([("L1", f"Brevo {method} {path} refused while L1 is closed")])
         return CAMP._call(method, path, payload)
 
+    tok_cache = {}
+
     def pd_post(record):
+        import urllib.error
         import urllib.request
         import gsecret
-        tok = gsecret.read("PIPEDRIVE_API_TOKEN")
+        if "t" not in tok_cache:                         # R6: one Secret Manager read per run, not per contact
+            tok_cache["t"] = gsecret.read("PIPEDRIVE_API_TOKEN")
+        tok = tok_cache["t"]
         body = {"subject": record["subject"], "type": record["type_key"], "due_date": record["due_date"],
                 "done": 1 if record["done"] else 0, "note": record["note"]}
         if record.get("target_person_id"):
@@ -1212,8 +1280,14 @@ def _prod():
         req = urllib.request.Request(f"https://api.pipedrive.com/v1/activities?api_token={tok}",
                                      data=json.dumps(body).encode(), method="POST",
                                      headers={"content-type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read()).get("data", {}).get("id")
+        for attempt in range(5):                         # R6: parallel writes meet Pipedrive's burst limit -> back off
+            try:
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    return json.loads(r.read()).get("data", {}).get("id")
+            except urllib.error.HTTPError as e:
+                if e.code not in (429, 500, 502, 503, 504) or attempt == 4:
+                    raise
+                time.sleep(2 * (attempt + 1))
 
     def dash(status, text):
         import edu
