@@ -159,9 +159,13 @@ RUNG_DEPTH = {"r1": 0.10, "r2": 0.15, "r3": 0.20, "xs_intro": 0.105}   # xs_intr
 def d44_facts_sql(d: dt.date) -> str:
     cab = f"cab-{d:%Y%m%d}"
     return f"""
-WITH wp AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`
-            WHERE kind = 'weekly' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(n_mismatch, 0) = 0
-              AND DATE(finished_at, 'Europe/Riga') = DATE '{d}' ORDER BY finished_at DESC LIMIT 1),
+WITH wp0 AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`      -- R1 S1 (MAIN 3 13.10 (b)+(f)): the latest
+             WHERE kind = 'weekly' AND mode = 'LIVE'                             -- weekly LIVE run finished today; OK only with
+               AND DATE(finished_at, 'Europe/Riga') = DATE '{d}' ORDER BY finished_at DESC LIMIT 1),  -- 0 MOZ_FAIL/ERROR rows
+wp AS (SELECT wp0.run_id, wp0.finished_at FROM wp0
+       WHERE (SELECT COUNT(*) FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) > 0
+         AND (SELECT COUNTIF(r.status IN ('MOZ_FAIL', 'ERROR') OR r.mode != 'LIVE')
+              FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) = 0),
 cab AS (SELECT MAX(written_at) AS t_at,
                COUNTIF(cabinet_price_gross < min_gross - 0.005) AS below_min,
                COUNTIF(cabinet_price_gross >= shop_gross) AS ge_shop,

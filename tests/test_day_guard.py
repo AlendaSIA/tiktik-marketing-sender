@@ -153,3 +153,12 @@ class AlreadySent(unittest.TestCase):
             out = SD.Day.day_guard(d, dt.date(2026, 10, 13), True)
         self.assertEqual(d._guard, {"sentbefore": "ALREADY_SENT_TODAY"})
         self.assertEqual(out["already_sent_today"], 1)
+
+
+def test_r1_d44_s1_is_the_contract_definition():
+    """MAIN 3 13.10 (b): D44 uses the chain's S1 - latest weekly LIVE summary today + 0 MOZ_FAIL/ERROR rows, no status."""
+    import datetime as _dt
+    import day_guard as _DG
+    s = _DG.d44_facts_sql(_dt.date(2026, 10, 20))
+    assert "kind = 'weekly' AND mode = 'LIVE'" in s and "status = 'OK'" not in s.split("cab AS")[0]
+    assert "IFNULL(n_mismatch" not in s and "r.status IN ('MOZ_FAIL', 'ERROR')" in s
