@@ -602,13 +602,14 @@ class Day:
                                + "; ".join(self._d44["commercial"]) + " - komerciālās vēstules aizturētas")
         return out
 
-    def launch_236(self, d, live, refill) -> dict:
+    def launch_236(self, d, live, refill, exclude_sent_today=False) -> dict:
         import akcija_launch as AL
         try:
             extra = [] if track_enabled("akcija", getattr(self, "_track_rows", None) or []) \
                 else ["D1 TRACK_NOT_ENABLED_BY_RAIVIS track=akcija"]
             return AL.launch(self.q, self.brevo, d, live, refill, getattr(self, "_d44", None), self.dash,
-                             gate_date=getattr(self, "gate_date", None), pace=self.pace, extra_holds=extra)
+                             gate_date=getattr(self, "gate_date", None), pace=self.pace, extra_holds=extra,
+                             exclude_sent_today=exclude_sent_today)
         except Exception as e:  # noqa: BLE001 - a failed launch is reported, never retried blind
             msg = f"{type(e).__name__}: {str(e)[:300]}"
             if live:
@@ -1270,7 +1271,7 @@ def main(argv) -> int:
             if args.get("d52-override") == D52_REASON else day.d44(d, live)
         refill = day.refill_akcija_excl(d, live)
         res = {"run_id": day.run_id, "mode": "live" if live else "dry", "akcija_excl": refill,
-               "akcija_236": day.launch_236(d, live, refill)}
+               "akcija_236": day.launch_236(d, live, refill, exclude_sent_today=True)}
         if live:
             day.notify(*report_mail({"send_date": str(d), "types": [], **res}, "sent"))
         print("ONLY_236 " + json.dumps(res, ensure_ascii=False, default=str)[:6000])

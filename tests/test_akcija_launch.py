@@ -34,6 +34,12 @@ def brevo_fn(sent):
             off = int(path.split("offset=")[1])
             rows = lists.get(lid, []) if off == 0 else []
             return {"contacts": [{"email": e, "emailBlacklisted": b} for e, b in rows]}
+        if m == "GET" and path.startswith("/emailCampaigns?"):
+            return {"campaigns": [
+                {"name": "SD 2026-10-13 winback_1 (x)", "status": "queued", "recipients": {"lists": [104]}},
+                {"name": "SD 2026-10-13 active_xsell (y)", "status": "draft", "recipients": {"lists": [103]}},
+                {"name": "SD 2026-10-12 reorder_1 (z)", "status": "sent", "recipients": {"lists": [90]}},
+                {"name": "SD 2026-10-13 reorder_1 (w)", "status": "sent", "recipients": {"lists": [102]}}]}
         if m == "POST" and path == "/emailCampaigns":
             sent.append(("create", body))
             return {"id": 901}
@@ -73,6 +79,15 @@ class Launch(unittest.TestCase):
         self.assertEqual(body["recipients"], {"listIds": [3], "exclusionListIds": [4, 46, 75, 96, 98]})
         self.assertIn("<b>maker</b>", body["htmlContent"])
         self.assertEqual(sent[1], ("send", "/emailCampaigns/901/sendNow"))
+
+    def test_only_236_also_excludes_the_lists_the_engine_sent_to_today(self):
+        """D52 13.10: send_log/outcome of a big personal campaign are written ~2 h after the send - 236 must not wait."""
+        sent = []
+        with OK_GATES:
+            r = AL.launch(Q(), brevo_fn(sent), D, True, {"brevo": {"list_id": 98}}, {"akcija_236": []}, mock.Mock(),
+                          exclude_sent_today=True)
+        self.assertEqual(r["sent_today_lists"], [102, 104])            # the draft (103) and yesterday's (90) are not
+        self.assertEqual(sent[0][1]["recipients"], {"listIds": [3], "exclusionListIds": [4, 46, 75, 96, 98, 102, 104]})
 
     def test_live_any_hold_no_campaign_kluda_and_alert(self):
         for d44, refill in ((["D44_AK_NOT_BUILT"], {"brevo": {"list_id": 98}}), ([], {"error": "x"}),

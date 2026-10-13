@@ -80,7 +80,24 @@ def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, s
     return {"campaign_id": cid, "sent": True, "unfilled_marks_in_frame_text": hits[:5]}
 
 
-def final_audience(q, brevo, d: dt.date, excl98_emails: set, list98_id) -> dict:
+def sent_today_lists(brevo, d: dt.date) -> list:
+    """D52 13.10: the Brevo lists the engine's personal campaigns of `d` went to (name 'SD <d> ...', status sent /
+    queued / in process). 236 excludes them as well, so a personal letter whose send_log / outcome rows are still being
+    written (per-contact bookkeeping runs ~22/min) can never get 236 on top."""
+    out, off = [], 0
+    while off < 500:
+        r = brevo("GET", f"/emailCampaigns?limit=100&offset={off}&sort=desc&excludeHtmlContent=true", None) or {}
+        page = r.get("campaigns") or []
+        for c in page:
+            if (c.get("name") or "").startswith(f"SD {d} ") and c.get("status") in ("sent", "queued", "in_process"):
+                out += [int(x) for x in (c.get("recipients") or {}).get("lists") or []]
+        if len(page) < 100:
+            break
+        off += 100
+    return sorted(set(out))
+
+
+def final_audience(q, brevo, d: dt.date, excl98_emails: set, list98_id, extra_lists=()) -> dict:
     """The 236 audience as Brevo will count it: list 3 members not blacklisted, minus lists 4/46/75/96 and list 98.
     DRY passes the FORECAST list 98 (send-day outcome table) because a DRY day never pushes 98 to Brevo."""
     import flow_gate as FG
@@ -98,7 +115,7 @@ def final_audience(q, brevo, d: dt.date, excl98_emails: set, list98_id) -> dict:
     l3 = members(AC.LIST_ALL)
     ex = set()
     per = {}
-    for lid in EXCLUSIONS:
+    for lid in list(EXCLUSIONS) + list(extra_lists):
         m = set(members(lid))
         per[lid] = len(m & set(l3))
         ex |= m
@@ -109,9 +126,10 @@ def final_audience(q, brevo, d: dt.date, excl98_emails: set, list98_id) -> dict:
 
 
 def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, dash, gate_date=None, pace=None,
-           extra_holds=()) -> dict:
+           extra_holds=(), exclude_sent_today=False) -> dict:
     import flow_gate as FG
     b = build(q, brevo, d, gate_date)
+    sent_lists = sent_today_lists(brevo, d) if exclude_sent_today else []
     holds = list(b["holds"]) + list(extra_holds)
     holds += [c for c in (d44 or {}).get("akcija_236", [])]
     if not refill or refill.get("error"):
@@ -121,7 +139,8 @@ def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, das
     excl = {r["email"] for r in q(f"SELECT email FROM `{FG.T_EXCL}` WHERE send_date = DATE '{d}'")}
     lid98 = (refill or {}).get("brevo", {}).get("list_id") if refill and refill.get("brevo") else None
     out = {k: v for k, v in b.items() if k != "html"}
-    out["audience"] = final_audience(q, brevo, d, excl, lid98)
+    out["audience"] = final_audience(q, brevo, d, excl, lid98, sent_lists)
+    out["sent_today_lists"] = sent_lists
     out["holds"] = holds
     if holds:
         out["launched"] = False
@@ -139,7 +158,7 @@ def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, das
     lid98 = refill["brevo"]["list_id"]
     if pace:
         pace()                                   # D49: 236 last, >= 10 min after the last personal campaign
-    out.update(create_and_send(brevo, b, AC.LIST_ALL, EXCLUSIONS + [int(lid98)], f"236 {d} {b['week_id']} (engine)"))
+    out.update(create_and_send(brevo, b, AC.LIST_ALL, EXCLUSIONS + [int(lid98)] + sent_lists, f"236 {d} {b['week_id']} (engine)"))
     out["launched"] = out.get("sent", False)
     return out
 
