@@ -207,3 +207,13 @@ def test_dry_mode_runs_dry_everywhere():
     ch = T.Chain(FakeBQ(f), run, lambda t: True, env, now=dt.datetime(2026, 10, 19, 0, 31, tzinfo=U))
     ch.tick()
     assert run.calls == [("tiktik-week-prices", ["--dry"], {})]
+
+
+def test_first_date_guard_and_dry_s3_must_be_chain_started():
+    ch, _ = chain(facts(), (5, 0), env={"CHAIN_FIRST_DATE": "2026-10-27"})
+    assert "chain starts on 2026-10-27" in ch.tick()["skip"]
+    c = T.Cfg({"CHAIN_MODE": "DRY"}, dt.datetime.fromisoformat(z(10, 0)))
+    daily = facts(s3ok={"run_id": "lf-0840", "run_ts": z(8, 40), "finished_at": z(8, 48)})
+    s2 = dt.datetime.fromisoformat(z(5, 50))
+    assert not T.verdict_s3(daily, c, s2, min_ts=dt.datetime.fromisoformat(z(9, 30)))[0]
+    assert T.verdict_s3(daily, c, s2, min_ts=dt.datetime.fromisoformat(z(8, 30)))[0]

@@ -72,6 +72,8 @@ class Cfg:
         self.start = hhmm(env.get("CHAIN_START"), dt.time(3, 30)) if dry else dt.time(3, 30)
         self.deadline = hhmm(env.get("CHAIN_DEADLINE"), dt.time(8, 45)) if dry else dt.time(8, 45)
         self.cab = f"cab-{self.date:%Y%m%d}"
+        fd = (env.get("CHAIN_FIRST_DATE") or "").strip()
+        self.first_date = dt.date.fromisoformat(fd) if fd else None
 
     def at(self, t):
         return dt.datetime.combine(self.date, t, RIGA).astimezone(dt.timezone.utc)
@@ -167,9 +169,10 @@ def verdict_s2(f, c: Cfg, s1_at):
     return True, la, f"{c.cab} ok=true logged {la:%H:%M:%S}Z, {int(s2.get('n') or 0)} rows{extra}"
 
 
-def verdict_s3(f, c: Cfg, s2_at):
+def verdict_s3(f, c: Cfg, s2_at, min_ts=None):
+    """min_ts (DRY only): the OK run must be one the chain itself started (the normal Monday 08:40 run does not count)."""
     ok = f.get("s3ok")
-    if ok and s2_at and _aware(ok["run_ts"]) > s2_at:
+    if ok and s2_at and _aware(ok["run_ts"]) > s2_at and (min_ts is None or _aware(ok["run_ts"]) >= min_ts):
         return True, _aware(ok["finished_at"]), f"{ok['run_id']} OK cab_ok=true {c.cab}"
     last = f.get("s3") or {}
     if last:
@@ -276,6 +279,8 @@ class Chain:
         c, now_r = self.c, self.now.astimezone(RIGA)
         if c.mode == "LIVE" and c.date.weekday() != 1:
             return {"skip": "LIVE mode runs on Tuesdays only"}
+        if c.first_date and c.date < c.first_date:
+            return {"skip": f"chain starts on {c.first_date}"}
         if now_r.time() < c.start and now_r.date() == c.date:
             return {"skip": f"before {c.start:%H:%M}"}
         self.q(DDL)
@@ -307,7 +312,8 @@ class Chain:
             self.put("S2", ok=False, status="WAITING", reason=why2, started_at=(self._rows.get("S2") or {}).get("started_at") or at1.isoformat())
             return self.finish(out, "S2", why2, past_deadline)
         # S3 - letter_fields: start only after S2 OK
-        ok3, at3, why3 = verdict_s3(f, c, at2)
+        s3_first = _aware((self._rows.get("S3") or {}).get("started_at")) if c.mode == "DRY" else None
+        ok3, at3, why3 = verdict_s3(f, c, at2, min_ts=(s3_first or self.now) if c.mode == "DRY" else None)
         if not done("S3", ok3, at3, why3, {"lf": f.get("s3ok")}):
             if past_deadline:
                 return self.finish(out, "S3", why3, True)
