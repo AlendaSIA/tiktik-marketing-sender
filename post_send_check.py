@@ -17,6 +17,12 @@ Runs as job tiktik-post-send-check, started by Cloud Scheduler every 15 min on T
      mkt_control.post_send_check_detail, and sends ONE WhatsApp line to Raivis (+37126711822 from +37122811277,
      TimelinesAI). Nothing is ever sent to a client.
 
+The Brevo key (tiktik-campaign-sa) and the TimelinesAI token (ops-cloudshell-runner) belong to two service accounts,
+so the WhatsApp line is sent by a second start of the same code, `--notify=1`, under the account that holds the
+token: it sends the line of every check row of the day whose whatsapp_uid and whatsapp_error are still empty and
+stamps them (job tiktik-post-send-notify, same schedule +5 min). When one account holds both, the check sends it
+itself (WA_INLINE=1).
+
 `python post_send_check.py --date=2026-10-13 [--force=1] [--no-whatsapp=1]` runs it by hand (force = no WAIT).
 """
 from __future__ import annotations
@@ -229,6 +235,24 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
             "whatsapp_error": err}
 
 
+def notify(q, wa_send, d: dt.date) -> dict:
+    """Send the WhatsApp line of every check row of the day not sent yet; stamp uid / error on the row."""
+    for ddl in DDL:
+        q(ddl)
+    rows = q(f"SELECT run_id, whatsapp_text FROM `{T_CHECK}` WHERE check_date = DATE '{d}' AND whatsapp_uid IS NULL "
+             f"AND whatsapp_error IS NULL AND whatsapp_text IS NOT NULL ORDER BY checked_at")
+    out = []
+    for r in rows:
+        uid = err = None
+        try:
+            uid = wa_send(r["whatsapp_text"])
+        except Exception as e:  # noqa: BLE001
+            err = f"{type(e).__name__}: {str(e)[:300]}"
+        q(f"UPDATE `{T_CHECK}` SET whatsapp_uid = {_s(uid)}, whatsapp_error = {_s(err)} WHERE run_id = {_s(r['run_id'])}")
+        out.append({"run_id": r["run_id"], "uid": uid, "error": err})
+    return {"date": str(d), "sent": out}
+
+
 # ------------------------------------------------------------------------------------------------ production wiring
 def _wa_send(text):
     import gsecret
@@ -248,17 +272,21 @@ def _fetch(url):
 
 def main(argv) -> int:
     from google.cloud import bigquery
-    import campaign as CAMP
     args = dict(a.lstrip("-").split("=", 1) for a in argv if "=" in a)
     d = dt.date.fromisoformat(args.get("date") or dt.datetime.now(RIGA).date().isoformat())
     c = bigquery.Client(project=P)
     q = lambda sql: [dict(r) for r in c.query(sql).result()]  # noqa: E731
+    if args.get("notify") == "1":
+        print("POST_SEND_NOTIFY " + json.dumps(notify(q, _wa_send, d), ensure_ascii=False, default=str))
+        return 0
+    import campaign as CAMP
 
     def brevo(method, path, payload):
         if method != "GET" and not (method == "POST" and path.endswith("/exportRecipients")):
             raise RuntimeError(f"post_send_check is read-only in Brevo ({method} {path} refused)")
         return CAMP._call(method, path, payload)
-    res = run(q, brevo, _fetch, _wa_send, d, force=args.get("force") == "1", whatsapp=args.get("no-whatsapp") != "1")
+    inline = os.environ.get("WA_INLINE") == "1" and args.get("no-whatsapp") != "1"
+    res = run(q, brevo, _fetch, _wa_send, d, force=args.get("force") == "1", whatsapp=inline)
     print("POST_SEND_CHECK " + json.dumps(res, ensure_ascii=False, default=str)[:20000])
     return 0
 

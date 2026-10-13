@@ -124,5 +124,21 @@ class Wait(unittest.TestCase):
         self.assertFalse([c for c in q.calls if c.startswith("INSERT")])
 
 
+class Notify(unittest.TestCase):
+    def test_sends_unsent_rows_and_stamps_them(self):
+        calls = []
+
+        def q(sql):
+            calls.append(sql)
+            if sql.startswith("SELECT run_id, whatsapp_text"):
+                return [{"run_id": "psc-1", "whatsapp_text": "✅ ok"}]
+            return []
+        sent = []
+        out = PSC.notify(q, lambda t: sent.append(t) or "uid-9", D)
+        self.assertEqual(sent, ["✅ ok"])
+        self.assertEqual(out["sent"], [{"run_id": "psc-1", "uid": "uid-9", "error": None}])
+        self.assertTrue(any("SET whatsapp_uid = 'uid-9'" in c and "'psc-1'" in c for c in calls))
+
+
 if __name__ == "__main__":
     unittest.main()
