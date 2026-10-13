@@ -52,14 +52,23 @@ LIST_ALL, EXCLUSIONS = 3, (4, 46, 75, 96)
 TEST_ADDRESSES = frozenset({"alenda.jurmala@gmail.com", "raivis@alenda.lv"})
 WA_TO, WA_FROM = "+37126711822", "+37122811277"
 DETAIL_SAMPLE = 5
+SUMMARY_TO = "raivis@alenda.lv"            # R17: Raivis' ONE Tuesday summary = this check (WhatsApp + the same e-mail)
+T_RUN = f"{M}.send_day_run"
+# R17: plain Latvian names of the letters for Raivis' summary (no internal codes)
+KIND_LV = (("reorder_1", "atgādinājums pasūtīt vēlreiz"), ("winback_1", "aicinājums atgriezties"),
+           ("winback_2", "aicinājums atgriezties (2.)"), ("winback_3", "aicinājums atgriezties (3.)"),
+           ("active_xsell", "papildpiedāvājums pircējiem"), ("lost_quarterly", "vēstule sen nepirkušajiem"),
+           ("post_purchase_feedback", "atsauksmes lūgums"), ("236 ", "nedēļas akcija"))
 
 DDL = [
     f"""CREATE TABLE IF NOT EXISTS `{T_CHECK}` (
   check_date DATE, run_id STRING, checked_at TIMESTAMP, ok BOOL, campaigns_json STRING, recipients_total INT64,
   recipients_distinct INT64, doubles INT64, eligible_lv INT64, empty_lv INT64, send_log_distinct INT64,
   brevo_not_in_send_log INT64, send_log_not_in_brevo INT64, whatsapp_text STRING, whatsapp_uid STRING,
-  whatsapp_error STRING, note STRING, excluded_cd INT64)""",
+  whatsapp_error STRING, note STRING, excluded_cd INT64, bookkeeping_max_s INT64, email_status STRING)""",
     f"ALTER TABLE `{T_CHECK}` ADD COLUMN IF NOT EXISTS excluded_cd INT64",
+    f"ALTER TABLE `{T_CHECK}` ADD COLUMN IF NOT EXISTS bookkeeping_max_s INT64",
+    f"ALTER TABLE `{T_CHECK}` ADD COLUMN IF NOT EXISTS email_status STRING",
     f"""CREATE TABLE IF NOT EXISTS `{T_DETAIL}` (
   check_date DATE, run_id STRING, kind STRING, email STRING, campaigns STRING, created_at TIMESTAMP)""",
 ]
@@ -185,21 +194,57 @@ def evaluate(campaigns, recipients: dict, eligible: set, send_log: set) -> dict:
             "ok": not doubles and not empty and bool(campaigns)}
 
 
+def kind_lv(c) -> str:
+    n = c.get("name") or ""
+    return next((lv for key, lv in KIND_LV if key in n or n.startswith(key)), n[:40])
+
+
+def _people(n):
+    return f"{n} cilvēks" if n % 10 == 1 and n % 100 != 11 else f"{n} cilvēki"
+
+
 def whatsapp_line(d, campaigns, ev) -> str:
-    ok = "✅" if ev["ok"] else "⚠️"
-    camps = " · ".join(f"{c['id']}={len(ev['_rcpt'].get(c['id'], ()))}" for c in campaigns) if campaigns else "nav kampaņu"
-    line = (f"{ok} Pēc-sūtīšanas pārbaude {d:%d.%m}: kampaņas {camps}; saņēma {ev['recipients_distinct']}; "
-            f"2+ vēstules: {len(ev['doubles'])}; bez vēstules: {len(ev['empty'])} no {ev['eligible_lv']} LV"
-            f" (c/d apzināti bez vēstules: {ev.get('excluded_cd', 0)})")
-    if ev["empty"]:
-        line += " (piem. " + ", ".join(ev["empty"][:3]) + ")"
+    """R17: Raivis' one Tuesday summary - plain Latvian, no internal codes or ids."""
+    if not campaigns:
+        return f"⚠️ Otrdienas vēstules {d:%d.%m}: šodien neviena vēstule netika izsūtīta."
+    parts = ", ".join(f"{kind_lv(c)} {len(ev['_rcpt'].get(c['id'], ()))}" for c in campaigns)
+    head = "✅" if ev["ok"] else "⚠️"
+    line = (f"{head} Otrdienas vēstules {d:%d.%m}: izsūtītas {len(campaigns)} ({parts}), "
+            f"kopā saņēma {ev['recipients_distinct']}.")
     if ev["doubles"]:
-        line += " (2+: " + ", ".join(list(ev["doubles"])[:3]) + ")"
+        line += f" {_people(len(ev['doubles']))} saņēma divas vēstules (piem. {', '.join(list(ev['doubles'])[:3])})."
+    else:
+        line += " Neviens nesaņēma divas vēstules."
+    if ev["empty"]:
+        line += f" {_people(len(ev['empty']))} palika bez vēstules (piem. {', '.join(ev['empty'][:3])})."
+    else:
+        line += " Visi, kam vēstule pienācās, to saņēma."
+    if ev.get("excluded_cd"):
+        line += f" {ev['excluded_cd']} aukstos B2B kontaktus un nekad nepirkušos šodien apzināti neuzrunājām."
     return line
 
 
+def bookkeeping(q, campaigns) -> dict:
+    """R6/5: seconds from Brevo's sentDate to the send_day_run row of that campaign (= bookkeeping finished)."""
+    ids = [int(c["id"]) for c in campaigns]
+    if not ids:
+        return {}
+    rows = q(f"SELECT campaign_id, MAX(finished_at) AS f FROM `{T_RUN}` WHERE mode = 'live' AND campaign_id IN "
+             f"({','.join(map(str, ids))}) GROUP BY 1")
+    fin = {int(r["campaign_id"]): r["f"] for r in rows}
+    out = {}
+    for c in campaigns:
+        f, sa = fin.get(int(c["id"])), _ts(c.get("sent_at"))
+        if f is not None and sa is not None:
+            f = f if isinstance(f, dt.datetime) else _ts(f)
+            if f.tzinfo is None:
+                f = f.replace(tzinfo=dt.timezone.utc)
+            out[int(c["id"])] = {"finished_at": f.isoformat(), "bookkeeping_s": int((f - sa).total_seconds())}
+    return out
+
+
 def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=True, sleep=time.sleep,
-        no_notify=False) -> dict:
+        no_notify=False, mail=None) -> dict:
     """no_notify: a hand run whose line must NOT go out later either (whatsapp_error = NOT_SENT ...)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     run_id = f"psc-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
@@ -233,11 +278,23 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
             err = f"{type(e).__name__}: {str(e)[:300]}"
     elif no_notify:
         err = "NOT_SENT (hand run with --no-whatsapp=1)"
-    cj = json.dumps([{**c, "recipients": len(rcpt.get(c["id"], ()))} for c in campaigns], default=str)
+    mail_status = None
+    if mail is not None and not no_notify:                 # R17: the same text by e-mail to Raivis
+        subj = (f"Otrdienas vēstules {d:%d.%m} — " + ("viss kārtībā" if ev["ok"] else "jāpaskatās"))
+        try:
+            mail(subj, text)
+            mail_status = "SENT"
+        except Exception as e:  # noqa: BLE001
+            mail_status = f"ERROR {type(e).__name__}: {str(e)[:200]}"
+    bk = bookkeeping(q, campaigns)
+    bk_max = max((v["bookkeeping_s"] for v in bk.values()), default=None)
+    cj = json.dumps([{**c, "recipients": len(rcpt.get(c["id"], ())), **bk.get(int(c["id"]), {})} for c in campaigns],
+                    default=str)
     q(f"INSERT INTO `{T_CHECK}` VALUES (DATE '{d}', {_s(run_id)}, CURRENT_TIMESTAMP(), {str(ev['ok']).upper()}, "
       f"{_s(cj)}, {ev['recipients_total']}, {ev['recipients_distinct']}, {len(ev['doubles'])}, {ev['eligible_lv']}, "
       f"{len(ev['empty'])}, {ev['send_log_distinct']}, {ev['brevo_not_in_send_log']}, {ev['send_log_not_in_brevo']}, "
-      f"{_s(text)}, {_s(uid)}, {_s(err)}, {_s('forced' if force else None)}, {excluded_cd})")
+      f"{_s(text)}, {_s(uid)}, {_s(err)}, {_s('forced' if force else None)}, {excluded_cd}, "
+      f"{'NULL' if bk_max is None else int(bk_max)}, {_s(mail_status)})")
     det = [("DOUBLE", e, ",".join(map(str, c))) for e, c in ev["doubles"].items()] + [("EMPTY", e, None) for e in ev["empty"]]
     for i in range(0, len(det), 500):
         q(f"INSERT INTO `{T_DETAIL}` VALUES " + ",".join(
@@ -248,7 +305,7 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
             "eligible_lv": ev["eligible_lv"], "excluded_cd": excluded_cd, "empty": len(ev["empty"]), "empty_sample": ev["empty"][:DETAIL_SAMPLE],
             "send_log_distinct": ev["send_log_distinct"], "brevo_not_in_send_log": ev["brevo_not_in_send_log"],
             "send_log_not_in_brevo": ev["send_log_not_in_brevo"], "whatsapp": text, "whatsapp_uid": uid,
-            "whatsapp_error": err}
+            "whatsapp_error": err, "email": mail_status, "bookkeeping_max_s": bk_max}
 
 
 def notify(q, wa_send, d: dt.date) -> dict:
@@ -318,9 +375,13 @@ def main(argv) -> int:
         if method != "GET" and not (method == "POST" and path.endswith("/exportRecipients")):
             raise RuntimeError(f"post_send_check is read-only in Brevo ({method} {path} refused)")
         return CAMP._call(method, path, payload)
+
+    def mail(subject, text):                       # the ONLY write: one notice to Raivis' own address
+        CAMP._call("POST", "/smtp/email", {"sender": {"id": 2}, "to": [{"email": SUMMARY_TO}], "subject": subject,
+                                           "textContent": text, "tags": ["post-send-check"]})
     inline = os.environ.get("WA_INLINE") == "1" and args.get("no-whatsapp") != "1"
     res = run(q, brevo, _fetch, _wa_send, d, force=args.get("force") == "1", whatsapp=inline,
-              no_notify=args.get("no-whatsapp") == "1")
+              no_notify=args.get("no-whatsapp") == "1", mail=mail)
     print("POST_SEND_CHECK " + json.dumps(res, ensure_ascii=False, default=str)[:20000])
     return 0
 

@@ -57,6 +57,8 @@ class Q:
             return self.existing
         if f"`{PSC.T_LOG}`" in sql:
             return [{"e": e} for e in self.slog]
+        if f"`{PSC.T_RUN}`" in sql:
+            return getattr(self, "runs", [])
         if f"`{PSC.T_EXCL98}`" in sql:
             return [{"e": e} for e in getattr(self, "cd", [])]
         raise AssertionError(sql[:80])
@@ -80,6 +82,8 @@ class Checks(unittest.TestCase):
         self.assertEqual((res["doubles"], res["empty"], res["eligible_lv"], res["recipients_distinct"]), (0, 0, 3, 3))
         self.assertEqual(res["brevo_not_in_send_log"], 2)
         self.assertEqual(len(sent), 1); self.assertTrue(sent[0].startswith("✅"))
+        self.assertEqual(sent[0], "✅ Otrdienas vēstules 13.10: izsūtītas 2 (SD 2026-10-13 x 330 1, nedēļas akcija 2), "
+                                  "kopā saņēma 3. Neviens nesaņēma divas vēstules. Visi, kam vēstule pienācās, to saņēma.")
         self.assertEqual(len([c for c in q.calls if c.startswith(f"INSERT INTO `{PSC.T_CHECK}`")]), 1)
 
     def test_double_and_empty_are_found_and_listed(self):
@@ -91,7 +95,8 @@ class Checks(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertEqual(res["doubles_sample"], {"a@x.lv": [330, 333]})
         self.assertEqual(res["empty_sample"], ["d@x.lv"])         # blacklisted, EE list and a newer contact left out
-        self.assertTrue(sent[0].startswith("⚠️") and "d@x.lv" in sent[0] and "2+ vēstules: 1" in sent[0])
+        self.assertTrue(sent[0].startswith("⚠️") and "1 cilvēks palika bez vēstules (piem. d@x.lv)" in sent[0])
+        self.assertIn("1 cilvēks saņēma divas vēstules (piem. a@x.lv)", sent[0])
         det = [c for c in q.calls if c.startswith(f"INSERT INTO `{PSC.T_DETAIL}`")][0]
         self.assertIn("'DOUBLE', 'a@x.lv', '330,333'", det); self.assertIn("'EMPTY', 'd@x.lv', NULL", det)
 
@@ -112,6 +117,24 @@ class Checks(unittest.TestCase):
         res = PSC.run(q, b, b.fetch, lambda t: sent.append(t) or "u", D, now=NOW, sleep=lambda s: None)
         self.assertTrue(res["ok"]); self.assertEqual((res["empty"], res["excluded_cd"], res["eligible_lv"]), (0, 1, 1))
         self.assertIn("STARTS_WITH(why, 'c_') OR STARTS_WITH(why, 'd_')", [c for c in q.calls if PSC.T_EXCL98 in c][0])
+
+    def test_mail_and_bookkeeping_time(self):
+        b, q, mails = Brevo([camp(330, "2026-10-13T06:27:05Z", "SD 2026-10-13 reorder_1 (x)")], {330: {"a@x.lv"}},
+                            l3("a@x.lv")), Q(), []
+        q.runs = [{"campaign_id": 330, "f": dt.datetime(2026, 10, 13, 6, 40, 33, tzinfo=dt.timezone.utc)}]
+        res = PSC.run(q, b, b.fetch, lambda t: "u", D, now=NOW, sleep=lambda s: None,
+                      mail=lambda subj, text: mails.append((subj, text)))
+        self.assertEqual(res["bookkeeping_max_s"], 808)
+        self.assertEqual(res["campaigns"][0]["bookkeeping_s"], 808)
+        self.assertEqual(mails[0][0], "Otrdienas vēstules 13.10 — viss kārtībā")
+        self.assertIn("atgādinājums pasūtīt vēlreiz 1", mails[0][1]); self.assertEqual(res["email"], "SENT")
+        q2, mails2 = Q(), []
+        PSC.run(q2, b, b.fetch, lambda t: "u", D, now=NOW, sleep=lambda s: None, no_notify=True, whatsapp=False,
+                mail=lambda subj, text: mails2.append(subj))
+        self.assertEqual(mails2, [])                                     # a hand test run never mails Raivis
+
+    def test_no_campaign_line(self):
+        self.assertEqual(PSC.whatsapp_line(D, [], {}), "⚠️ Otrdienas vēstules 13.10: šodien neviena vēstule netika izsūtīta.")
 
 
 class Wait(unittest.TestCase):

@@ -509,8 +509,15 @@ class Day:
         for t in result["types"]:
             t.pop("decisions", None)
         if live:
-            self.notify(*report_mail(result, "sent"))
+            self.tech_log(*report_mail(result, "sent"))
         return result
+
+    @staticmethod
+    def tech_log(subject, text):
+        """R17 (MAIN 3 13.10): a per-run summary goes to the tech log (Cloud Logging) only - never to Raivis' inbox.
+        On 13.10 12:22 the qzglq summary ("winback_1 nosūtīti 2550 ... 236 NAV palaists") was read as a second send.
+        Raivis gets ONE Tuesday summary: the after-send check (post_send_check), WhatsApp line + the same e-mail."""
+        print("RUN_SUMMARY " + json.dumps({"subject": subject, "text": text}, ensure_ascii=False)[:8000], flush=True)
 
     # -- D49 pacing (LIVE): 10 min between campaigns, each only after the previous one is 'sent' in Brevo
     def pace(self):
@@ -1347,7 +1354,7 @@ def main(argv) -> int:
         res = {"run_id": day.run_id, "mode": "live" if live else "dry", "akcija_excl": refill,
                "akcija_236": day.launch_236(d, live, refill, exclude_sent_today=True)}
         if live:
-            day.notify(*report_mail({"send_date": str(d), "types": [], **res}, "sent"))
+            day.tech_log(*report_mail({"send_date": str(d), "types": [], **res}, "sent"))
         print("ONLY_236 " + json.dumps(res, ensure_ascii=False, default=str)[:6000])
         return 0
     if args.get("test-236"):                       # D48 test: real campaign to the 2 test addresses only

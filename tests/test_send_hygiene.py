@@ -113,6 +113,19 @@ class RunRowAlways(unittest.TestCase):
         self.assertIn("236_NOT_LAUNCHED X: y", q.inserts(SD.T_RUN)[0])
 
 
+class R17SummaryToLogOnly(unittest.TestCase):
+    """13.10 12:22: the per-run summary mail was read by Raivis as a second send - it now goes to the tech log only."""
+
+    def test_live_run_summary_never_mails(self):
+        q = T.Q([T.cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 1, "set_at": "x"}])
+        d = T.day(q, T.Brevo(), env=T.LIVE_ENV)
+        with mock.patch.object(SD.time, "sleep"), mock.patch.object(SD.Day, "notify") as n, \
+                mock.patch("builtins.print") as pr:
+            d.run(T.TUE)
+        n.assert_not_called()
+        self.assertTrue(any(str(c.args[0]).startswith("RUN_SUMMARY ") for c in pr.call_args_list))
+
+
 class OfferedSinkWired(unittest.TestCase):
     """R7: 235 was refused with WIRE '235 needs offered_sink' (draft 331, 149 contacts, 13.10)."""
 
