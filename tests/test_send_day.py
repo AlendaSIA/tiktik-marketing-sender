@@ -318,7 +318,10 @@ class Live(unittest.TestCase):
         self.assertEqual(len(q.inserts(SD.T_LOG)), 1)
         self.assertIn("'engine_live'", q.inserts(SD.T_LOG)[0])
         self.assertEqual(pd.call_count, 1)                      # only m1 has a Pipedrive person
-        self.assertEqual(len(q.inserts(SD.T_ADV)), 2)
+        self.assertEqual(len(q.inserts(SD.T_ADV)), 1)          # R6: one batched INSERT for the campaign
+        self.assertIn("('m1', 'reorder_1'", q.inserts(SD.T_ADV)[0]); self.assertIn("('m2', 'reorder_1'", q.inserts(SD.T_ADV)[0])
+        ups = [c for c in q.calls if c.startswith(f"UPDATE `{SD.T_STATE}`")]
+        self.assertEqual(len(ups), 1); self.assertIn("WHERE master_key IN ('m1','m2')", ups[0])
 
     def test_contact_brevo_does_not_have_is_held_the_rest_goes(self):
         """13.10 run df3907: the 2nd add round held only addresses with no Brevo contact -> 400 crashed the day."""
@@ -445,7 +448,7 @@ class Proof(unittest.TestCase):
         self.assertTrue(writes)
         self.assertFalse([w for w in writes if "cid:1256385" in w and "send_day_proof" not in w])
         self.assertIn("'TEST:alenda.jurmala@gmail.com'", q.inserts(SD.T_LOG)[0])
-        self.assertIn("WHERE master_key = 'TEST:alenda.jurmala@gmail.com'",
+        self.assertIn("WHERE master_key IN ('TEST:alenda.jurmala@gmail.com')",
                       [c for c in q.calls if c.startswith(f"UPDATE `{SD.T_STATE}`")][0])
         self.assertEqual(pd.call_args[0][0]["target_person_id"], 99)
         self.assertIn("master_key: TEST:alenda.jurmala@gmail.com", pd.call_args[0][0]["note"])

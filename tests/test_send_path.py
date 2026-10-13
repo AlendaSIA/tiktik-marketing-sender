@@ -122,7 +122,7 @@ class Locks(unittest.TestCase):
         rows = log.calls[0][0]
         self.assertEqual([r["email"] for r in rows], ["a@x.lv", "b@x.lv"])
         self.assertTrue(all(r["source"] == "engine_live" for r in rows))
-        self.assertEqual(out, {"sent": 2, "pd_writes": 1, "no_person": 1})
+        self.assertEqual(out, {"sent": 2, "pd_writes": 1, "no_person": 1, "pd_errors": 0, "pd_error_sample": []})
         # the live PD record is byte-identical to what the shadow plan renders for the same send
         with mock.patch.object(pd_record, "PD_ACTIVITY_TYPE_KEY", "TESTTYPE"), \
              mock.patch.object(pd_record, "PD_ACTIVITY_TYPE_ID", 7):

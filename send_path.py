@@ -163,7 +163,8 @@ def window_lock(*, send_date, now, letter_fields, plan_run) -> list:
 
 
 def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, brevo_send,
-             log_sink, pd_writer, state_advance, offered_sink=None, now=None) -> dict:
+             log_sink, pd_writer, state_advance, offered_sink=None, now=None, state_advance_batch=None,
+             pd_workers=1) -> dict:
     """campaign: {campaign_id, email_type, track, template_id, rung, utm_campaign, brevo_list_id}.
     lookups: object with track_enabled(track), template_approved(template_id),
              audience(batch_id, build_id) -> [ {master_key,email,person_id,reason} ], suppressed(emails)->int,
@@ -172,6 +173,11 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
              person_blocks(send_date, master_keys) -> {mk: reason}.
     offered_sink(rows): REQUIRED for 235 - one row per (recipient, R product) into mkt_control.xsell_offered, so
     the next 235 never repeats an R product (PP3).
+    R6 (MAIN 3 13.10, Dzinējs 9): bookkeeping after the ONE send call is BATCHED - send_log first (one call, so the
+    day's "who got a letter" is true minutes after the send, not hours), then the state advance (state_advance_batch
+    gets every (master_key, email_type, sent_on, rung) at once; without it the old per-contact state_advance), then the
+    Pipedrive activities on pd_workers threads. A failed Pipedrive write never stops the rest (the letter is already
+    gone): it is counted in pd_errors.
     Raises SendLocked before ANY external call when a lock is closed."""
     now = now or dt.datetime.now(dt.timezone.utc)
     today = now.astimezone(RIGA).date()
@@ -202,7 +208,7 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
 
     brevo_send(campaign["campaign_id"])                       # the ONE send call
     sent_at = now.isoformat()
-    rows, pd_results = [], []
+    rows, recs = [], []
     for a in audience:
         rows.append({"master_key": a["master_key"], "email": a["email"],
                      "campaign_id": campaign["campaign_id"], "brevo_list_id": campaign.get("brevo_list_id"),
@@ -211,20 +217,38 @@ def dispatch(campaign: dict, *, send_date, batch_id, build_id, config, lookups, 
                      "sent_at": sent_at, "source": "engine_live", "run_id": batch_id,
                      "brevo_message_id": None, "utm_campaign": campaign.get("utm_campaign"),
                      "reason": a.get("reason") or None})                 # MAIN 11.10 12:55: the plan's reason
-        rec = pd_record.render(person_id=a.get("person_id"), org_id=None, master_key=a["master_key"],
-                               email=a["email"], email_type=campaign["email_type"],
-                               template_id=campaign["template_id"], send_date=send_date,
-                               offer_rung=campaign.get("rung") or 0, reason=a.get("reason", ""),
-                               campaign_ref=campaign.get("utm_campaign") or campaign["campaign_id"])
         if a.get("person_id") is not None:
-            pd_results.append(pd_record.write(rec, shadow=False, pd_writer=pd_writer, shadow_sink=None))
-        state_advance(a["master_key"], campaign["email_type"], today, campaign.get("rung") or 0)
-    log_sink(rows)
+            recs.append(pd_record.render(person_id=a.get("person_id"), org_id=None, master_key=a["master_key"],
+                                         email=a["email"], email_type=campaign["email_type"],
+                                         template_id=campaign["template_id"], send_date=send_date,
+                                         offer_rung=campaign.get("rung") or 0, reason=a.get("reason", ""),
+                                         campaign_ref=campaign.get("utm_campaign") or campaign["campaign_id"]))
+    log_sink(rows)                                            # R6: first, in one call
+    adv = [(a["master_key"], campaign["email_type"], today, campaign.get("rung") or 0) for a in audience]
+    if state_advance_batch is not None:
+        state_advance_batch(adv)
+    else:
+        for item in adv:
+            state_advance(*item)
     if offered_ctx:
         offered_sink([{"master_key": a["master_key"], "email": a["email"], "handle": h, "sent_at": sent_at,
                        "campaign_id": campaign["campaign_id"], "run_id": batch_id}
                       for a in audience for h in (offered_ctx.get(a["master_key"]) or presend.Ctx()).r_handles])
-    return {"sent": len(rows), "pd_writes": len(pd_results), "no_person": len(rows) - len(pd_results)}
+
+    def one(rec):
+        try:
+            return pd_record.write(rec, shadow=False, pd_writer=pd_writer, shadow_sink=None), None
+        except Exception as e:  # noqa: BLE001 - the letter is sent; a missing activity is counted, not fatal
+            return None, f"{type(e).__name__}: {str(e)[:200]}"
+    if pd_workers and pd_workers > 1 and len(recs) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=int(pd_workers)) as ex:
+            pd_out = list(ex.map(one, recs))
+    else:
+        pd_out = [one(r) for r in recs]
+    errs = [e for _, e in pd_out if e]
+    return {"sent": len(rows), "pd_writes": len(pd_out) - len(errs), "no_person": len(rows) - len(recs),
+            "pd_errors": len(errs), "pd_error_sample": errs[:3]}
 
 
 def production_dispatch(campaign_id, send_date, batch_id, build_id):
