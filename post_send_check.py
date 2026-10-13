@@ -191,7 +191,9 @@ def whatsapp_line(d, campaigns, ev) -> str:
     return line
 
 
-def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=True, sleep=time.sleep) -> dict:
+def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=True, sleep=time.sleep,
+        no_notify=False) -> dict:
+    """no_notify: a hand run whose line must NOT go out later either (whatsapp_error = NOT_SENT ...)."""
     now = now or dt.datetime.now(dt.timezone.utc)
     run_id = f"psc-{now:%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:6]}"
     for ddl in DDL:
@@ -217,6 +219,8 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
             uid = wa_send(text)
         except Exception as e:  # noqa: BLE001 - the row is written either way
             err = f"{type(e).__name__}: {str(e)[:300]}"
+    elif no_notify:
+        err = "NOT_SENT (hand run with --no-whatsapp=1)"
     cj = json.dumps([{**c, "recipients": len(rcpt.get(c["id"], ()))} for c in campaigns], default=str)
     q(f"INSERT INTO `{T_CHECK}` VALUES (DATE '{d}', {_s(run_id)}, CURRENT_TIMESTAMP(), {str(ev['ok']).upper()}, "
       f"{_s(cj)}, {ev['recipients_total']}, {ev['recipients_distinct']}, {len(ev['doubles'])}, {ev['eligible_lv']}, "
@@ -286,7 +290,8 @@ def main(argv) -> int:
             raise RuntimeError(f"post_send_check is read-only in Brevo ({method} {path} refused)")
         return CAMP._call(method, path, payload)
     inline = os.environ.get("WA_INLINE") == "1" and args.get("no-whatsapp") != "1"
-    res = run(q, brevo, _fetch, _wa_send, d, force=args.get("force") == "1", whatsapp=inline)
+    res = run(q, brevo, _fetch, _wa_send, d, force=args.get("force") == "1", whatsapp=inline,
+              no_notify=args.get("no-whatsapp") == "1")
     print("POST_SEND_CHECK " + json.dumps(res, ensure_ascii=False, default=str)[:20000])
     return 0
 
