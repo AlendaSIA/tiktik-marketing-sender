@@ -737,6 +737,13 @@ class Day:
             self.pace()
             res.update(self._send(et, tid, track, d, chosen, plan_run))
             self._last_campaign = (res["campaign_id"], self.clock())
+            gone = set(res.get("not_in_brevo") or [])
+            for c in chosen:
+                if c["email"] in gone:
+                    decisions[c["master_key"]] = res["decisions"][c["master_key"]] = \
+                        "NOT_IN_BREVO no Brevo contact for this address"
+                    res["refused"]["NOT_IN_BREVO"] = res["refused"].get("NOT_IN_BREVO", 0) + 1
+            res["chosen"] = len(chosen) - len(gone)
         return self._record(res, d, live, cands, decisions)
 
     def block_gate(self, d, blocks, wait) -> dict:
@@ -774,7 +781,12 @@ class Day:
                 raise SP.SendLocked([("PROOF", f"list {lst['list_id']} does not hold exactly {rcpt}")])
             if any(c["master_key"] != test_key(rcpt) for c in chosen):
                 raise SP.SendLocked([("PROOF", "a proof writes under its TEST key only")])
-        if sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
+        missing = [e for e in emails if e not in set(lst["ok"])]
+        gone = self.not_in_brevo(missing) if missing and alias is None else []
+        if gone and sorted(gone) == sorted(missing):          # only contacts Brevo does not have -> hold them, send the rest
+            chosen = [c for c in chosen if c["email"] not in set(gone)]
+            emails = [c["email"] for c in chosen]
+        if not emails or sorted(lst["ok"]) != sorted(emails) or not lst["settled"]:
             raise SP.SendLocked([("LIST", f"list {lst['list_id']} holds {len(lst['ok'])}/{len(emails)}, "
                                           f"settled={lst['settled']} - refused")])
         # A proof runs the REAL path: list-4 exclusion and L5 included (MAIN 2026-10-09 18:20 removed the proof-only
@@ -799,7 +811,7 @@ class Day:
                           log_sink=self.write_send_log, pd_writer=self._pd,
                           state_advance=lambda mk, e, on, rung: self.advance(mk, e, on, rung, batch, camp),
                           offered_sink=None, now=self.now)
-        return {"batch_id": batch, "list_id": lst["list_id"], "campaign_id": camp, "sent": out["sent"],
+        return {"batch_id": batch, "list_id": lst["list_id"], "campaign_id": camp, "sent": out["sent"], "not_in_brevo": gone,
                 "pd_writes": out["pd_writes"], "pd_activity_ids": list(self.pd_ids)}
 
     # -- PROOF (decision 2)
@@ -975,7 +987,13 @@ class Day:
         todo, members = list(emails), set()
         for _ in range(rounds):
             for i in range(0, len(todo), ADD_CHUNK):
-                self.brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": todo[i:i + ADD_CHUNK]})
+                try:
+                    self.brevo("POST", f"/contacts/lists/{lid}/contacts/add", {"emails": todo[i:i + ADD_CHUNK]})
+                except Exception as e:  # noqa: BLE001 - Brevo answers 400 when NO address of the chunk could be added
+                    # (measured 13.10 run df3907: the 2nd round held only addresses Brevo has no contact for); the
+                    # members re-read below decides, _send holds the ones that are not in Brevo
+                    if "does not exist" not in str(e):
+                        raise
             time.sleep(pause)
             members = self.list_members(lid)
             todo = [e for e in emails if e not in members]
@@ -984,11 +1002,25 @@ class Day:
         t0 = time.time()
         while True:
             n = (self.brevo("GET", f"/contacts/lists/{lid}", None) or {}).get("uniqueSubscribers") or 0
-            if n >= len(emails) or time.time() - t0 > settle_s:
+            if n >= len(members & set(emails)) or time.time() - t0 > settle_s:
                 break
             time.sleep(10)
         extra = members - set(emails)
-        return {"list_id": lid, "ok": [e for e in emails if e in members], "settled": n >= len(emails) and not extra}
+        return {"list_id": lid, "ok": [e for e in emails if e in members],
+                "settled": n >= len(members & set(emails)) and not extra}
+
+    def not_in_brevo(self, emails):
+        """The addresses Brevo answers 404 for (no contact) - they cannot get a letter, the rest of the type still can."""
+        out = []
+        for e in emails:
+            try:
+                self.brevo("GET", f"/contacts/{e}", None)
+            except Exception as ex:  # noqa: BLE001
+                if "404" in str(ex) or "document_not_found" in str(ex):
+                    out.append(e)
+                else:
+                    raise
+        return out
 
     def list_members(self, lid):
         out, off = set(), 0

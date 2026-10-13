@@ -320,6 +320,29 @@ class Live(unittest.TestCase):
         self.assertEqual(pd.call_count, 1)                      # only m1 has a Pipedrive person
         self.assertEqual(len(q.inserts(SD.T_ADV)), 2)
 
+    def test_contact_brevo_does_not_have_is_held_the_rest_goes(self):
+        """13.10 run df3907: the 2nd add round held only addresses with no Brevo contact -> 400 crashed the day."""
+        class B(Brevo):
+            def __call__(self, method, path, payload):
+                if method == "POST" and path.endswith("/contacts/add"):
+                    ok = [e for e in payload["emails"] if e != "p2@x.lv"]
+                    self.tried = True
+                    if not ok:
+                        raise RuntimeError("BREVO_HTTP_ERROR 400 Contact already in list and/or does not exist")
+                    payload = {"emails": ok}
+                if method == "GET" and path == "/contacts/p2@x.lv" and getattr(self, "tried", False):
+                    self.calls.append((method, path))
+                    raise RuntimeError("BREVO_HTTP_ERROR 404 GET /contacts/p2@x.lv document_not_found")
+                return super().__call__(method, path, payload)
+        q, b = Q([cand(1), cand(2), cand(3)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1",
+                                                    "cap": 3, "set_at": "x"}]), B()
+        with mock.patch.object(SD.time, "sleep"):
+            t = day(q, b, env=LIVE_ENV).run(TUE)["types"][0]
+        self.assertEqual(b.lists[77], ["p1@x.lv", "p3@x.lv"])
+        self.assertEqual((t["chosen"], t["not_in_brevo"], t["refused"].get("NOT_IN_BREVO")), (2, ["p2@x.lv"], 1))
+        self.assertTrue(any("NOT_IN_BREVO" in s and "'m2'" in s for s in q.inserts(SD.T_AUD)))
+        self.assertIn(("POST", "/emailCampaigns/900/sendNow"), b.calls)
+
     def test_live_d1_fail_with_cap_posts_kluda_and_sends_nothing(self):
         q, b, dash = Q([cand(1)], caps=[{"send_date": "2026-10-13", "email_type": "reorder_1", "cap": 2,
                                          "set_at": "x"}]), Brevo(html="<p>changed</p>"), mock.Mock()
