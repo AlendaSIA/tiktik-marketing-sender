@@ -77,3 +77,12 @@ class Mails(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class D52(unittest.TestCase):
+    def test_override_only_on_13_10(self):
+        d = SD.Day.__new__(SD.Day)
+        d.d52 = {"hold_236": []}
+        d.env = {}
+        with self.assertRaises(SD.SP.SendLocked):
+            d.run(dt.date(2026, 10, 20), mode="dry")

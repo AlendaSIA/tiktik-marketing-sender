@@ -126,6 +126,12 @@ DDL = [f"""CREATE TABLE IF NOT EXISTS `{T_CAP}` (send_date DATE, email_type STRI
 D50_FEEDBACK, D50_XSELL, D50_XSELL_MAX_DAYS = "post_purchase_feedback", "active_xsell", 30
 # RAIVIS D49: campaigns 10 min apart, smallest first, each after the previous one is 'sent'; 236 last.
 D49_GAP_MIN, D49_FINISH_MAX_MIN = 10, 40
+# RAIVIS D52 (MAIN 2 13.10 08:10): ONE-TIME override of the D44 chain for 13.10 only - the Monday-prepared data goes
+# (block pushes of 12.10, cab-20261012, ak_maker_html of W42); every other gate stays; per-contact price holds come
+# from mkt_control.d52_price_holds (measured against the current Mozello mirror); 236 may be held by the caller.
+D52_ALLOWED_DATES = {"2026-10-13"}
+D52_REASON = "D52_RAIVIS_OVERRIDE"
+D52_HOLDS = f"{M}.d52_price_holds"
 
 
 def d50_xsell_refusal(c, send_date) -> str | None:
@@ -437,7 +443,10 @@ class Day:
         live = mode != "dry" and l1_open(self.env)
         if caps_override is not None and live:
             raise SP.SendLocked([("D3", "a caps override exists only for a DRY rehearsal")])
-        if gate_date is not None and live:
+        d52 = getattr(self, "d52", None)
+        if d52 and str(send_date) not in D52_ALLOWED_DATES:
+            raise SP.SendLocked([("D52", f"the Raivis override exists only for {sorted(D52_ALLOWED_DATES)}")])
+        if gate_date is not None and live and not d52:
             raise SP.SendLocked([("D31", "a forced block-gate date exists only for a DRY rehearsal")])
         self.gate_date = gate_date          # MAIN 19:05: DRY test of the block gates against another day's push rows
         for ddl in DDL:
@@ -467,7 +476,14 @@ class Day:
                 result["d47_forced_double"] = {"master_key": fd, "added_to": other}
         result["day_guard"] = self.day_guard(send_date, live)
         result["d44"] = self.d44(send_date, live)
-        if getattr(self, "d44_simulate_pass", False) and not live:        # DRY only: "what if the chain were in order"
+        if d52:                                    # RAIVIS D52 (13.10 08:10): send with the Monday-prepared data, once
+            result["d44"]["override"] = D52_REASON
+            self._d44 = {"commercial": [], "akcija_236": list(d52.get("hold_236") or [])}
+            self._d52_holds = {r["master_key"]: f"D52_PRICE_CHECK {r['why']}" for r in
+                               self.q(f"SELECT master_key, why FROM `{D52_HOLDS}` WHERE send_date = DATE '{send_date}'")}
+            result["d52"] = {"reason": D52_REASON, "gate_date": str(gate_date), "price_holds": len(self._d52_holds),
+                             "hold_236": d52.get("hold_236")}
+        elif getattr(self, "d44_simulate_pass", False) and not live:        # DRY only: "what if the chain were in order"
             result["d44"]["simulated_pass"] = True
             self._d44 = {"commercial": [], "akcija_236": []}
         self._d50 = {c["master_key"]: why for c in self._cands.get(D50_XSELL, [])
@@ -685,8 +701,10 @@ class Day:
 
         d50 = getattr(self, "_d50", None) or {}
 
+        d52h = getattr(self, "_d52_holds", None) or {}
+
         def refuse(c):   # day guards first: D47 holds the contact in EVERY type; the cab link only priced letters
-            return (guard.get(c["master_key"]) or (d50.get(c["master_key"]) if et == D50_XSELL else None)
+            return (guard.get(c["master_key"]) or d52h.get(c["master_key"]) or (d50.get(c["master_key"]) if et == D50_XSELL else None)
                     or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None) or refuse0(c))
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
@@ -1211,6 +1229,8 @@ def main(argv) -> int:
     try:
         gd = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
         day.d44_simulate_pass = sim
+        if args.get("d52-override") == D52_REASON:
+            day.d52 = {"hold_236": [h for h in (args.get("d52-hold-236") or "").split("|") if h]}
         day.d47_force_double = force_double
         res = day.run(d, mode=mode, caps_override=caps, only=only, gate_date=gd)
         if args.get("notify") == "check":                  # 08:05 Rīta pārbaude
