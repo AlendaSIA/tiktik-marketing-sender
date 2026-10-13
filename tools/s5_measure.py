@@ -7,9 +7,9 @@ def q(sql):
     out = r.stdout.strip()
     return json.loads(out) if out else []
 d = dt.date(2026,10,13)
-aud = [r["email"] for r in q("SELECT DISTINCT LOWER(TRIM(email)) email FROM mkt_control.send_day_audience WHERE send_date='2026-10-13' AND mode='live' AND email_type IN ('winback_1','reorder_1')")]
+aud = [r["email"] for r in q(sys.argv[1] if len(sys.argv) > 1 else "SELECT DISTINCT LOWER(TRIM(email)) email FROM mkt_control.send_log WHERE campaign_id IN (330, 332)")]
 res = G.evaluate(q, d, aud)
-print("audience", len(aud), "order_hold", res["order_hold"], "checked", res["checked"], "cards", res["cards"], "holds", len(res["holds"]))
+print("audience", len(aud), "order_hold", res["order_hold"], "checked", res["checked"], "cards", res["cards"], "holds", len(res["holds"]), "stats", res["stats"])
 print(json.dumps(res["facts"]))
 import collections
 for e,w in list(res["holds"].items())[:6]: print(e[:3]+"***", w[:300])

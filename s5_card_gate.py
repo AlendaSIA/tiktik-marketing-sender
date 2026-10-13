@@ -65,7 +65,7 @@ def parse_cards(html_text):
     return out
 
 
-def contact_verdict(block_row, slots, cab):
+def contact_verdict(block_row, slots, cab, stats=None):
     """block_row: {FLOW_*: html}; slots: [{name, sku, email_type}] of the contact's letter today;
     cab: {(SKU, email_type): price} (a row of another letter type never vouches for this letter's card).
     -> None (all rendered cards == cabinet) or a reason string."""
@@ -78,6 +78,10 @@ def contact_verdict(block_row, slots, cab):
         for c in parse_cards((block_row or {}).get(f) or ""):
             skus = by_name.get(c["name"].strip(), set())
             want = {cab[k] for k in skus if k in cab}
+            if stats is not None:
+                stats["cards"] = stats.get("cards", 0) + 1
+                stats["vs_cab"] = stats.get("vs_cab", 0) + bool(want)
+                stats["personal"] = stats.get("personal", 0) + (c["ref"] is not None)
             if want:
                 if c["price"] is None or all(abs(c["price"] - w) > 0.005 for w in want):
                     bad.append(f"{f}:{c['name'][:40]} shown {c['price_txt'] or '-'} cab {min(want):.2f}")
@@ -142,7 +146,7 @@ def evaluate(q, d: dt.date, emails, dry: bool = False, chunk: int = 1500) -> dic
     f = f[0] if f else {}
     if f.get("flow") is not None and not isinstance(f["flow"], dict):
         f["flow"] = dict(f["flow"])
-    out = {"order_hold": flow_order_hold(f), "holds": {}, "checked": 0, "cards": 0,
+    out = {"order_hold": flow_order_hold(f), "holds": {}, "checked": 0, "cards": 0, "stats": {},
            "facts": {k: (str(v) if v is not None else None) for k, v in f.items()}}
     ems = sorted({(e or "").strip().lower() for e in emails if e})
     for i in range(0, len(ems), chunk):
@@ -159,8 +163,8 @@ def evaluate(q, d: dt.date, emails, dry: bool = False, chunk: int = 1500) -> dic
             if not row:
                 continue
             out["checked"] += 1
-            out["cards"] += sum(len(parse_cards(row.get(fl) or "")) for fl in FLOW_FIELDS)
-            why = contact_verdict(row, slots.get(e), cab.get(e, {}))
+            why = contact_verdict(row, slots.get(e), cab.get(e, {}), out["stats"])
             if why:
                 out["holds"][e] = why
+    out["cards"] = out["stats"].get("cards", 0)
     return out
