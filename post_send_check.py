@@ -81,11 +81,11 @@ def day_bounds(d: dt.date):
 
 
 def day_campaigns(brevo, d: dt.date, now=None) -> list:
-    """Every campaign of the day that is sent or still going (queued / in_process), TEST ones left out."""
+    """Every campaign of the day that is sent or still going (queued / inProcess), TEST ones left out."""
     a, b = day_bounds(d)
     end = min(b, (now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(seconds=5))   # Brevo: endDate <= now
     out = []
-    for status in ("sent", "queued", "in_process"):
+    for status in ("sent", "queued", "inProcess"):          # Brevo API spelling (in_process -> 400, measured 13.10)
         off = 0
         while True:
             q = (f"/emailCampaigns?status={status}&limit=100&offset={off}&excludeHtmlContent=true"
