@@ -115,15 +115,15 @@ tue AS (SELECT run_id, status, reason, logged_at, built_at FROM `{M}.ak_tuesday_
 tue_built AS (SELECT run_id, logged_at FROM `{M}.ak_tuesday_log`
               WHERE run_date = DATE '{d}' AND mode = '{blk_mode}' AND status = 'BUILT' ORDER BY logged_at DESC LIMIT 1),
 mir AS (SELECT LEAST((SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_products`),
-                     (SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_variants`)) AS at),
-asm AS (SELECT TIMESTAMP_MILLIS(CAST(UNIX_MILLIS(last_modified_time) AS INT64)) AS at FROM `{M}.INFORMATION_SCHEMA.PARTITIONS`
+                     (SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_variants`)) AS t_at),
+asm AS (SELECT last_modified_time AS t_at FROM `{M}.INFORMATION_SCHEMA.PARTITIONS`
         WHERE table_name = 'akcija_assembled' AND partition_id = '{c.date:%Y%m%d}' AND total_rows > 0)
 SELECT TO_JSON_STRING(STRUCT(
   (SELECT AS STRUCT * FROM s1) AS s1, (SELECT AS STRUCT * FROM s1r) AS s1r,
   (SELECT AS STRUCT * FROM s2) AS s2, (SELECT n FROM s2n) AS s2_rows,
   (SELECT AS STRUCT * FROM s3) AS s3, (SELECT AS STRUCT * FROM s3ok) AS s3ok, (SELECT n FROM plan) AS plan_rows,
   (SELECT AS STRUCT * FROM fl) AS flow, (SELECT AS STRUCT * FROM tue) AS tue, (SELECT AS STRUCT * FROM tue_built) AS tue_built,
-  (SELECT at FROM mir) AS mirror_at, (SELECT at FROM asm) AS assembled_at)) AS j"""
+  (SELECT t_at FROM mir) AS mirror_at, (SELECT t_at FROM asm) AS assembled_at)) AS j"""
 
 
 def s5_sql(c: Cfg, since) -> str:
@@ -279,7 +279,7 @@ class Chain:
         c, now_r = self.c, self.now.astimezone(RIGA)
         if c.mode == "LIVE" and c.date.weekday() != 1:
             return {"skip": "LIVE mode runs on Tuesdays only"}
-        if c.first_date and c.date < c.first_date:
+        if c.mode == "LIVE" and c.first_date and c.date < c.first_date:
             return {"skip": f"chain starts on {c.first_date}"}
         if now_r.time() < c.start and now_r.date() == c.date:
             return {"skip": f"before {c.start:%H:%M}"}
