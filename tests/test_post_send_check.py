@@ -57,6 +57,8 @@ class Q:
             return self.existing
         if f"`{PSC.T_LOG}`" in sql:
             return [{"e": e} for e in self.slog]
+        if f"`{PSC.T_EXCL98}`" in sql:
+            return [{"e": e} for e in getattr(self, "cd", [])]
         raise AssertionError(sql[:80])
 
 
@@ -103,6 +105,13 @@ class Checks(unittest.TestCase):
         *_, b = self._run([camp(330, "2026-10-13T06:20:00Z")], {330: {"a@x.lv"}}, l3("a@x.lv"))
         self.assertEqual({m for m, p in b.calls if m != "GET"}, {"POST"})
         self.assertTrue(all(p.endswith("/exportRecipients") for m, p in b.calls if m == "POST"))
+
+    def test_c_and_d_of_list_98_are_not_empty(self):
+        b, q, sent = Brevo([camp(330, "2026-10-13T06:20:00Z")], {330: {"a@x.lv"}}, l3("a@x.lv", "cold@x.lv")), Q(), []
+        q.cd = ["cold@x.lv"]
+        res = PSC.run(q, b, b.fetch, lambda t: sent.append(t) or "u", D, now=NOW, sleep=lambda s: None)
+        self.assertTrue(res["ok"]); self.assertEqual((res["empty"], res["excluded_cd"], res["eligible_lv"]), (0, 1, 1))
+        self.assertIn("STARTS_WITH(why, 'c_') OR STARTS_WITH(why, 'd_')", [c for c in q.calls if PSC.T_EXCL98 in c][0])
 
 
 class Wait(unittest.TestCase):

@@ -11,8 +11,9 @@ Runs as job tiktik-post-send-check, started by Cloud Scheduler every 15 min on T
      send_log (send_log is cross-checked and its difference reported);
   4. CHECK 1 doubles: addresses that are recipients of 2+ campaigns of the day -> must be 0;
      CHECK 2 nobody empty: eligible LV = list 3 members, not blacklisted, not in exclusion lists 4 / 46 / 75 / 96
-     (the 236 basis) and created before the first campaign of the day; every one of them must be a recipient of at
-     least one campaign -> the ones who are not are counted and listed;
+     (the 236 basis), created before the first campaign of the day and NOT in list 98 as (c) cold B2B lead / (d) quiet
+     never-buyer (those get no Tuesday letter on purpose; counted apart as excluded_cd); every one of them must be a
+     recipient of at least one campaign -> the ones who are not are counted and listed;
   5. writes ONE row into mkt_control.post_send_check + one detail row per double / empty address into
      mkt_control.post_send_check_detail, and sends ONE WhatsApp line to Raivis (+37126711822 from +37122811277,
      TimelinesAI). Nothing is ever sent to a client.
@@ -42,6 +43,8 @@ import zoneinfo
 P = "jaunais-za-aizv04022026"
 M = f"{P}.mkt_control"
 T_CHECK, T_DETAIL, T_LOG = f"{M}.post_send_check", f"{M}.post_send_check_detail", f"{M}.send_log"
+T_EXCL98 = f"{M}.akcija_exclusion_members"      # list 98 of the day: (a) personal letter, (c) cold B2B lead, (d) quiet
+NO_TUESDAY_LETTER = ("c_", "d_")                # never-buyer - (c) and (d) get NO Tuesday letter on purpose (D46)
 RIGA = zoneinfo.ZoneInfo("Europe/Riga")
 DELAY_MIN = 60
 FINAL_AFTER = dt.time(14, 30)
@@ -55,7 +58,8 @@ DDL = [
   check_date DATE, run_id STRING, checked_at TIMESTAMP, ok BOOL, campaigns_json STRING, recipients_total INT64,
   recipients_distinct INT64, doubles INT64, eligible_lv INT64, empty_lv INT64, send_log_distinct INT64,
   brevo_not_in_send_log INT64, send_log_not_in_brevo INT64, whatsapp_text STRING, whatsapp_uid STRING,
-  whatsapp_error STRING, note STRING)""",
+  whatsapp_error STRING, note STRING, excluded_cd INT64)""",
+    f"ALTER TABLE `{T_CHECK}` ADD COLUMN IF NOT EXISTS excluded_cd INT64",
     f"""CREATE TABLE IF NOT EXISTS `{T_DETAIL}` (
   check_date DATE, run_id STRING, kind STRING, email STRING, campaigns STRING, created_at TIMESTAMP)""",
 ]
@@ -185,7 +189,8 @@ def whatsapp_line(d, campaigns, ev) -> str:
     ok = "✅" if ev["ok"] else "⚠️"
     camps = " · ".join(f"{c['id']}={len(ev['_rcpt'].get(c['id'], ()))}" for c in campaigns) if campaigns else "nav kampaņu"
     line = (f"{ok} Pēc-sūtīšanas pārbaude {d:%d.%m}: kampaņas {camps}; saņēma {ev['recipients_distinct']}; "
-            f"2+ vēstules: {len(ev['doubles'])}; bez vēstules: {len(ev['empty'])} no {ev['eligible_lv']} LV")
+            f"2+ vēstules: {len(ev['doubles'])}; bez vēstules: {len(ev['empty'])} no {ev['eligible_lv']} LV"
+            f" (c/d apzināti bez vēstules: {ev.get('excluded_cd', 0)})")
     if ev["empty"]:
         line += " (piem. " + ", ".join(ev["empty"][:3]) + ")"
     if ev["doubles"]:
@@ -208,12 +213,17 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
     rcpt = {c["id"]: export_recipients(brevo, fetch, c["id"], sleep=sleep) for c in campaigns if c["status"] == "sent"}
     first = min((_ts(c["sent_at"]) for c in campaigns if c["sent_at"]), default=None)
     elig = eligible_lv(brevo, first)
+    cd = {r["e"] for r in q(f"SELECT DISTINCT LOWER(TRIM(email)) AS e FROM `{T_EXCL98}` WHERE send_date = DATE '{d}' AND ("
+                            + " OR ".join(f"STARTS_WITH(why, '{p}')" for p in NO_TUESDAY_LETTER) + ")")}
+    excluded_cd = len(elig & cd)
+    elig = elig - cd
     a, b = day_bounds(d)
     slog = {r["e"] for r in q(f"SELECT DISTINCT LOWER(TRIM(email)) AS e FROM `{T_LOG}` WHERE sent_at >= TIMESTAMP "
                               f"'{a.isoformat()}' AND sent_at < TIMESTAMP '{b.isoformat()}' AND source != 'proof' "
                               f"AND NOT STARTS_WITH(master_key, 'TEST:')")} - TEST_ADDRESSES
     ev = evaluate(campaigns, rcpt, elig, slog)
     ev["_rcpt"] = rcpt
+    ev["excluded_cd"] = excluded_cd
     text = whatsapp_line(d, campaigns, ev)
     uid = err = None
     if whatsapp:
@@ -227,7 +237,7 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
     q(f"INSERT INTO `{T_CHECK}` VALUES (DATE '{d}', {_s(run_id)}, CURRENT_TIMESTAMP(), {str(ev['ok']).upper()}, "
       f"{_s(cj)}, {ev['recipients_total']}, {ev['recipients_distinct']}, {len(ev['doubles'])}, {ev['eligible_lv']}, "
       f"{len(ev['empty'])}, {ev['send_log_distinct']}, {ev['brevo_not_in_send_log']}, {ev['send_log_not_in_brevo']}, "
-      f"{_s(text)}, {_s(uid)}, {_s(err)}, {_s('forced' if force else None)})")
+      f"{_s(text)}, {_s(uid)}, {_s(err)}, {_s('forced' if force else None)}, {excluded_cd})")
     det = [("DOUBLE", e, ",".join(map(str, c))) for e, c in ev["doubles"].items()] + [("EMPTY", e, None) for e in ev["empty"]]
     for i in range(0, len(det), 500):
         q(f"INSERT INTO `{T_DETAIL}` VALUES " + ",".join(
@@ -235,7 +245,7 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
     return {"run_id": run_id, "date": str(d), "ok": ev["ok"], "campaigns": json.loads(cj),
             "recipients_total": ev["recipients_total"], "recipients_distinct": ev["recipients_distinct"],
             "doubles": len(ev["doubles"]), "doubles_sample": dict(list(ev["doubles"].items())[:DETAIL_SAMPLE]),
-            "eligible_lv": ev["eligible_lv"], "empty": len(ev["empty"]), "empty_sample": ev["empty"][:DETAIL_SAMPLE],
+            "eligible_lv": ev["eligible_lv"], "excluded_cd": excluded_cd, "empty": len(ev["empty"]), "empty_sample": ev["empty"][:DETAIL_SAMPLE],
             "send_log_distinct": ev["send_log_distinct"], "brevo_not_in_send_log": ev["brevo_not_in_send_log"],
             "send_log_not_in_brevo": ev["send_log_not_in_brevo"], "whatsapp": text, "whatsapp_uid": uid,
             "whatsapp_error": err}
