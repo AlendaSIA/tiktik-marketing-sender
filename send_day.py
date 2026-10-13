@@ -59,6 +59,7 @@ import block_gate as BG
 import day_guard as DG
 import pd_record
 import presend as G
+import s5_card_gate as S5
 import send_path as SP
 import sequence as S
 
@@ -466,7 +467,7 @@ class Day:
         types = sorted(types, key=lambda t: bool(_i(t["template_id"]) and BG.fields_in(self.template_html(_i(t["template_id"])))))
         # D47 / D46 cab link: the whole day is looked at once, before any type goes
         self._cands = {t["email_type"]: [dict(r) for r in self.q(candidates_sql(plan_run, send_date, t["email_type"]))]
-                       for t in types if (not only or t["email_type"] in only) and is_send_day(t["email_type"], send_date)}
+                       for t in types if (not only or t["email_type"] in only) and self.send_day_ok(t["email_type"], send_date)}
         fd = getattr(self, "d47_force_double", None)
         if fd and not live:                                # DRY proof: copy one contact into a second type
             src = next((c for rows in self._cands.values() for c in rows if c["master_key"] == fd), None)
@@ -476,6 +477,9 @@ class Day:
                 result["d47_forced_double"] = {"master_key": fd, "added_to": other}
         result["day_guard"] = self.day_guard(send_date, live)
         result["d44"] = self.d44(send_date, live)
+        if getattr(self, "chain_dry", False):          # R1 Mon DRY: the chain's own S1-S4 rows stand in for D44
+            result["d44"]["chain_dry"] = self._d44 = self.chain_d44(send_date)
+        result["s5"] = self.s5_gate(send_date)
         if d52:                                    # RAIVIS D52 (13.10 08:10): send with the Monday-prepared data, once
             result["d44"]["override"] = D52_REASON
             self._d44 = {"commercial": [], "akcija_236": list(d52.get("hold_236") or [])}
@@ -591,6 +595,34 @@ class Day:
                 self.dash("KĻŪDA", f"Sūtīšanas diena {d}: D47 aizturēti {len(self._guard)} kontakti - vēstule Raivim")
         return out
 
+    def send_day_ok(self, et, d) -> bool:
+        """D2, or the R1 Monday DRY of the Tuesday chain (--chain-dry=1, DRY only): that date stands for the Tuesday."""
+        return is_send_day(et, d) or (bool(getattr(self, "chain_dry", False)) and et not in EDUCATIONAL_TYPES)
+
+    def s5_gate(self, d) -> dict:
+        """R1 S5 (Raivis' contract, MAIN 3 13.10): every rendered card (P and R, FLOW*) == cab-<YYYYMMDD>. Tuesday only
+        (or the chain DRY). Holds per contact in every FLOW-reading type; a FLOW build not after today's OK
+        letter_fields run holds those types whole. Never raises: an unanswerable gate holds (fail closed)."""
+        dry = bool(getattr(self, "chain_dry", False))
+        if d.weekday() != TUESDAY and not dry:
+            self._s5 = {}
+            return {"skipped": "not a Tuesday"}
+        emails = {(c.get("email") or "").strip().lower() for rows in (getattr(self, "_cands", None) or {}).values() for c in rows}
+        gd = getattr(self, "gate_date", None) or d       # a DRY rehearsal against another day's builds reads that day
+        try:
+            self._s5 = S5.evaluate(self.q, gd, emails, dry=dry)
+        except Exception as e:  # noqa: BLE001
+            self._s5 = {"order_hold": f"{S5.HOLD_FLOW} gate could not run: {type(e).__name__}: {str(e)[:200]}", "holds": {}}
+        return {k: v for k, v in self._s5.items() if k != "holds"} | {"held_contacts": len(self._s5.get("holds", {}))}
+
+    def chain_d44(self, d) -> dict:
+        """R1 Monday DRY: D44 = the orchestrator's S1-S4 rows of mkt_control.tuesday_chain_log for this date, mode DRY."""
+        rows = {r["step"]: dict(r) for r in self.q(
+            f"SELECT step, ok, status, reason FROM `{M}.tuesday_chain_log` WHERE chain_date = DATE '{d}' AND mode = 'DRY'")}
+        bad = [f"CHAIN_{s}_NOT_OK {(rows.get(s) or {}).get('status') or 'no row'}" for s in ("S1", "S2", "S3", "S4")
+               if not (rows.get(s) or {}).get("ok")]
+        return {"commercial": bad, "akcija_236": list(bad)}
+
     def d44(self, d, live) -> dict:
         """RAIVIS D44: the Tuesday price chain must have run today and in order; else commercial types are held."""
         rows = [dict(r) for r in self.q(DG.d44_facts_sql(d))]
@@ -660,7 +692,7 @@ class Day:
         et, tid, track = t["email_type"], _i(t["template_id"]), t["track"]
         res = {"email_type": et, "template_id": tid, "track": track, "candidates": 0, "chosen": 0, "refused": {},
                "type_refusal": None, "cap": None, "would_get": []}
-        if not is_send_day(et, d):
+        if not self.send_day_ok(et, d):
             res["type_refusal"] = f"NOT_A_SEND_DAY ({d:%a}; {et} goes on weekday {send_weekday(et)})"
             return self._record(res, d, live, [], {})
         cached = getattr(self, "_cands", None) or {}
@@ -714,9 +746,16 @@ class Day:
 
         d52h = getattr(self, "_d52_holds", None) or {}
 
+        s5 = getattr(self, "_s5", None) or {}
+        s5_on = bool(s5) and any(f in S5.FLOW_FIELDS for f in blocks_needed)   # R1 S5: every rendered FLOW card == cab
+        if s5_on and s5.get("order_hold") and not res["type_refusal"]:
+            res["type_refusal"] = s5["order_hold"]
+        s5h = s5.get("holds", {}) if s5_on else {}
+
         def refuse(c):   # day guards first: D47 holds the contact in EVERY type; the cab link only priced letters
             return (guard.get(c["master_key"]) or d52h.get(c["master_key"]) or (d50.get(c["master_key"]) if et == D50_XSELL else None)
-                    or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None) or refuse0(c))
+                    or (cab.get(c["master_key"]) if et in DG.PRICED_TYPES else None)
+                    or s5h.get((c.get("email") or "").strip().lower()) or refuse0(c))
         # the member selection is evaluated and recorded in DRY even for a refused type (who WOULD get it); LIVE sends
         # nothing for a refused type and reads no contact for it
         chosen, decisions = select_audience(cands, 0 if (live and res["type_refusal"]) else cap, refuse)
@@ -1293,6 +1332,11 @@ def main(argv) -> int:
         if args.get("d52-override") == D52_REASON:
             day.d52 = {"hold_236": [h for h in (args.get("d52-hold-236") or "").split("|") if h]}
         day.d47_force_double = force_double
+        if args.get("chain-dry") == "1":                    # R1 Monday DRY of the Tuesday chain: never live
+            if mode != "dry":
+                print("SEND_DAY_REFUSED --chain-dry needs --mode=dry")
+                return 3
+            day.chain_dry = True
         res = day.run(d, mode=mode, caps_override=caps, only=only, gate_date=gd)
         if args.get("notify") == "check":                  # 08:05 Rīta pārbaude
             subj, text = report_mail(res, "check")
