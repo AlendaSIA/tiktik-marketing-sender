@@ -34,6 +34,7 @@ import json
 import os
 import sys
 import time
+import urllib.parse
 import urllib.request
 import uuid
 import zoneinfo
@@ -271,8 +272,25 @@ def _wa_send(text):
 
 
 def _fetch(url):
-    with urllib.request.urlopen(url, timeout=120) as r:
-        return r.read().decode("utf-8-sig", "replace")
+    """Brevo's export file. A bare urllib request is answered 403 (measured 13.10) - browser UA first, then with the
+    api-key header. A zipped export is unpacked."""
+    import urllib.error
+    import zipfile
+    import campaign as CAMP
+    last = None
+    for hdr in ({"User-Agent": "Mozilla/5.0 (tiktik post_send_check)"},
+                {"User-Agent": "Mozilla/5.0 (tiktik post_send_check)", "api-key": CAMP.api_key()}):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=120) as r:
+                raw = r.read()
+            if raw[:2] == b"PK":
+                z = zipfile.ZipFile(io.BytesIO(raw))
+                raw = z.read(z.namelist()[0])
+            return raw.decode("utf-8-sig", "replace")
+        except urllib.error.HTTPError as e:
+            last = e
+            print(f"EXPORT_FETCH {e.code} host={urllib.parse.urlsplit(url).netloc} headers={sorted(hdr)}", flush=True)
+    raise last
 
 
 def main(argv) -> int:
