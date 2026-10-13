@@ -1,6 +1,7 @@
 """BigQuery access. Every statement the sender runs lives here, so the data contract is
 readable in one file.
 """
+import os
 import datetime as dt
 import logging
 import re
@@ -92,7 +93,15 @@ def build_assignment() -> int:
     assignment was clean - and the two could drift apart without a word. The view also
     catches NULL_MASTER_KEY, which the old inline count could not see at all.
     """
-    query(f"CALL {C.SP_ASSIGNMENT}()")
+    # BUYER OVERRIDE (MAIN 2026-10-08 14:00 / 16:40): when the 04:55 early build owns the assignment
+    # (ASSIGN_MODE=recheck), 07:30 does not rebuild when today's early build is ok; otherwise it runs the early
+    # build ONCE itself (same freshness gate) and refuses (log ok=false + dash row) if that is not ok either.
+    # Default (unset) = build here, as before.
+    if os.environ.get("ASSIGN_MODE") == "recheck":
+        import assign_early
+        assign_early.ensure_early(lambda sql: [dict(r) for r in query(sql)])
+    else:
+        query(f"CALL {C.SP_ASSIGNMENT}()")
 
     violations = query(f"""
         SELECT violation, CAST(week_start AS STRING) AS week_start,

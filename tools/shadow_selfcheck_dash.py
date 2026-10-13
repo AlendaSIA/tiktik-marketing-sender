@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""ONE dash row per day, ONLY when the shadow plan's self-check failed (Sūtīšanas dzinējs 4, MAIN 2026-10-05 16:10).
+
+Runs after the daily shadow plan (08:05 Europe/Riga) as Cloud Run job tiktik-shadow-selfcheck-dash on the ops
+service account (the planner's own account has no Drive access). Reads mkt_control.shadow_run_report and
+mkt_control.shadow_selfcheck of today:
+  - no run report row today            -> KĻŪDA "ēnas plāns šodien nav izpildīts"
+  - any level='hard' check with ok=false -> KĻŪDA + the check names and values
+  - otherwise                          -> nothing (no row, no noise)
+SEND-TIME GATES (MAIN 2026-10-06, Sūtīšanas dzinējs 5): the 08:05 plan cannot know what the 08:40 writer writes, so
+this job - scheduled 08:55, after the writer - first runs the engine's own send-time evaluation (send_lookups.py from
+the live bundle: send_path locks L10 + L8 + L9 on the real tables, as if at 09:00) and records it as sendtime_* rows
+in mkt_control.shadow_selfcheck. A hard sendtime_* failure (writer not OK on the latest plan; a B2B / LEAD / EN person
+among today's due letters) posts the dash row like any other hard check; so does an evaluation that could not run.
+DAILY SHADOW SAMPLE (CF5, MAIN 2026-10-06): the same step queues one deliverable letter per type in
+mkt_control.shadow_sample (once a day) and starts Cloud Run job tiktik-shadow-sample, which mails them to
+raivis@alenda.lv only. Nothing is marked sent.
+WEEKLY AKCIJA 236 PER CONTACT (contract WA8 v1.4, Sūtīšanas dzinējs 6, 2026-10-07): after the send-time run the same
+bundle's akcija_assembly.py assembles today's letters into mkt_control.akcija_assembled and writes akcija_asm_* rows
+to shadow_selfcheck. SHADOW ONLY - it delivers nothing. A hard akcija_asm_* row posts the dash row like any other.
+Never twice a day: the posted row is remembered in mkt_control.shadow_selfcheck (check_name '_dash_row_posted').
+FLOW GATE LISTS (MAIN 11.10 11:33 F3): first, every day, the same job starts Cloud Run job tiktik-send-day with
+"flow_gate.py --lists" (the only identity holding the Brevo key): Brevo lists 96 NO_PROMO / 97 NO_ANY are synced to
+mkt_control.flow_gate_list_members, which the 08:05 planner rebuilt (flow_gate.build_core). Contacts only, nothing
+is sent. A failed sync posts the dash row like any other failure.
+It sends nothing to anyone and touches nothing but that marker row and the dash file. DRY=1 prints the row only.
+"""
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import zoneinfo
+
+P = "jaunais-za-aizv04022026"
+DASH = "Company-Alenda-SIA/shared-platforms/_agent-sessions.md"
+AGENT = "tiktik.lv › Marketing · Sūtīšanas dzinējs (ēnas plāna paškontrole)"
+BUNDLE = "gs://jaunais-za-aizv04022026-brevo-history/_code/send_engine.tgz"
+
+
+def sendtime(dry):
+    """Run the send-time evaluation of the live bundle. -> None when it ran, else why it could not (short text)."""
+    try:
+        subprocess.run(["bash", "-c", f"rm -rf /tmp/eng && mkdir -p /tmp/eng && gsutil -q cp {BUNDLE} /tmp/eng/b.tgz "
+                        "&& tar xzf /tmp/eng/b.tgz -C /tmp/eng"], check=True, capture_output=True, timeout=120)
+        r = subprocess.run([sys.executable, "/tmp/eng/send_lookups.py"] + (["--refresh-hashes"] if dry else ["--refresh-hashes", "--record", "--sample"]),
+                           capture_output=True, text=True, timeout=420)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print(r.stdout[-2500:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
+def assembly(dry):
+    """Weekly akcija 236 per contact, in shadow (the bundle is already unpacked by sendtime). -> None or why not."""
+    try:
+        r = subprocess.run([sys.executable, "/tmp/eng/akcija_assembly.py"] + ([] if dry else ["--record"]),
+                           capture_output=True, text=True, timeout=300)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print(r.stdout[:400])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
+def flow_gate_lists(dry):
+    """F3: sync the two Brevo exclusion lists through the send job (it holds the Brevo key). -> None or why not."""
+    if dry:
+        print("DRY flow_gate --lists skipped"); return None
+    try:
+        r = subprocess.run(["gcloud", "run", "jobs", "execute", "tiktik-send-day", "--region", "europe-west1",
+                            "--project", P, "--wait", "--args=^@^flow_gate.py@--lists"],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print("FLOW_GATE_LISTS exit", r.returncode, (r.stderr or r.stdout)[-300:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
+def akcija_excl(dry):
+    """MAIN 11.10 12:55: refill the Tuesday hand-campaign exclusion list (info slot + reorder_1 + cold B2B leads) for
+    the next Tuesday. Contacts only. -> None or why not."""
+    if dry:
+        print("DRY akcija-excl skipped"); return None
+    try:
+        r = subprocess.run(["gcloud", "run", "jobs", "execute", "tiktik-send-day", "--region", "europe-west1",
+                            "--project", P, "--wait", "--args=^@^flow_gate.py@--akcija-excl"],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"[:200]
+    print("AKCIJA_EXCL exit", r.returncode, (r.stderr or r.stdout)[-300:])
+    return None if r.returncode == 0 else (r.stderr or r.stdout).strip()[-200:]
+
+
+def bq(sql):
+    out = subprocess.check_output(["bq", "--project_id", P, "query", "--nouse_legacy_sql", "--format=json",
+                                   "--max_rows=200", sql], stderr=subprocess.DEVNULL).decode()
+    return json.loads(out) if out.strip().startswith("[") else []
+
+
+def main():
+    runs = bq(f"SELECT run_id FROM `{P}.mkt_control.shadow_run_report` WHERE plan_date = CURRENT_DATE() "
+              f"ORDER BY finished_at DESC LIMIT 1")
+    fg_err = flow_gate_lists(os.environ.get("DRY") == "1") if runs else None   # members come from today's plan run
+    # D46: list 98 is refilled by the send day itself from its outcome (send_day.refill_akcija_excl), not here
+    if bq(f"SELECT 1 FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
+          f"AND check_name = '_dash_row_posted' LIMIT 1"):
+        print("already posted today"); return 0
+    st_err = sendtime(os.environ.get("DRY") == "1") if runs else None
+    asm_err = assembly(os.environ.get("DRY") == "1") if runs and st_err is None else None   # needs today's SG7 rows
+    if not runs:
+        what, run_id = "Ēnas plāns šodien nav izpildīts (nav shadow_run_report rindas) — nekas nav sūtīts", "none"
+    else:
+        run_id = runs[0]["run_id"]
+        bad = bq(f"SELECT check_name, value FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
+                 f"AND run_id = '{run_id}' AND level = 'hard' AND NOT ok ORDER BY check_name")
+        n = bq(f"SELECT COUNT(*) AS n FROM `{P}.mkt_control.shadow_selfcheck` WHERE plan_date = CURRENT_DATE() "
+               f"AND run_id = '{run_id}'")
+        if not int(n[0]["n"]):
+            what = "Ēnas plānam šodien nav paškontroles rindu — nekas nav sūtīts"
+        elif bad:
+            what = (f"Ēnas plāna paškontrole: {len(bad)} neizturētas — "
+                    + "; ".join(f"{b['check_name']}={b['value']}" for b in bad)[:300]
+                    + " — nekas nav sūtīts; detaļas mkt_control.shadow_selfcheck")
+        elif st_err:
+            what = ("Sūtīšanas brīža vārtu pārbaude (L8/L9/L10) neizdevās — " + st_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
+        elif fg_err:
+            what = ("Plūsmas vārtu Brevo sarakstu (96/97) atjaunošana neizdevās — " + fg_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
+        elif asm_err:
+            what = ("Nedēļas akcijas (236) salikšana ēnā neizdevās — " + asm_err.replace("\n", " ")
+                    + " — nekas nav sūtīts")
+        else:
+            print("self-check clean - no dash row"); return 0
+    now = dt.datetime.now(zoneinfo.ZoneInfo("Europe/Riga")).strftime("%Y-%m-%d %H:%M")
+    row = f"| {now} | {AGENT} | KĻŪDA | {what.replace('|', '/')} | nav zināma |\n"
+    if os.environ.get("DRY") == "1":
+        print("DRY " + row); return 0
+    r = subprocess.run([sys.executable, "/root/iso_drive.py", "append", DASH], input=row.encode(),
+                       capture_output=True)
+    out = r.stdout.decode() + r.stderr.decode()
+    print(out[:400])
+    if "VERIFIED ok=True" not in out:
+        return 1
+    safe = what.replace("\\", " ").replace("'", " ").replace("\n", " ")
+    bq(f"INSERT INTO `{P}.mkt_control.shadow_selfcheck` (plan_date, run_id, check_name, level, ok, value, detail, "
+       f"checked_at) VALUES (CURRENT_DATE(), '{run_id}', '_dash_row_posted', 'info', TRUE, '1', '{safe}', "
+       f"CURRENT_TIMESTAMP())")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

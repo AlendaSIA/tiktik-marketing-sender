@@ -204,7 +204,7 @@ class CleanLetterReachesTheApprovalGate(_Base):
         e, lookup, _ = self._send(letter(), row=APPROVED)
         self.assertNotIsInstance(e, C.PlaceholderLeft)
         self.assertEqual(len(lookup.calls), 1)
-        self.assertIn("the send path is not built", str(e))
+        self.assertIn("SEND PATH LOCKED", str(e))
 
     def test_an_approval_does_not_outrank_a_placeholder(self):
         e, lookup, _ = self._send(letter(subject="⟦NEDĒĻAS TĒMA⟧"), row=APPROVED)
