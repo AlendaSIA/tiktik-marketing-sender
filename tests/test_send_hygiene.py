@@ -141,5 +141,21 @@ class OfferedSinkWired(unittest.TestCase):
         self.assertIn("'m1', 'p1@x.lv', 'h-a'", off[0]); self.assertIn("'h-b'", off[0])
 
 
+class L4OneRegistry(unittest.TestCase):
+    """R10: a superseded approval row (approved = FALSE) stays as history and is not read as a second approved hash."""
+
+    def test_superseded_rows_do_not_make_l4_ambiguous(self):
+        import send_lookups as L
+        wh = L.Warehouse.__new__(L.Warehouse)
+        rows = [{"template_id": 179, "email_type": "reorder_1", "approved": False, "approved_sha256": "087d" * 16},
+                {"template_id": 179, "email_type": "reorder_1", "approved": False, "approved_sha256": "db96" * 16},
+                {"template_id": 179, "email_type": "reorder_1", "approved": True, "approved_sha256": "b1ea" * 16}]
+        wh.template_content = lambda now=None: rows
+        self.assertTrue(wh.template_approved(179, live_hash=lambda t: "b1ea" * 16))
+        self.assertFalse(wh.template_approved(179, live_hash=lambda t: "db96" * 16))
+        wh.template_content = lambda now=None: rows[:2]
+        self.assertFalse(wh.template_approved(179, live_hash=lambda t: "db96" * 16))   # nothing approved -> closed
+
+
 if __name__ == "__main__":
     unittest.main()

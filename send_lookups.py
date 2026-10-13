@@ -273,7 +273,8 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
         for r in rows:
             tid, t = _i(r["template_id"]), _ts(r.get("checked_at"))
             age = None if t is None else round((now - t).total_seconds() / 3600, 2)
-            out.append({"template_id": tid, "email_type": r["email_type"], "approved_sha256": r.get("approved_sha256"),
+            out.append({"template_id": tid, "email_type": r["email_type"], "approved": _b(r.get("approved")),
+                        "approved_sha256": r.get("approved_sha256"),
                         "approved_commit": r.get("approved_commit"), "brevo_sha256": r.get("html_sha256"),
                         "mirror_age_h": age, "mirror_error": r.get("error"),
                         "provisional": tid in S.PROVISIONAL_TEMPLATE_IDS,
@@ -283,9 +284,12 @@ FROM `{J.T_APPROVAL}` a LEFT JOIN `{J.T_BREVO_HASH}` b ON b.template_id = a.temp
         return out
 
     def template_approved(self, template_id, live_hash=None) -> bool:
-        """L4. True only when EVERY approval row of this template id carries one and the same approved_sha256 and it
-        equals Brevo's hash - read live (live_hash(template_id) -> hex) where the Brevo key is, else from the mirror."""
-        rows = [r for r in self.template_content() if r["template_id"] == _i(template_id)]
+        """L4. True only when EVERY approved (approved = TRUE) row of this template id carries one and the same
+        approved_sha256 and it equals Brevo's hash - read live (live_hash(template_id) -> hex) where the Brevo key is,
+        else from the mirror. R10 (Dzinējs 9, 13.10): superseded rows (approved = FALSE, kept as history in the one
+        registry mkt_control.template_approval) are NOT counted - before, every template with history (179: 087d / db96
+        / b1ea) read as ambiguous and was refused, unlike send_day.standing_approval which already filtered them."""
+        rows = [r for r in self.template_content() if r["template_id"] == _i(template_id) and r.get("approved")]
         want = {r["approved_sha256"] for r in rows}
         if not rows or len(want) != 1 or None in want or "" in want:
             return False
