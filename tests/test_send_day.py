@@ -389,6 +389,31 @@ class Proof(unittest.TestCase):
         self.assertIn("'TEST:alenda.jurmala@gmail.com'", q.inserts(SD.T_ADV)[0])
         self.assertEqual(res["unfilled"], [])
 
+    def test_h_proof_copies_the_source_members_sync_fields_and_selects_the_asked_source(self):
+        """MAIN 3 13.10 (h): D1-D4 NAME/URL, UZRUNA, VARDS come from the SOURCE member ('' clears a stale value)."""
+        class B(Brevo):
+            def __call__(self, method, path, payload):
+                if method == "GET" and path == "/contacts/attributes":
+                    return {"attributes": [{"name": n, "category": "normal", "type": t} for n, t in (
+                        ("P1_NAME", "text"), ("OFFER_RUNG", "float"), ("D1_NAME", "text"), ("D1_URL", "text"),
+                        ("D2_NAME", "text"), ("UZRUNA", "text"), ("VARDS", "text"))]}
+                if method == "GET" and path == "/contacts/p2@x.lv":
+                    self.calls.append((method, path))
+                    return {"attributes": {"P1_NAME": "Cimdi", "D1_NAME": "Safe light melni", "D1_URL": "https://t/x",
+                                           "UZRUNA": "Viktorija", "VARDS": "Viktorija"}}
+                return super().__call__(method, path, payload)
+        q = Q([cand(1), cand(2)], tracks=[])
+        b = B(attrs={"UZRUNA": "Stale", "D2_NAME": "old"})
+        with mock.patch.object(SD.time, "sleep"):
+            res = day(q, b, env=LIVE_ENV, pd=mock.Mock(return_value=1)).proof("reorder_1", TUE, 99, source_email="P2@x.lv")
+        self.assertEqual(res["source_master_key"], "m2")
+        put = b.puts[0][1]["attributes"]
+        self.assertEqual((put["D1_NAME"], put["D1_URL"], put["UZRUNA"], put["VARDS"], put["D2_NAME"]),
+                         ("Safe light melni", "https://t/x", "Viktorija", "Viktorija", ""))
+        self.assertIn('"UZRUNA": "Stale"', q.inserts(SD.T_PROOF)[0])          # the before-value is kept for the restore
+        with self.assertRaises(SP.SendLocked):
+            day(Q([cand(1)], tracks=[]), B(attrs={}), env=LIVE_ENV).proof("reorder_1", TUE, 99, source_email="nobody@x.lv")
+
     def test_proof_needs_l1_and_the_approved_hash(self):
         with self.assertRaises(SP.SendLocked):
             day(Q([cand(1)]), env=DRY_ENV).proof("reorder_1", TUE, 99)

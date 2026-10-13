@@ -89,6 +89,18 @@ LEGACY_PROOF_RECIPIENT = "raivis@alenda.lv"      # proof rows written before the
 _ONE_ADDRESS = __import__("re").compile(r"[^@\s,;]+@[^@\s,;]+\.[a-z]{2,}")
 
 
+# MAIN 3 13.10 (h): a template (235) also renders contact fields the 06:00 sync owns, not letter_fields. A proof copies
+# them from the SOURCE member's Brevo attributes too ('' where the member has none), so the test address shows exactly
+# what the member would see; proof_restore puts them back like every other written key.
+PROOF_SYNC_KEYS = tuple(f"D{i}_{s}" for i in range(1, 5) for s in ("NAME", "URL")) + ("UZRUNA", "VARDS")
+
+
+def proof_member_fields(src_attrs) -> dict:
+    """The sync-owned fields of the source member, '' where it has none (clears a stale value on the test address)."""
+    a = src_attrs or {}
+    return {k: ("" if a.get(k) is None else a.get(k)) for k in PROOF_SYNC_KEYS}
+
+
 def proof_recipient(env) -> str:
     r = (env.get("PROOF_RECIPIENT") or "").strip().lower()
     if not _ONE_ADDRESS.fullmatch(r):
@@ -914,7 +926,7 @@ class Day:
                 out[k] = "" if v is None else str(v)
         return out
 
-    def proof(self, et, d, pd_person, wait_s=600) -> dict:
+    def proof(self, et, d, pd_person, wait_s=600, source_email=None) -> dict:
         rcpt = proof_recipient(self.env)
         if not l1_open(self.env):
             raise SP.SendLocked([("L1", "a proof sends one real mail: open L1 on the execution only")])
@@ -935,13 +947,20 @@ class Day:
             raise SP.SendLocked([("D1", "; ".join(d1))])
         cands = [dict(r) for r in self.q(candidates_sql(plan_run, d, et))]
         gate = self.member_refusal_fn(et, lambda c: int(c.get("rung") or 0), plan_date, cands, l11=False)
-        src = next((c for c in cands if gate(c) is None), None)
+        want_src = (source_email or "").strip().lower() or None
+        src = next((c for c in cands if (want_src is None or (c.get("email") or "").strip().lower() == want_src)
+                    and gate(c) is None), None)
         if src is None:
-            raise SP.SendLocked([("PROOF", f"no member of {et} passes the member gates today")])
+            raise SP.SendLocked([("PROOF", f"no member of {et} passes the member gates today"
+                                           + (f" (asked for source {want_src})" if want_src else ""))])
         frow = self.full_lf_rows(plan_date, [src["email"]]).get(src["email"])
         if not frow:
             raise SP.SendLocked([("PROOF", f"no letter_fields row for the source member of {et}")])
         want = SP.letter_params(frow)
+        src_attrs = self.contact_attrs(src["email"])
+        if src_attrs is None:
+            raise SP.SendLocked([("PROOF", "the source member's Brevo attributes could not be read")])
+        want.update(proof_member_fields(src_attrs))          # (h) D1-D4, UZRUNA, VARDS as the member has them
         types = self.attr_types()
         before = {k: v for k, v in (self.contact_attrs(rcpt) or {}).items() if k in want}
         payload = self.typed(want, types)
@@ -1372,7 +1391,7 @@ def main(argv) -> int:
         q, wh, brevo, pd_post, dash = _prod()
         day = Day(q, wh, brevo, pd_post, dash, os.environ)
         try:
-            res = day.proof(args["proof"], d, int(args["pd-person"]))
+            res = day.proof(args["proof"], d, int(args["pd-person"]), source_email=args.get("proof-source"))
         except SP.SendLocked as e:
             print("PROOF_REFUSED " + str(e)[:800])
             return 3
