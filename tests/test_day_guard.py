@@ -63,6 +63,8 @@ class Wiring(unittest.TestCase):
                         for m, t in mon]
             if "mozello_orders" in sql:
                 return [{"k": k} for k in since]
+            if "send_log" in sql:
+                return [{"master_key": "sentbefore", "email": "x@y.lv"}]
             if "kabinets_links" in sql:
                 return [{"email": e, "token": t, "n": 1} for e, t in toks]
             raise AssertionError(sql)
@@ -141,3 +143,13 @@ class D44(unittest.TestCase):
         for must in ("kind = 'weekly'", "mode = 'LIVE'", "cab-20261013", "letter_fields_log", "block_push_log",
                      "ak_tuesday_log", "min_gross", "shop_gross"):
             self.assertIn(must, s)
+
+
+class AlreadySent(unittest.TestCase):
+    def test_second_run_same_day_holds_who_already_got_a_letter(self):
+        d = Wiring().day({"winback_1": [c("a"), c("sentbefore", "x@y.lv")]}, [("a", "winback_1"), ("sentbefore", "winback_1")],
+                         toks=[("a@x.lv", "t1"), ("x@y.lv", "t2")])
+        with mock.patch.object(DG, "brevo_attr", return_value={"a@x.lv": "?t=t1", "x@y.lv": "?t=t2"}):
+            out = SD.Day.day_guard(d, dt.date(2026, 10, 13), True)
+        self.assertEqual(d._guard, {"sentbefore": "ALREADY_SENT_TODAY"})
+        self.assertEqual(out["already_sent_today"], 1)

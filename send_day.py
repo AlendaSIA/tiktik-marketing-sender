@@ -553,6 +553,16 @@ class Day:
         else:
             unexpl = {c["master_key"]: "no Monday plan to compare with" for rows in cands.values() for c in rows}
         self._guard = {mk: f"{DG.DOUBLE} {','.join(ts)}" for mk, ts in double.items()}
+        # a second run on the same day (D52 13.10): whoever already got a letter today gets nothing more
+        sent = {(r["master_key"], (r["email"] or "").lower()) for r in self.q(
+            f"SELECT master_key, LOWER(TRIM(email)) AS email FROM `{T_LOG}` WHERE DATE(sent_at, 'Europe/Riga') = DATE '{d}' "
+            f"AND source != 'proof'")} if live or getattr(self, "d52", None) else set()
+        sent_mk, sent_em = {m for m, _ in sent}, {e for _, e in sent}
+        for rows in cands.values():
+            for c in rows:
+                if c["master_key"] in sent_mk or (c.get("email") or "").lower() in sent_em:
+                    self._guard[c["master_key"]] = "ALREADY_SENT_TODAY"
+        out["already_sent_today"] = len(sent)
         for mk, why in unexpl.items():
             self._guard.setdefault(mk, f"{DG.UNEXPLAINED} {why}")
         out.update({"d47_double": len(double), "d47_unexplained": len(unexpl)})
@@ -1214,6 +1224,24 @@ def main(argv) -> int:
             print("PROOF_REFUSED " + str(e)[:800])
             return 3
         print("PROOF " + json.dumps({"run_id": day.run_id, **res}, ensure_ascii=False, default=str)[:20000])
+        return 0
+    if args.get("only-236"):                       # D52 13.10: 236 alone, after the personal runs of the day
+        q, wh, brevo, pd_post, dash = _prod()
+        day = Day(q, wh, brevo, pd_post, dash, os.environ)
+        live = (args.get("mode") != "dry") and l1_open(os.environ)
+        if live and not SP.riga(day.now).time() >= SP.SEND_WINDOW[0]:
+            print("ONLY_236_REFUSED outside the send window")
+            return 3
+        day.gate_date = dt.date.fromisoformat(args["gate-date"]) if args.get("gate-date") else None
+        day._track_rows = [dict(r) for r in q(f"SELECT track, enabled, enabled_by FROM `{T_TRACK}`")]
+        day._d44 = {"commercial": [], "akcija_236": [h for h in (args.get("d52-hold-236") or "").split("|") if h]} \
+            if args.get("d52-override") == D52_REASON else day.d44(d, live)
+        refill = day.refill_akcija_excl(d, live)
+        res = {"run_id": day.run_id, "mode": "live" if live else "dry", "akcija_excl": refill,
+               "akcija_236": day.launch_236(d, live, refill)}
+        if live:
+            day.notify(*report_mail({"send_date": str(d), "types": [], **res}, "sent"))
+        print("ONLY_236 " + json.dumps(res, ensure_ascii=False, default=str)[:6000])
         return 0
     if args.get("test-236"):                       # D48 test: real campaign to the 2 test addresses only
         import akcija_launch as AL
