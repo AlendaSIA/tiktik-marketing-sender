@@ -80,19 +80,20 @@ def day_bounds(d: dt.date):
     return a, a + dt.timedelta(days=1)
 
 
-def day_campaigns(brevo, d: dt.date) -> list:
+def day_campaigns(brevo, d: dt.date, now=None) -> list:
     """Every campaign of the day that is sent or still going (queued / in_process), TEST ones left out."""
     a, b = day_bounds(d)
+    end = min(b, (now or dt.datetime.now(dt.timezone.utc)) - dt.timedelta(seconds=5))   # Brevo: endDate <= now
     out = []
     for status in ("sent", "queued", "in_process"):
         off = 0
         while True:
             q = (f"/emailCampaigns?status={status}&limit=100&offset={off}&excludeHtmlContent=true"
-                 + (f"&startDate={a:%Y-%m-%dT%H:%M:%S.000Z}&endDate={b:%Y-%m-%dT%H:%M:%S.000Z}" if status == "sent" else ""))
+                 + (f"&startDate={a:%Y-%m-%dT%H:%M:%S.000Z}&endDate={end:%Y-%m-%dT%H:%M:%S.000Z}" if status == "sent" else ""))
             page = (brevo("GET", q, None) or {}).get("campaigns") or []
             for c in page:
                 when = _ts(c.get("sentDate") or c.get("scheduledAt"))
-                if status != "sent" and (when is None or not a <= when < b):
+                if when is None or not a <= when < b:
                     continue
                 if not is_test(c):
                     out.append({"id": int(c["id"]), "name": c.get("name"), "status": c.get("status") or status,
@@ -199,7 +200,7 @@ def run(q, brevo, fetch, wa_send, d: dt.date, now=None, force=False, whatsapp=Tr
     for ddl in DDL:
         q(ddl)
     existing = q(f"SELECT run_id FROM `{T_CHECK}` WHERE check_date = DATE '{d}' LIMIT 1")
-    campaigns = day_campaigns(brevo, d)
+    campaigns = day_campaigns(brevo, d, now)
     wait = decide(campaigns, now, existing, force)
     if wait:
         return {"run_id": run_id, "date": str(d), "wait": wait, "campaigns": [c["id"] for c in campaigns]}
