@@ -53,8 +53,9 @@ WITH idn AS (SELECT email_norm, MIN(master_key) AS master_key FROM `{T_IDN}`
              WHERE master_key IS NOT NULL AND email_norm IS NOT NULL GROUP BY 1),
 r AS (SELECT DISTINCT LOWER(TRIM(email)) AS email FROM `{T_HIST}`
       WHERE campaign_id = CAST(@c AS INT64) AND email IS NOT NULL)
-SELECT idn.master_key, r.email, CAST(@c AS INT64), SAFE_CAST(@lst AS INT64), NULL, NULL, NULL, NULL, NULL,
-  TIMESTAMP(@sent), '{SOURCE}', @run, NULL, NULL
+SELECT idn.master_key, r.email, CAST(@c AS INT64), SAFE_CAST(@lst AS INT64), CAST(NULL AS STRING),
+  CAST(NULL AS INT64), CAST(NULL AS STRING), CAST(NULL AS INT64), CAST(NULL AS INT64),
+  TIMESTAMP(@sent), '{SOURCE}', @run, CAST(NULL AS STRING), CAST(NULL AS STRING)
 FROM r LEFT JOIN idn ON idn.email_norm = r.email
 WHERE CAST(@c AS INT64) NOT IN (SELECT DISTINCT campaign_id FROM `{T_LOG}` WHERE campaign_id IS NOT NULL)"""
 
@@ -72,10 +73,12 @@ def brevo_sent(camp) -> int | None:
     """Brevo's own sent count of one campaign (GET /emailCampaigns/{id}); None when the answer has none."""
     st = camp.get("statistics") or {}
     g = (st.get("globalStats") or {}).get("sent")
-    if g is not None:
-        return int(g)
     per = [int(x.get("sent") or 0) for x in (st.get("campaignStats") or [])]
-    return sum(per) if per else None
+    # Brevo answers globalStats.sent = 0 for list campaigns (measured 14.10: 333 global 0, campaignStats 3946),
+    # so a bare 0 there is "no figure", not "nothing sent": the per-list sum wins whenever it exists.
+    if per:
+        return sum(per)
+    return int(g) if g is not None else None
 
 
 def within(rows: int, sent: int | None) -> bool:

@@ -131,3 +131,19 @@ def test_edu_itself_never_writes_send_log():
     assert "sendlog_sync" not in code
     src = open(os.path.join(os.path.dirname(__file__), "..", "sendlog_sync.py"), encoding="utf-8").read()
     assert '"POST"' not in src and "sendNow" not in src and "/smtp/" not in src      # GET only, sends nothing
+
+
+def test_rows_sql_has_no_untyped_null():
+    """BigQuery types a bare NULL in an INSERT ... WITH ... SELECT as INT64 -> 'Query column 5 has type INT64 which
+    cannot be inserted into column email_type' (13.10 + 14.10, campaigns 328/333). Every NULL must carry its type."""
+    import re
+    sel = SL.ROWS_SQL.split("SELECT idn.master_key", 1)[1].split("FROM r", 1)[0]
+    assert not re.search(r"(?<!CAST\()NULL(?! AS)", sel), sel
+
+
+def test_brevo_sent_prefers_campaign_stats_over_zero_global():
+    camp = {"statistics": {"globalStats": {"sent": 0},
+                           "campaignStats": [{"listId": 3, "sent": 3946, "delivered": 3893}]}}
+    assert SL.brevo_sent(camp) == 3946
+    assert SL.brevo_sent({"statistics": {"globalStats": {"sent": 7}}}) == 7
+    assert SL.brevo_sent({"statistics": {}}) is None
