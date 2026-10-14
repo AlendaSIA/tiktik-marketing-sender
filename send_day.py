@@ -194,6 +194,59 @@ def report_mail(result, kind) -> tuple:
     return title, "\n".join(lines)
 
 
+def check_problems(result) -> list:
+    """MAIN 3 13.10 (b): the 08:05 Rīta pārbaude mails Raivis ONLY when something is NOT OK; all OK = silent (logged).
+    Pure. [] = all OK. NOT OK = the run was refused / found no plan / evaluated no letter type, any campaign is HOLD
+    (report_mail's 'IR AIZTURĒTAIS'), 236 was not evaluated on a full Tuesday run, the day guard is missing, or the day
+    guard shows a double (2+ letters to one contact) or a cabinet link pointing to another token. Per-contact holds
+    (aizturēti / d47_unexplained / cab_no_link) inside a GO campaign are NOT a reason on their own - they stay in the log."""
+    out = []
+    if result.get("refused"):
+        out.append(f"atteikts: {result['refused']}")
+    if not result.get("types"):
+        out.append("neviens vēstules tips nav novērtēts")
+    subj, _ = report_mail(result, "check")
+    if "IR AIZTURĒTAIS" in subj:
+        out.append("ir aizturēta kampaņa")
+    if "akcija_236" not in result and not result.get("only"):
+        out.append("236 nav novērtēts")
+    g = result.get("day_guard")
+    if not isinstance(g, dict) or "d47_double" not in g:
+        out.append("dienas sargs (D47) nav izpildīts")
+    else:
+        if int(g.get("d47_double") or 0) > 0:
+            out.append(f"2+ vēstules vienam kontaktam: {g['d47_double']}")
+        if int(g.get("cab_mismatch") or 0) > 0:
+            out.append(f"kabineta saites neatbilst: {g['cab_mismatch']}")
+    return out
+
+
+def check_notify(day, res) -> dict:
+    """08:05: mail only when NOT OK; always one CHECK_RESULT line in the log (silent-when-OK is still logged)."""
+    subj, text = report_mail(res, "check")
+    probs = check_problems(res)
+    if probs:
+        subj = subj.replace("viss GO", "NAV OK")
+        text = "Kas nav kārtībā: " + "; ".join(probs) + "\n" + text
+        mailed = day.notify(subj, text)
+        day.dash("KĻŪDA", f"{subj}: " + text.replace("\n", " | ")[:350])
+    else:
+        mailed = False
+    print("CHECK_RESULT " + json.dumps({"ok": not probs, "problems": probs, "mailed": bool(mailed), "subject": subj,
+                                        "text": text}, ensure_ascii=False)[:8000], flush=True)
+    return {"notice": subj, "check_ok": not probs, "check_problems": probs, "check_mailed": bool(mailed)}
+
+
+def check_failed_notify(day, d, why) -> bool:
+    """08:05 run that did not finish (refused / crashed): silence would read as OK -> always mail."""
+    subj = f"Rīta pārbaude {d}: NAV OK - pārbaude nepabeidzās"
+    text = f"Rīta pārbaude nepabeidzās, nekas nav sūtīts.\nIemesls: {str(why)[:600]}"
+    mailed = day.notify(subj, text) if day is not None else False
+    print("CHECK_RESULT " + json.dumps({"ok": False, "problems": ["pārbaude nepabeidzās"], "mailed": bool(mailed),
+                                        "subject": subj, "text": text}, ensure_ascii=False), flush=True)
+    return bool(mailed)
+
+
 def outcome_rows(plan_rows, results, send_date, live) -> list:
     """Pure. plan_rows = the plan run's rows that carry a letter; results = run()['types'] with 'decisions'.
     -> [(master_key, email, email_type, template_id, planned_send_date, outcome, reason, plan_reason)]."""
@@ -1438,16 +1491,20 @@ def main(argv) -> int:
                 return 3
             day.chain_dry = True
         res = day.run(d, mode=mode, caps_override=caps, only=only, gate_date=gd)
-        if args.get("notify") == "check":                  # 08:05 Rīta pārbaude
-            subj, text = report_mail(res, "check")
-            day.notify(subj, text)
-            if "IR AIZTURĒTAIS" in subj:
-                dash("KĻŪDA", f"{subj}: " + text.replace("\n", " | ")[:350])
-            res["notice"] = subj
+        if args.get("notify") == "check":                  # 08:05 Rīta pārbaude - mail ONLY when NOT OK (MAIN 3 (b))
+            if only:
+                res["only"] = sorted(only)
+            res.update(check_notify(day, res))
     except SP.SendLocked as e:
         print("SEND_DAY_REFUSED " + str(e)[:800])
         dash("KĻŪDA", f"Sūtīšanas diena {d}: atteikts - {str(e)[:250]} - nekas nav sūtīts")
+        if args.get("notify") == "check":
+            check_failed_notify(day, d, f"atteikts - {e}")
         return 3
+    except Exception as e:  # noqa: BLE001 - a crashed 08:05 check must not be silent (silent = OK)
+        if args.get("notify") == "check":
+            check_failed_notify(day, d, f"{type(e).__name__}: {e}")
+        raise
     print("SEND_DAY " + json.dumps(res, ensure_ascii=False, default=str)[:20000])
     return 0
 
