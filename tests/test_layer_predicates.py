@@ -76,7 +76,8 @@ class AssignmentReadsNameTheirLayer(unittest.TestCase):
         expected = {"ASSIGNMENT_UNKNOWN_LAYER_SQL", "ASSIGNMENT_LEAKED_SQL",
                     "ASSIGNMENT_ROWS_SQL", "PLAN_SQL", "PLANNED_SNAPSHOT_SQL",
                     "ASSIGNMENT_WEEK_HASH_SQL", "ASSIGNMENT_PEOPLE_SQL",
-                    "DEFAULT_DAY_ROWS_SQL", "COVERAGE_SQL"}
+                    "DEFAULT_DAY_ROWS_SQL", "COVERAGE_SQL",
+                    "ASSIGNMENT_LATE_SUPPRESSED_SQL", "ASSIGNMENT_REFILTER_SQL"}
         self.assertEqual(set(readers), expected,
                          "a read of contact_weekly_assignment was added or removed; give it an "
                          "explicit layer predicate and add it to this list")
@@ -268,3 +269,52 @@ class PlanGuardIsPerLayer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SuppressionRefilterInRecheck(unittest.TestCase):
+    """14.10: 3 people unsubscribed after the 04:55 early build; 07:30 recheck must drop exactly those rows (not
+    rebuild, not weaken the LEAKED guard)."""
+
+    def setUp(self):
+        self._q, self._s, self._env = bq.query, bq.scalar, os.environ.get("ASSIGN_MODE")
+        import assign_early
+        self._ae = assign_early.ensure_early
+        assign_early.ensure_early = lambda q: None
+        os.environ["ASSIGN_MODE"] = "recheck"
+
+    def tearDown(self):
+        import assign_early
+        assign_early.ensure_early = self._ae
+        bq.query, bq.scalar = self._q, self._s
+        if self._env is None:
+            os.environ.pop("ASSIGN_MODE", None)
+        else:
+            os.environ["ASSIGN_MODE"] = self._env
+
+    def test_late_suppressed_rows_are_deleted_then_guard_passes(self):
+        calls = []
+
+        def q(sql, params=None):
+            calls.append(sql)
+            if sql is bq.ASSIGNMENT_LATE_SUPPRESSED_SQL:
+                return [{"email": "a@x.lv", "layer": "commercial", "email_type": "winback_1"}]
+            return []
+        bq.query = q
+        vals = {id(bq.ASSIGNMENT_UNKNOWN_LAYER_SQL): 0, id(bq.ASSIGNMENT_LEAKED_SQL): 0,
+                id(bq.ASSIGNMENT_ROWS_SQL): 9}
+        bq.scalar = lambda sql, params=None: vals[id(sql)]
+        self.assertEqual(bq.build_assignment(), 9)
+        self.assertIn(bq.ASSIGNMENT_REFILTER_SQL, calls)
+        self.assertNotIn(f"CALL {bq.C.SP_ASSIGNMENT}()", calls)
+
+    def test_guard_still_fails_if_refilter_did_not_clear(self):
+        bq.query = lambda sql, params=None: []
+        bq.scalar = lambda sql, params=None: 2 if sql is bq.ASSIGNMENT_LEAKED_SQL else 0
+        with self.assertRaises(RuntimeError) as e:
+            bq.build_assignment()
+        self.assertIn("suppressed addresses", str(e.exception))
+
+    def test_refilter_sql_names_its_layers(self):
+        for sql in (bq.ASSIGNMENT_LATE_SUPPRESSED_SQL, bq.ASSIGNMENT_REFILTER_SQL):
+            self.assertIn("layer IN", sql)
+            self.assertIn("email_suppression_all", sql)

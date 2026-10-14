@@ -100,6 +100,16 @@ def build_assignment() -> int:
     if os.environ.get("ASSIGN_MODE") == "recheck":
         import assign_early
         assign_early.ensure_early(lambda sql: [dict(r) for r in query(sql)])
+        # SUPPRESSION RE-FILTER (Nakts darbi 1, 14.10). The early build (~04:55) filters suppression as it stands
+        # then; the Brevo contacts snapshot is refreshed after it (~06:30), so anyone who unsubscribed between the
+        # two (14.10: 3 people / 4 rows, all from the 13.10 sends) is still assigned at 07:30. Not rebuilding is
+        # deliberate (the PAP night already priced this assignment), so only those rows leave - nothing else moves.
+        # The LEAKED guard below still runs on the result and stays the last word.
+        late = query(ASSIGNMENT_LATE_SUPPRESSED_SQL)
+        if late:
+            query(ASSIGNMENT_REFILTER_SQL)
+            log.warning("ASSIGNMENT_SUPPRESS_REFILTER rows=%d %s", len(late),
+                        "; ".join(f"{r['email']}/{r['layer']}/{r['email_type']}" for r in late))
     else:
         query(f"CALL {C.SP_ASSIGNMENT}()")
 
@@ -148,6 +158,20 @@ ASSIGNMENT_LEAKED_SQL = f"""
     SELECT COUNTIF(a.email IN (SELECT email FROM {C.T_SUPPRESSION}))
     FROM {C.T_ASSIGNMENT} a
     WHERE a.layer IN {C.ALL_LAYERS_SQL}
+"""
+
+ASSIGNMENT_LATE_SUPPRESSED_SQL = f"""
+    SELECT a.email, a.layer, a.email_type
+    FROM {C.T_ASSIGNMENT} a
+    WHERE a.layer IN {C.ALL_LAYERS_SQL}
+      AND a.email IN (SELECT email FROM {C.T_SUPPRESSION})
+    ORDER BY a.email, a.layer
+"""
+
+ASSIGNMENT_REFILTER_SQL = f"""
+    DELETE FROM {C.T_ASSIGNMENT} a
+    WHERE a.layer IN {C.ALL_LAYERS_SQL}
+      AND a.email IN (SELECT email FROM {C.T_SUPPRESSION})
 """
 
 ASSIGNMENT_ROWS_SQL = f"""
