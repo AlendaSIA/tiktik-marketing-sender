@@ -194,6 +194,22 @@ def report_mail(result, kind) -> tuple:
     return title, "\n".join(lines)
 
 
+def state_rung_sql(email_type, sent_on, rung) -> str:
+    """R18 (MAIN 3 14.10): the rung part of sequence.record_sent as an UPDATE SET fragment for contact_sequence_state.
+    Before this the send-time advance wrote last_email_type / last_sent_on / step only, so rung stayed NULL and the
+    planner (apply_history skips sends <= last_sent_on) gave every E2 rung 0 -> 2548 winback_1_e2 held 14.10.
+    record_sent: lost_quarterly never moves the ladder; rung 0 changes nothing; a rung different from the stored one
+    sets rung, rung_set_on = send date, rung_month = YYYY-MM. BigQuery SET expressions read the OLD row values, so the
+    IF() compares against the rung before this send. ('' = no change.) record_sent's asserts are not repeated here."""
+    r = int(rung or 0)
+    if not r or email_type == S.LOST:
+        return ""
+    on = str(sent_on)[:10]
+    m = S._month(dt.date.fromisoformat(on))
+    ch = f"IFNULL(rung, -1) != {r}"
+    return f", rung = {r}, rung_set_on = IF({ch}, DATE '{on}', rung_set_on), rung_month = IF({ch}, '{m}', rung_month)"
+
+
 def check_problems(result) -> list:
     """MAIN 3 13.10 (b): the 08:05 Rīta pārbaude mails Raivis ONLY when something is NOT OK; all OK = silent (logged).
     Pure. [] = all OK. NOT OK = the run was refused / found no plan / evaluated no letter type, any campaign is HOLD
@@ -1230,10 +1246,11 @@ class Day:
             vals = ",".join(f"({_s(mk)}, {_s(et)}, DATE '{on}', {int(rung or 0)}, {_s(batch)}, {int(camp)}, "
                             f"CURRENT_TIMESTAMP())" for mk, et, on, rung in part)
             self.q(f"INSERT INTO `{T_ADV}` VALUES {vals}")
-            for (et, on) in sorted({(et, str(on)) for _, et, on, _ in part}):
-                keys = ",".join(_s(mk) for mk, e, o, _ in part if e == et and str(o) == on)
+            for (et, on, rg) in sorted({(et, str(on), int(rung or 0)) for _, et, on, rung in part}):
+                keys = ",".join(_s(mk) for mk, e, o, r in part if e == et and str(o) == on and int(r or 0) == rg)
                 self.q(f"UPDATE `{T_STATE}` SET last_email_type = {_s(et)}, last_sent_on = DATE '{on}', "
-                       f"step = IFNULL(step, 0) + 1, last_send_source = 'engine_live' WHERE master_key IN ({keys})")
+                       f"step = IFNULL(step, 0) + 1, last_send_source = 'engine_live'{state_rung_sql(et, on, rg)} "
+                       f"WHERE master_key IN ({keys})")
 
     def write_offered(self, rows):
         """R7 PP3: every R product a sent 235 showed, so the next 235 never offers it again (presend XS_REPEAT)."""
@@ -1247,7 +1264,7 @@ class Day:
         self.q(f"INSERT INTO `{T_ADV}` VALUES ({_s(mk)}, {_s(et)}, DATE '{on}', {int(rung or 0)}, {_s(batch)}, "
                f"{int(camp)}, CURRENT_TIMESTAMP())")
         self.q(f"UPDATE `{T_STATE}` SET last_email_type = {_s(et)}, last_sent_on = DATE '{on}', step = IFNULL(step, 0) + 1, "
-               f"last_send_source = 'engine_live' WHERE master_key = {_s(mk)}")
+               f"last_send_source = 'engine_live'{state_rung_sql(et, on, rung)} WHERE master_key = {_s(mk)}")
 
     @staticmethod
     def _detail(res):
