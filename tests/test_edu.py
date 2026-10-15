@@ -188,6 +188,30 @@ class Send(unittest.TestCase):
 
 
 
+class EngineClassD2(unittest.TestCase):
+    """D2 (MAIN 4 15.10): the engine EDU campaign is classified at creation; a failed write never blocks."""
+
+    def test_live_is_edu_and_test_only_is_test(self):
+        seen = []
+        self.assertIsNone(E.class_row(lambda s: seen.append(s), 412, "ENGINE · EDU · APG2 2026-10-22", False))
+        self.assertIsNone(E.class_row(lambda s: seen.append(s), 413, "ENGINE · EDU · APG2 2026-10-22 TESTS", True))
+        self.assertIn("SELECT 412, 'ENGINE · EDU · APG2 2026-10-22', ", seen[0])
+        self.assertIn("'edu', NULL, 'educational'", seen[0])
+        self.assertIn("'test', NULL, 'educational'", seen[1])
+        self.assertTrue(all("'auto: engine-created'" in x for x in seen))
+
+    def test_failure_returns_a_note_and_send_records_it_after_the_one_send_call(self):
+        def boom(s):
+            raise RuntimeError("BigQuery refused")
+        self.assertTrue(E.class_row(boom, 1, "x", False).startswith("CLASS_ROW_FAILED RuntimeError"))
+        code = open(os.path.join(ROOT, "edu.py"), encoding="utf-8").read()
+        body = code[code.index("def send(q, d, code"):]
+        i_create, i_class = body.index('campaign_id = int(created["id"])'), body.index("class_note = class_row(")
+        i_send = body.index('"/emailCampaigns/{campaign_id}/sendNow"')
+        self.assertTrue(i_create < i_class < i_send)                     # before sendNow, inside the refusal try
+        self.assertIn('"class_row": class_note or "ok"', body[i_send:])  # the SENT log carries the note
+
+
 class EduAllRule(unittest.TestCase):
     """lv_edu_all (Raivis 2026-10-07): every old contact of the hand list, never a B2B lead."""
     BASE = {"l3": True, "l4": False, "l46": False, "l75": False, "lead": False, "suppressed": False, "blocked": False,

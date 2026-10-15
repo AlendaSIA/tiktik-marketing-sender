@@ -62,7 +62,8 @@ def build(q, brevo, d: dt.date, gate_date=None) -> dict:
     return out
 
 
-def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, subject_prefix: str = "") -> dict:
+def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, subject_prefix: str = "",
+                    on_created=None) -> dict:
     import campaign as CAMP
     payload = {"name": name[:200], "subject": subject_prefix + b["subject"], "sender": {"id": CAMP.SENDER_ID},
                "replyTo": "info@tiktik.lv", "htmlContent": b["html"],
@@ -70,6 +71,10 @@ def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, s
                               if exclusions else {"listIds": [int(list_id)]}),        # Brevo refuses an empty list
                "inlineImageActivation": False}
     cid = int(brevo("POST", "/emailCampaigns", payload)["id"])
+    try:                                          # D2: class row before sendNow; never blocks the send
+        class_note = on_created(cid) if on_created else None
+    except Exception as e:  # noqa: BLE001
+        class_note = f"CLASS_ROW_FAILED {type(e).__name__}: {e}"[:200]
     hits = CAMP.placeholder_hits(payload["subject"], None, b["html"])
     got = brevo("GET", f"/emailCampaigns/{cid}", None) or {}
     rec = got.get("recipients") or {}
@@ -77,7 +82,8 @@ def create_and_send(brevo, b: dict, list_id: int, exclusions: list, name: str, s
             sorted(rec.get("exclusionLists") or []) != sorted(int(x) for x in exclusions):
         return {"campaign_id": cid, "sent": False, "refused": f"RECIPIENTS_READ_BACK_DIFFER {rec}"}
     brevo("POST", f"/emailCampaigns/{cid}/sendNow", None)
-    return {"campaign_id": cid, "sent": True, "unfilled_marks_in_frame_text": hits[:5]}
+    return {"campaign_id": cid, "sent": True, "unfilled_marks_in_frame_text": hits[:5],
+            "class_row": class_note or ("ok" if on_created else None)}
 
 
 def sent_today_lists(brevo, d: dt.date) -> list:
@@ -158,7 +164,10 @@ def launch(q, brevo, d: dt.date, live: bool, refill: dict, d44: dict | None, das
     lid98 = refill["brevo"]["list_id"]
     if pace:
         pace()                                   # D49: 236 last, >= 10 min after the last personal campaign
-    out.update(create_and_send(brevo, b, AC.LIST_ALL, EXCLUSIONS + [int(lid98)] + sent_lists, f"236 {d} {b['week_id']} (engine)"))
+    import campaign_class as CC
+    name = f"236 {d} {b['week_id']} (engine)"
+    out.update(create_and_send(brevo, b, AC.LIST_ALL, EXCLUSIONS + [int(lid98)] + sent_lists, name,
+                               on_created=lambda cid: CC.engine_class(q, cid, name, "akcija_weekly")))
     out["launched"] = out.get("sent", False)
     return out
 
@@ -178,5 +187,8 @@ def test(q, brevo, d: dt.date, gate_date=None) -> dict:
         out["refused"] = f"test list {lid} holds {sorted(now)}"
         return out
     out["test_list_id"] = lid
-    out.update(create_and_send(brevo, b, lid, [], f"TEST 236 auto {d} {b['week_id']}", TEST_PREFIX))
+    import campaign_class as CC
+    name = f"TEST 236 auto {d} {b['week_id']}"
+    out.update(create_and_send(brevo, b, lid, [], name, TEST_PREFIX,
+                               on_created=lambda cid: CC.engine_class(q, cid, name, "akcija_test")))
     return out

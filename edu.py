@@ -1353,6 +1353,17 @@ def verify(q, d, code, check_run) -> int:
     return 0 if not row["err"] else 1
 
 
+def class_row(q, campaign_id, name, test_only):
+    """D2 (MAIN 4 15.10): the engine EDU campaign gets its brevo_campaign_class row at creation (reviewed
+    'auto: engine-created'), so the nightly import never holds its recipients. Returns None or 'CLASS_ROW_FAILED ...';
+    never raises - a failed class write never blocks the send."""
+    try:
+        import campaign_class as CC
+        return CC.engine_class(q, campaign_id, name, "edu_test" if test_only else "edu")
+    except Exception as e:  # noqa: BLE001
+        return f"CLASS_ROW_FAILED {type(e).__name__}: {e}"[:200]
+
+
 def send(q, d, code, now=None) -> int:
     """THE SEND. Exit 0 = sent, 3 = refused (nothing was sent), 5 = failed after sendNow was called."""
     now = now or dt.datetime.now(dt.timezone.utc)
@@ -1418,6 +1429,7 @@ def send(q, d, code, now=None) -> int:
         created = _brevo("POST", "/emailCampaigns", campaign_payload(source, f"ENGINE · EDU · {tag}", list_id, excl,
                                                                      params))
         campaign_id = int(created["id"])
+        class_note = class_row(q, campaign_id, f"ENGINE · EDU · {tag}", test_only)   # D2; never raises
         mine = _brevo("GET", f"/emailCampaigns/{campaign_id}")
         rec = mine.get("recipients") or {}
         fm = _facts(mine)
@@ -1450,7 +1462,8 @@ def send(q, d, code, now=None) -> int:
     _brevo("POST", f"/emailCampaigns/{campaign_id}/sendNow")              # THE ONE SEND CALL
     try:
         log(q, d, code, who, "SENT", {"campaign_id": campaign_id, "list_id": list_id, "people": len(ok),
-                                      "exclusion_lists": excl, "source_campaign_id": L["source_campaign_id"]})
+                                      "exclusion_lists": excl, "source_campaign_id": L["source_campaign_id"],
+                                      "class_row": class_note or "ok"})
         q(f"INSERT INTO `{T_SENT}` (send_date, letter_code, campaign_id, source_campaign_id, brevo_list_id, master_key, "
           f"email, sent_at, check_run, test_only) SELECT @d, @c, @cid, @sid, @lid, master_key, email, "
           f"CURRENT_TIMESTAMP(), @cr, @t FROM `{T_AUD}` WHERE send_date = @d AND letter_code = @c AND check_run = @cr "

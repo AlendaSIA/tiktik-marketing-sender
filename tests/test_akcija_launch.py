@@ -113,5 +113,72 @@ class Launch(unittest.TestCase):
         self.assertTrue(any(h.startswith("D1 236 frame 313") for h in b["holds"]))
 
 
+class EngineClassD2(unittest.TestCase):
+    """D2 (MAIN 4 15.10): the 236 campaign gets its reviewed class row between create and sendNow."""
+
+    class QC(Q):
+        def __init__(self, fail=False, events=None):
+            super().__init__()
+            self.fail, self.events, self.class_sql = fail, events, []
+
+        def __call__(self, s):
+            if "brevo_campaign_class" in s:
+                if self.events is not None:
+                    self.events.append(("class", None))
+                if self.fail:
+                    raise RuntimeError("BigQuery refused")
+                self.class_sql.append(s)
+                return []
+            return super().__call__(s)
+
+    def test_live_writes_broadcast_row_before_send(self):
+        sent, events = [], []
+        q = self.QC(events=events)
+        b = brevo_fn(sent)
+
+        def call(m, path, body):
+            if m == "POST":
+                events.append((path, None))
+            return b(m, path, body)
+        with OK_GATES:
+            r = AL.launch(q, call, D, True, {"brevo": {"list_id": 98}}, {"akcija_236": []}, mock.Mock())
+        self.assertTrue(r["launched"])
+        self.assertEqual([e[0] for e in events], ["/emailCampaigns", "class", "/emailCampaigns/901/sendNow"])
+        self.assertEqual(r["class_row"], "ok")
+        (sql,) = q.class_sql
+        self.assertIn("SELECT 901, '236 2026-10-13 ", sql)
+        self.assertIn("'broadcast', 'akcija_weekly', 'akcija'", sql)
+        self.assertIn("'auto: engine-created'", sql)
+
+    def test_test_send_writes_kind_test(self):
+        sent = []
+        q = self.QC()
+        with OK_GATES, mock.patch("flow_gate.list_ids", return_value={"TEST_236_AUTO": 777}), \
+                mock.patch("flow_gate.sync_one"), mock.patch("flow_gate.list_members", return_value=AL.TEST_RECIPIENTS):
+            b = brevo_fn(sent)
+
+            def call(m, path, body):
+                if m == "GET" and path == "/emailCampaigns/901":
+                    return {"recipients": {"lists": [777], "exclusionLists": []}}
+                return b(m, path, body)
+            r = AL.test(q, call, D)
+        self.assertTrue(r["sent"])
+        (sql,) = q.class_sql
+        self.assertIn("'TEST 236 auto 2026-10-13 ", sql)
+        self.assertIn("'test', NULL, 'akcija'", sql)
+
+    def test_failed_class_write_never_blocks_the_send(self):
+        sent = []
+        with OK_GATES:
+            r = AL.launch(self.QC(fail=True), brevo_fn(sent), D, True, {"brevo": {"list_id": 98}},
+                          {"akcija_236": []}, mock.Mock())
+        self.assertTrue(r["launched"])
+        self.assertEqual(sent[-1], ("send", "/emailCampaigns/901/sendNow"))
+        self.assertTrue(r["class_row"].startswith("CLASS_ROW_FAILED RuntimeError"))
+        r2 = AL.create_and_send(brevo_fn([]), {"subject": "S", "html": "<p/>"}, 5, [4], "n",
+                                on_created=mock.Mock(side_effect=ValueError("x")))
+        self.assertTrue(r2["sent"] and r2["class_row"].startswith("CLASS_ROW_FAILED ValueError"))
+
+
 if __name__ == "__main__":
     unittest.main()
