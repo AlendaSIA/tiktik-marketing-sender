@@ -271,3 +271,11 @@ def test_dry_prices_off_starts_no_week_price_run():
                  now=dt.datetime(2026, 10, 19, 0, 31, tzinfo=U))
     ch.tick()
     assert not any(j == "tiktik-week-prices" for j, a, e in run.calls)
+
+
+def test_s5_sql_orders_by_ordinal_not_an_aggregate_of_the_alias():
+    """19.10 DRY (Dzinējs 12): 'ORDER BY MAX(finished_at)' with the alias finished_at = MAX(...) -> BigQuery 400
+    'Aggregations of aggregations are not allowed' -> every S5 status tick crashed."""
+    c = T.Cfg({"CHAIN_MODE": "DRY", "CHAIN_DATE": "2026-10-19"}, dt.datetime.fromisoformat(z(10, 0)))
+    s = T.s5_sql(c, "2026-10-19 07:52:30")
+    assert "ORDER BY MAX(finished_at)" not in s and "MAX(finished_at) AS finished_at" in s and "ORDER BY 5 DESC" in s

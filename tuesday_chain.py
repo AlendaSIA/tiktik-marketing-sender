@@ -139,7 +139,7 @@ def s5_sql(c: Cfg, since) -> str:
 SELECT run_id, COUNT(*) AS types, STRING_AGG(DISTINCT type_refusal, ' | ') AS refusals, SUM(IFNULL(sent, 0)) AS sent,
        MAX(finished_at) AS finished_at
 FROM `{M}.send_day_run` WHERE send_date = DATE '{c.date}' AND mode = '{mode}' AND finished_at >= TIMESTAMP '{since}'
-GROUP BY run_id ORDER BY MAX(finished_at) DESC LIMIT 1"""
+GROUP BY run_id ORDER BY 5 DESC LIMIT 1"""      # 5 = MAX(finished_at): "ORDER BY MAX(finished_at)" = aggregate of the alias (BQ 400, D12 DRY 19.10)
 
 
 def s5_holds_sql(run_id) -> str:
