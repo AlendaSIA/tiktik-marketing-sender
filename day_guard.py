@@ -185,7 +185,8 @@ cab AS (SELECT MAX(written_at) AS t_at,
                        CASE price_role WHEN 'r1' THEN {RUNG_DEPTH['r1']} WHEN 'r2' THEN {RUNG_DEPTH['r2']}
                                        WHEN 'r3' THEN {RUNG_DEPTH['r3']} WHEN 'xs_intro' THEN {RUNG_DEPTH['xs_intro']}
                                        ELSE 0 END + 0.0005) AS too_deep
-        FROM `{M}.cabinet_price_current` WHERE run_id = '{cab}'),
+        FROM `{M}.cabinet_price_current` WHERE run_id = '{cab}'
+          AND status = 'written'),      -- Raivis 19.10 16:31 (MAIN 5 16:35): only prices a client sees; dropped rows never count
 lf AS (SELECT MAX(finished_at) AS t_at FROM `{M}.letter_fields_log` WHERE plan_date = DATE '{d}' AND status = 'OK'),
 ak AS (SELECT MAX(finished_at) AS t_at FROM `{M}.block_push_log`
        WHERE run_date = DATE '{d}' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(errors, 0) = 0),

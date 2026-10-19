@@ -187,3 +187,27 @@ class D44PricesOff(unittest.TestCase):
                       "'Europe/Riga')", s)
         self.assertIn("WHERE (SELECT enabled FROM cfg) = FALSE", s)
         self.assertIn("AS prices_enabled", s)
+
+
+class D44WrittenOnly(unittest.TestCase):
+    """Raivis 19.10 16:31 (MAIN 5 16:35): D44 counts only cabinet rows with status 'written' (what a client sees). A
+    dropped_worse_than_shop row (never in the cabinet or a letter) no longer holds the day; a WRITTEN row >= shop still does."""
+
+    def test_sql_counts_only_written_rows_of_the_cab_run(self):
+        s = DG.d44_facts_sql(dt.date(2026, 10, 20))
+        cab = s.split("cab AS (")[1].split("lf AS (")[0]
+        self.assertIn("WHERE run_id = 'cab-20261020'", cab)
+        self.assertIn("AND status = 'written'", cab)
+        self.assertIn("COUNTIF(cabinet_price_gross >= shop_gross) AS ge_shop", cab)
+
+    def test_dropped_rows_filtered_out_pass_written_ge_shop_holds_the_day(self):
+        ok = {"wp_run": "SKIPPED_PRICES_OFF", "wp_at": "2026-10-20 00:30:00", "cab_at": "2026-10-20 02:50:00",
+              "lf_at": "2026-10-20 03:30:00", "ak_at": "2026-10-20 03:50:00", "below_min": 0, "ge_shop": 0, "too_deep": 0,
+              "ak_status": "BUILT", "ak_wp_run": "SKIPPED_PRICES_OFF", "ak_mirror_at": "2026-10-20 02:20:00",
+              "ak_assembled_at": "2026-10-20 03:40:00"}
+        # 111 dropped rows >= shop are not counted by the SQL -> ge_shop 0 -> the day passes
+        self.assertEqual(DG.d44_eval(ok), {"commercial": [], "akcija_236": []})
+        # one WRITTEN row >= shop -> the whole day is held (Raivis' D44 rule unchanged)
+        r = DG.d44_eval({**ok, "ge_shop": 1})
+        self.assertEqual(r["commercial"], ["D44_PRICE_NOT_BELOW_NEW_SHOP 1"])
+        self.assertIn("D44_PRICE_NOT_BELOW_NEW_SHOP 1", r["akcija_236"])
