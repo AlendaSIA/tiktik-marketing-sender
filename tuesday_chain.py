@@ -20,6 +20,10 @@ Rules:
     override path (this module has none).
  d) Monday 19.10 DRY (no sends): one row per step in mkt_control.tuesday_chain_log (start / finish / ok).
 MAIN 3 13.10 11:24 (4): S5 earliest start configurable, default 09:00 Riga; S5 starts at the later of S4 OK and that.
+S1 prices off (Raivis-approved wording, MAIN 5 19.10): if week_price_config.enabled = false -> S1 = SKIPPED_PRICES_OFF,
+    ok=true, chain continues to S2; if enabled = true -> existing S1 contract unchanged. (No config row / NULL = enabled.)
+    With no week-price run there is no S1 finish time: the "after S1" checks of S2/S4 use the chain start (03:30 Riga
+    of the chain date) instead - Sūtīšanas dzinējs 12 reading, MAIN may overturn.
 
 ONE execution = one tick: read today's rows + facts, write the step rows, start at most what is due, exit. Stateless
 between ticks; the table is the state. Env:
@@ -46,6 +50,7 @@ T_LOG = f"{M}.tuesday_chain_log"
 STEPS = ("S1", "S2", "S3", "S4", "S5")
 WA_FROM, WA_TO = "+37122811277", "+37126711822"     # MAIN line: morning WhatsApp from +37122811277 to Raivis
 MAX_STARTS = {"S3": 6, "S4": 18, "S5": 1}
+S1_SKIPPED = "SKIPPED_PRICES_OFF"                  # status string, byte for byte (Raivis wording, MAIN 5 19.10)
 DDL = f"""CREATE TABLE IF NOT EXISTS `{T_LOG}` (
   chain_date DATE, mode STRING, step STRING, started_at TIMESTAMP, finished_at TIMESTAMP, ok BOOL, status STRING,
   reason STRING, executions STRING, starts INT64, evidence STRING, alert_sent_at TIMESTAMP, updated_at TIMESTAMP)
@@ -93,7 +98,8 @@ def facts_sql(c: Cfg) -> str:
     d, m = c.date.isoformat(), c.mode
     blk_mode = "DRY" if m == "DRY" else "LIVE"
     return f"""
-WITH s1 AS (SELECT run_id, started_at, finished_at FROM `{M}.week_price_run_summary`
+WITH cfg AS (SELECT enabled FROM `{M}.week_price_config` WHERE id = 1),
+s1 AS (SELECT run_id, started_at, finished_at FROM `{M}.week_price_run_summary`
             WHERE kind = 'weekly' AND mode = '{m}' AND DATE(finished_at, 'Europe/Riga') = DATE '{d}'
             ORDER BY finished_at DESC LIMIT 1),
 s1r AS (SELECT COUNT(*) AS n, COUNTIF(r.status IN ('MOZ_FAIL', 'ERROR')) AS bad, COUNTIF(r.mode != '{m}') AS other_mode
@@ -119,6 +125,7 @@ mir AS (SELECT LEAST((SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_prod
 asm AS (SELECT last_modified_time AS t_at FROM `{M}.INFORMATION_SCHEMA.PARTITIONS`
         WHERE table_name = 'akcija_assembled' AND partition_id = '{c.date:%Y%m%d}' AND total_rows > 0)
 SELECT TO_JSON_STRING(STRUCT(
+  (SELECT enabled FROM cfg) AS prices_enabled,
   (SELECT AS STRUCT * FROM s1) AS s1, (SELECT AS STRUCT * FROM s1r) AS s1r,
   (SELECT AS STRUCT * FROM s2) AS s2, (SELECT n FROM s2n) AS s2_rows,
   (SELECT AS STRUCT * FROM s3) AS s3, (SELECT AS STRUCT * FROM s3ok) AS s3ok, (SELECT n FROM plan) AS plan_rows,
@@ -141,7 +148,16 @@ FROM `{M}.send_day_audience` WHERE run_id = '{run_id}'"""
 
 
 # ------------------------------------------------------------------------------------------------ pure verdicts
+def prices_off(f) -> bool:
+    """True only for week_price_config.enabled = false (a missing row / NULL keeps the old S1 contract)."""
+    return f.get("prices_enabled") is False
+
+
 def verdict_s1(f, c: Cfg):
+    if prices_off(f):
+        ref = c.at(c.start)
+        return True, ref, (f"{S1_SKIPPED}: week_price_config.enabled = false - no week-price run expected; "
+                           f"S1 reference time = chain start {c.start:%H:%M} Riga")
     s1, r = f.get("s1"), f.get("s1r") or {}
     if not s1:
         return False, None, f"no weekly {c.mode} week-price run finished today"
@@ -289,18 +305,21 @@ class Chain:
         past_deadline = self.now > c.at(c.deadline)
         out = {"date": str(c.date), "mode": c.mode, "now": now_r.isoformat(timespec="minutes"), "steps": {}}
 
-        def done(step, ok, at, why, extra=None):
+        def done(step, ok, at, why, extra=None, status="OK"):
             r = self._rows.get(step) or {}
-            if ok and not r.get("ok"):
-                self.put(step, ok=True, status="OK", finished_at=at.isoformat(), reason=why,
+            if ok and (not r.get("ok") or r.get("status") != status):
+                self.put(step, ok=True, status=status, finished_at=at.isoformat(), reason=why,
                          started_at=r.get("started_at") or (extra or {}).get("started_at"),
                          evidence=json.dumps(extra or {}, default=str)[:4000])
-            out["steps"][step] = ("OK " if ok else "") + why
+            out["steps"][step] = (f"{status} " if ok else "") + why
             return ok
 
-        # S1 - started by its own 03:30 clock (Build 3 job); DRY: this job starts the DRY weekly run once
+        # S1 - started by its own 03:30 clock (Build 3 job); DRY: this job starts the DRY weekly run once.
+        # Prices off (week_price_config.enabled = false): S1 = SKIPPED_PRICES_OFF, ok=true, no run is started or awaited.
         ok1, at1, why1 = verdict_s1(f, c)
-        if not done("S1", ok1, at1, why1, {"started_at": (f.get("s1") or {}).get("started_at"), "run": f.get("s1")}):
+        s1_extra = ({"started_at": at1.isoformat(), "prices_enabled": False, "run": None} if prices_off(f) else
+                    {"started_at": (f.get("s1") or {}).get("started_at"), "run": f.get("s1")})
+        if not done("S1", ok1, at1, why1, s1_extra, status=S1_SKIPPED if prices_off(f) else "OK"):
             if c.mode == "DRY" and not (self._rows.get("S1") or {}).get("starts"):
                 self.start("S1", [("tiktik-week-prices", ["--dry"], {})], "DRY weekly run started by the chain")
             elif not self.busy("S1"):

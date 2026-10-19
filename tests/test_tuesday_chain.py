@@ -217,3 +217,57 @@ def test_first_date_guard_and_dry_s3_must_be_chain_started():
     s2 = dt.datetime.fromisoformat(z(5, 50))
     assert not T.verdict_s3(daily, c, s2, min_ts=dt.datetime.fromisoformat(z(9, 30)))[0]
     assert T.verdict_s3(daily, c, s2, min_ts=dt.datetime.fromisoformat(z(8, 30)))[0]
+
+
+# --- S1 prices off (Raivis-approved wording, MAIN 5 19.10; Sūtīšanas dzinējs 12) ---------------------------------
+def test_s1_prices_off_is_skipped_ok_with_chain_start_as_reference():
+    c = T.Cfg({}, dt.datetime.fromisoformat(z(5, 0)))
+    ok, at, why = T.verdict_s1(facts(prices_enabled=False, s1=None, s1r=None), c)
+    assert ok and at == dt.datetime.fromisoformat(z(3, 30)) and why.startswith("SKIPPED_PRICES_OFF")
+    assert T.S1_SKIPPED == "SKIPPED_PRICES_OFF"                                     # byte for byte
+    s = T.facts_sql(c)
+    assert "week_price_config` WHERE id = 1" in s and "AS prices_enabled" in s
+
+
+def test_s1_prices_on_or_unknown_keeps_the_old_contract():
+    c = T.Cfg({}, dt.datetime.fromisoformat(z(5, 0)))
+    for pe in (True, None):
+        assert not T.verdict_s1(facts(prices_enabled=pe, s1=None), c)[0]
+        assert T.verdict_s1(facts(prices_enabled=pe), c)[0]
+        assert "102 rows MOZ_FAIL/ERROR" in T.verdict_s1(facts(prices_enabled=pe, s1r={"n": 1411, "bad": 102, "other_mode": 0}), c)[2]
+    assert not T.prices_off({"prices_enabled": None}) and not T.prices_off({})
+
+
+def test_tick_prices_off_writes_skipped_row_and_goes_to_s2_s3():
+    run = FakeRun()
+    ch, bq = chain(facts(prices_enabled=False, s1=None, s1r=None), (4, 30), run=run)
+    out = ch.tick()
+    row = bq.log["S1"]["_sql"]
+    assert "'SKIPPED_PRICES_OFF' AS status" in row and "TRUE AS ok" in row
+    assert out["steps"]["S1"].startswith("SKIPPED_PRICES_OFF")
+    assert out["steps"]["S2"].startswith("OK ") and out["waiting_on"] == "S3"           # cab 04:20 is after 03:30
+    assert run.calls == [("tiktik-letter-fields", None, {})]                            # no week-prices run is started
+
+
+def test_tick_prices_off_s2_still_needs_a_cab_after_the_chain_start():
+    ch, bq = chain(facts(prices_enabled=False, s1=None, s1r=None,
+                         s2={"ok": True, "reason": None, "logged_at": z(3, 10), "n": 1}), (4, 30), run=FakeRun())
+    out = ch.tick()
+    assert out["waiting_on"] == "S2" and "not after S1" in out["steps"]["S2"]
+
+
+def test_tick_prices_on_still_waits_for_the_week_price_run():
+    run = FakeRun()
+    ch, bq = chain(facts(prices_enabled=True, s1=None), (4, 30), run=run)
+    out = ch.tick()
+    assert out["waiting_on"] == "S1" and "WAITING" in bq.log["S1"]["_sql"] and run.calls == []
+
+
+def test_dry_prices_off_starts_no_week_price_run():
+    env = {"CHAIN_MODE": "DRY", "CHAIN_DATE": "2026-10-19", "CHAIN_S3_NOT_BEFORE": "09:30", "CHAIN_DEADLINE": "11:45",
+           "CHAIN_S5_NOT_BEFORE": "00:00"}
+    run = FakeRun()
+    ch = T.Chain(FakeBQ(facts(prices_enabled=False, s1=None, s1r=None)), run, lambda t: True, env,
+                 now=dt.datetime(2026, 10, 19, 0, 31, tzinfo=U))
+    ch.tick()
+    assert not any(j == "tiktik-week-prices" for j, a, e in run.calls)

@@ -156,16 +156,28 @@ COMMERCIAL = {"reorder_1", "active_xsell", "winback_1", "winback_2", "winback_3"
 RUNG_DEPTH = {"r1": 0.10, "r2": 0.15, "r3": 0.20, "xs_intro": 0.105}   # xs_intro: 10 % + rounding to x9 (measured 10.42 %)
 
 
+S1_SKIPPED = "SKIPPED_PRICES_OFF"     # chain S1 status / run id when week prices are off (Raivis wording, MAIN 5 19.10)
+S1_SKIP_REF = "03:30:00"              # Europe/Riga: the chain start = S1 reference time when no week-price run exists
+
+
 def d44_facts_sql(d: dt.date) -> str:
+    """S1 = the chain contract; prices off (week_price_config.enabled = false, Raivis wording MAIN 5 19.10): S1 =
+    SKIPPED_PRICES_OFF, ok -> wp_run 'SKIPPED_PRICES_OFF', wp_at = 03:30 Riga of the day (cab must be written after it;
+    ak_tuesday logs the same run id). enabled = true or no row -> the contract below unchanged."""
     cab = f"cab-{d:%Y%m%d}"
     return f"""
-WITH wp0 AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`      -- R1 S1 (MAIN 3 13.10 (b)+(f)): the latest
+WITH cfg AS (SELECT enabled FROM `{M}.week_price_config` WHERE id = 1),
+wp0 AS (SELECT run_id, finished_at FROM `{M}.week_price_run_summary`             -- R1 S1 (MAIN 3 13.10 (b)+(f)): the latest
              WHERE kind = 'weekly' AND mode = 'LIVE'                             -- weekly LIVE run finished today; OK only with
                AND DATE(finished_at, 'Europe/Riga') = DATE '{d}' ORDER BY finished_at DESC LIMIT 1),  -- 0 MOZ_FAIL/ERROR rows
 wp AS (SELECT wp0.run_id, wp0.finished_at FROM wp0
-       WHERE (SELECT COUNT(*) FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) > 0
+       WHERE IFNULL((SELECT enabled FROM cfg), TRUE)
+         AND (SELECT COUNT(*) FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) > 0
          AND (SELECT COUNTIF(r.status IN ('MOZ_FAIL', 'ERROR') OR r.mode != 'LIVE')
-              FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) = 0),
+              FROM `{M}.week_price_run` r WHERE r.run_id = wp0.run_id) = 0
+       UNION ALL
+       SELECT '{S1_SKIPPED}' AS run_id, TIMESTAMP(DATETIME(DATE '{d}', TIME '{S1_SKIP_REF}'), 'Europe/Riga') AS finished_at
+       FROM (SELECT 1) WHERE (SELECT enabled FROM cfg) = FALSE),
 cab AS (SELECT MAX(written_at) AS t_at,
                COUNTIF(cabinet_price_gross < min_gross - 0.005) AS below_min,
                COUNTIF(cabinet_price_gross >= shop_gross) AS ge_shop,
@@ -179,7 +191,8 @@ ak AS (SELECT MAX(finished_at) AS t_at FROM `{M}.block_push_log`
        WHERE run_date = DATE '{d}' AND mode = 'LIVE' AND status = 'OK' AND IFNULL(errors, 0) = 0),
 tl AS (SELECT status, week_price_run_id, mirror_ingested_at, assembled_built_at FROM `{M}.ak_tuesday_log`
        WHERE run_date = DATE '{d}' AND mode = 'LIVE' ORDER BY logged_at DESC LIMIT 1)
-SELECT (SELECT run_id FROM wp) AS wp_run, (SELECT finished_at FROM wp) AS wp_at, cab.t_at AS cab_at,
+SELECT (SELECT run_id FROM wp) AS wp_run, (SELECT finished_at FROM wp) AS wp_at, (SELECT enabled FROM cfg) AS prices_enabled,
+       cab.t_at AS cab_at,
        cab.below_min, cab.ge_shop, cab.too_deep, lf.t_at AS lf_at, ak.t_at AS ak_at,
        (SELECT status FROM tl) AS ak_status, (SELECT week_price_run_id FROM tl) AS ak_wp_run,
        (SELECT mirror_ingested_at FROM tl) AS ak_mirror_at, (SELECT assembled_built_at FROM tl) AS ak_assembled_at

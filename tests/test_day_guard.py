@@ -162,3 +162,28 @@ def test_r1_d44_s1_is_the_contract_definition():
     s = _DG.d44_facts_sql(_dt.date(2026, 10, 20))
     assert "kind = 'weekly' AND mode = 'LIVE'" in s and "status = 'OK'" not in s.split("cab AS")[0]
     assert "IFNULL(n_mismatch" not in s and "r.status IN ('MOZ_FAIL', 'ERROR')" in s
+
+
+class D44PricesOff(unittest.TestCase):
+    """S1 prices off (Raivis-approved wording, MAIN 5 19.10): the D44 gate uses the SAME S1 as the chain."""
+    SKIP = {"wp_run": "SKIPPED_PRICES_OFF", "wp_at": "2026-10-20 00:30:00", "prices_enabled": False,
+            "cab_at": "2026-10-20 02:50:00", "lf_at": "2026-10-20 03:30:00", "ak_at": "2026-10-20 03:50:00",
+            "below_min": 0, "ge_shop": 0, "too_deep": 0, "ak_status": "BUILT", "ak_wp_run": "SKIPPED_PRICES_OFF",
+            "ak_mirror_at": "2026-10-20 02:20:00", "ak_assembled_at": "2026-10-20 03:40:00"}
+
+    def test_skipped_s1_passes_and_236_needs_the_same_run_id(self):
+        self.assertEqual(DG.d44_eval(self.SKIP), {"commercial": [], "akcija_236": []})
+        self.assertIn("D44_AK_NOT_BUILT", DG.d44_eval({**self.SKIP, "ak_wp_run": None})["akcija_236"])
+
+    def test_skipped_s1_cab_before_chain_start_holds(self):
+        self.assertIn("D44_CAB_BEFORE_WEEK_PRICE", DG.d44_eval({**self.SKIP, "cab_at": "2026-10-20 00:10:00"})["commercial"])
+
+    def test_sql_skip_branch_only_when_enabled_is_false(self):
+        s = DG.d44_facts_sql(dt.date(2026, 10, 20))
+        self.assertEqual(DG.S1_SKIPPED, "SKIPPED_PRICES_OFF")
+        self.assertIn("week_price_config` WHERE id = 1", s)
+        self.assertIn("IFNULL((SELECT enabled FROM cfg), TRUE)", s)                     # enabled / no row -> old contract
+        self.assertIn("SELECT 'SKIPPED_PRICES_OFF' AS run_id, TIMESTAMP(DATETIME(DATE '2026-10-20', TIME '03:30:00'), "
+                      "'Europe/Riga')", s)
+        self.assertIn("WHERE (SELECT enabled FROM cfg) = FALSE", s)
+        self.assertIn("AS prices_enabled", s)
