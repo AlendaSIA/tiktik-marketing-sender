@@ -67,7 +67,9 @@ EXCLUDED = "WRITER_EXCLUDED"
 CAB_MISSING = "CABINET_PRICE_MISSING"
 # Roles per PLAN letter type (MAIN 2026-10-08 16:40, identical for NS8's reader). E2 = every winback_*_e2.
 CAB_ROLES = {"winback_1": {"r1"}, "winback_2": {"r2"}, "winback_3": {"r3"},
-             "winback_1_e2": {"r2"}, "winback_2_e2": {"r2"}, "winback_3_e2": {"r2"},
+             # D13 (MAIN 6 21.10.2026, Raivis 19.10 11:37/11:42): an E2 is priced from TODAY's cabinet rows of its E1 type
+             # (letter_fields reads winback_r rows for winback_r_e2), so it carries exactly its E1's roles.
+             "winback_1_e2": {"r1"}, "winback_2_e2": {"r2"}, "winback_3_e2": {"r3"},
              "lost_quarterly": {"lq1_floor", "lq2_minus13", "negotiated"}, "reorder_1": {"negotiated"}}
 NO_ROW_SENDS = {"reorder_1"}     # MAIN 16:40: reorder_1 with no row is not held - it goes with no personal price
 # "Nakts sinhronizacija 8" marks a letter_fields row it held (would_send false / hold_reason CAB1_NO_ROW,

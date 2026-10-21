@@ -103,3 +103,15 @@ def test_send_day_ok_monday_only_in_chain_dry():
     assert not day.send_day_ok("winback_1", mon)
     day.chain_dry = True
     assert day.send_day_ok("winback_1", mon) and day.send_day_ok("reorder_1", dt.date(2026, 10, 20))
+
+
+def test_d13_an_e2_slot_is_looked_up_as_its_e1_type_only():
+    """D13 (MAIN 6 21.10.2026): winback_r_e2 shows its E1 goods at today's cabinet price of winback_r."""
+    _, slots_sql, cab_sql = G.rows_sql(dt.date(2026, 10, 27), ["a@x.lv"])
+    assert "REGEXP_REPLACE(email_type, r'_e2$', '') AS email_type" in slots_sql
+    assert "REGEXP_REPLACE" not in cab_sql                      # the cabinet keeps its own type
+    row = {"FLOW_HTML": REF.format(n="Cimdi", r="4,99 €", p="4,50 €")}
+    slots = [{"name": "Cimdi", "sku": "65-1", "email_type": "winback_1"}]      # as the SQL returns an E2 slot
+    assert G.contact_verdict(row, slots, {("65-1", "winback_1"): 4.50}) is None
+    assert G.contact_verdict(row, slots, {("65-1", "winback_2"): 4.50}) is not None   # another E1 type never vouches
+    assert G.contact_verdict(row, slots, {("65-1", "winback_1"): 4.95}) is not None   # an old (E1-day) price never passes

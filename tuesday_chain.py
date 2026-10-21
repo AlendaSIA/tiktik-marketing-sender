@@ -20,6 +20,15 @@ Rules:
     override path (this module has none).
  d) Monday 19.10 DRY (no sends): one row per step in mkt_control.tuesday_chain_log (start / finish / ok).
 MAIN 3 13.10 11:24 (4): S5 earliest start configurable, default 09:00 Riga; S5 starts at the later of S4 OK and that.
+D13 (MAIN 6 21.10.2026, root cause of the 20.10 refusals - Sūtīšanas dzinējs 13):
+ S3 (LIVE) starts only after TODAY's nightly tiktik-marketing-sync has finished (business_marts.marketing_sync_log row
+    started today with finished_at). 20.10 S3 pushed the letter fields 03:05 UTC, the sync rewrote P/R 03:37 UTC (317 L11)
+    and rebuilt the attrs tables S3 reads while it ran. The sync no longer pushes P/R (one writer); this is the belt.
+ R5 pre-S5 replay (LIVE): just before S5 starts, the day's DRY send-day run made AFTER S4 (the 08:05 check, or one the
+    chain starts itself) is compared per letter type with the plan's would_send. A type that would send < 80 % of its
+    plan (plan >= 20) or no replay at all = NOT OK: WhatsApp to Raivis with the numbers and the top refusal codes, and the
+    R5 row says so. It never reads as OK by default and never sends anything; S5 still goes (every contact keeps its own
+    fail-closed gates; a refused contact gets the 236).
 S1 prices off (Raivis-approved wording, MAIN 5 19.10): if week_price_config.enabled = false -> S1 = SKIPPED_PRICES_OFF,
     ok=true, chain continues to S2; if enabled = true -> existing S1 contract unchanged. (No config row / NULL = enabled.)
     With no week-price run there is no S1 finish time: the "after S1" checks of S2/S4 use the chain start (03:30 Riga
@@ -49,7 +58,9 @@ RIGA = zoneinfo.ZoneInfo("Europe/Riga")
 T_LOG = f"{M}.tuesday_chain_log"
 STEPS = ("S1", "S2", "S3", "S4", "S5")
 WA_FROM, WA_TO = "+37122811277", "+37126711822"     # MAIN line: morning WhatsApp from +37122811277 to Raivis
-MAX_STARTS = {"S3": 6, "S4": 18, "S5": 1}
+MAX_STARTS = {"S3": 6, "S4": 18, "S5": 1, "R5": 1}
+REPLAY_MIN_RATIO, REPLAY_MIN_PLAN, REPLAY_WAIT_MIN = 0.8, 20, 30      # D13 R5
+REPLAY_SKIP_TYPES = ("post_purchase_feedback",)                       # D50: moved to the 236 on a Tuesday by design
 S1_SKIPPED = "SKIPPED_PRICES_OFF"                  # status string, byte for byte (Raivis wording, MAIN 5 19.10)
 DDL = f"""CREATE TABLE IF NOT EXISTS `{T_LOG}` (
   chain_date DATE, mode STRING, step STRING, started_at TIMESTAMP, finished_at TIMESTAMP, ok BOOL, status STRING,
@@ -73,6 +84,7 @@ class Cfg:
         self.s5_enabled = (env.get("CHAIN_S5_ENABLED") or "").strip() == "1"
         self.s5_not_before = hhmm(env.get("CHAIN_S5_NOT_BEFORE"), dt.time(9, 0))
         self.s3_not_before = hhmm(env.get("CHAIN_S3_NOT_BEFORE"), dt.time(0, 0))
+        self.replay = (env.get("CHAIN_REPLAY") or "1").strip() != "0"     # D13 R5 (LIVE); "0" = off
         dry = self.mode == "DRY"
         self.start = hhmm(env.get("CHAIN_START"), dt.time(3, 30)) if dry else dt.time(3, 30)
         self.deadline = hhmm(env.get("CHAIN_DEADLINE"), dt.time(8, 45)) if dry else dt.time(8, 45)
@@ -123,14 +135,52 @@ tue_built AS (SELECT run_id, logged_at FROM `{M}.ak_tuesday_log`
 mir AS (SELECT LEAST((SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_products`),
                      (SELECT MAX(ingested_at) FROM `{P}.channel_raw.mozello_variants`)) AS t_at),
 asm AS (SELECT last_modified_time AS t_at FROM `{M}.INFORMATION_SCHEMA.PARTITIONS`
-        WHERE table_name = 'akcija_assembled' AND partition_id = '{c.date:%Y%m%d}' AND total_rows > 0)
+        WHERE table_name = 'akcija_assembled' AND partition_id = '{c.date:%Y%m%d}' AND total_rows > 0),
+sync AS (SELECT MAX(finished_at) AS t_at FROM `{P}.business_marts.marketing_sync_log`     -- D13: the nightly sync
+         WHERE DATE(started_at, 'Europe/Riga') = DATE '{d}' AND finished_at IS NOT NULL)
 SELECT TO_JSON_STRING(STRUCT(
   (SELECT enabled FROM cfg) AS prices_enabled,
   (SELECT AS STRUCT * FROM s1) AS s1, (SELECT AS STRUCT * FROM s1r) AS s1r,
   (SELECT AS STRUCT * FROM s2) AS s2, (SELECT n FROM s2n) AS s2_rows,
   (SELECT AS STRUCT * FROM s3) AS s3, (SELECT AS STRUCT * FROM s3ok) AS s3ok, (SELECT n FROM plan) AS plan_rows,
   (SELECT AS STRUCT * FROM fl) AS flow, (SELECT AS STRUCT * FROM tue) AS tue, (SELECT AS STRUCT * FROM tue_built) AS tue_built,
-  (SELECT t_at FROM mir) AS mirror_at, (SELECT t_at FROM asm) AS assembled_at)) AS j"""
+  (SELECT t_at FROM mir) AS mirror_at, (SELECT t_at FROM asm) AS assembled_at,
+  (SELECT t_at FROM sync) AS sync_done_at)) AS j"""
+
+
+def replay_sql(c: Cfg, s4_at) -> str:
+    """-- R5 replay (D13): per letter type, the plan's would_send vs the latest DRY send-day run made after S4."""
+    d = c.date.isoformat()
+    return f"""-- R5 replay
+WITH dr AS (SELECT run_id FROM `{M}.send_day_run` WHERE send_date = DATE '{d}' AND mode = 'dry'
+            AND finished_at > TIMESTAMP '{s4_at.isoformat()}' GROUP BY run_id ORDER BY MAX(finished_at) DESC LIMIT 1),
+pr AS (SELECT run_id FROM `{M}.shadow_send_plan` WHERE plan_date = DATE '{d}' GROUP BY run_id ORDER BY MAX(planned_at) DESC LIMIT 1),
+pl AS (SELECT email_type, COUNTIF(would_send) AS plan_ws FROM `{M}.shadow_send_plan`
+       WHERE plan_date = DATE '{d}' AND run_id = (SELECT run_id FROM pr) AND email_type IS NOT NULL
+         AND planned_send_date <= DATE '{d}' GROUP BY 1),
+o AS (SELECT email_type, COUNTIF(outcome = 'DRY_WOULD_SEND') AS dry_pass,
+             STRING_AGG(code, ', ' ORDER BY n DESC LIMIT 3) AS top
+      FROM (SELECT email_type, outcome, IFNULL(REGEXP_EXTRACT(reason, r'^([A-Z0-9_]+)'), outcome) AS code, COUNT(*) AS n
+            FROM `{M}.send_outcome` WHERE send_date = DATE '{d}' AND mode = 'dry' AND run_id = (SELECT run_id FROM dr)
+            GROUP BY 1, 2, 3)
+      GROUP BY 1)
+SELECT (SELECT run_id FROM dr) AS dry_run, pl.email_type, pl.plan_ws, IFNULL(o.dry_pass, 0) AS dry_pass, o.top
+FROM pl LEFT JOIN o USING (email_type) ORDER BY pl.email_type"""
+
+
+def replay_verdict(rows, min_ratio=REPLAY_MIN_RATIO, min_plan=REPLAY_MIN_PLAN):
+    """Pure. rows = replay_sql rows. -> (ok, status, why, flagged[(type, plan, dry, top)]). No replay = NOT OK."""
+    rows = [dict(r) for r in rows or []]
+    if not rows or not rows[0].get("dry_run"):
+        return False, "NO_REPLAY", "no DRY send-day run after S4 to compare with the plan", []
+    flagged = [(r["email_type"], int(r["plan_ws"] or 0), int(r["dry_pass"] or 0), r.get("top") or "")
+               for r in rows if r["email_type"] not in REPLAY_SKIP_TYPES and int(r["plan_ws"] or 0) >= min_plan
+               and int(r["dry_pass"] or 0) < min_ratio * int(r["plan_ws"] or 0)]
+    tot_p = sum(int(r["plan_ws"] or 0) for r in rows if r["email_type"] not in REPLAY_SKIP_TYPES)
+    tot_d = sum(int(r["dry_pass"] or 0) for r in rows if r["email_type"] not in REPLAY_SKIP_TYPES)
+    why = f"replay {rows[0]['dry_run']}: plan {tot_p} -> would send {tot_d}" + (
+        "; " + "; ".join(f"{t} {p}->{d} ({top})" for t, p, d, top in flagged) if flagged else "")
+    return (not flagged), ("OK" if not flagged else "DISAGREE"), why, flagged
 
 
 def s5_sql(c: Cfg, since) -> str:
@@ -332,12 +382,17 @@ class Chain:
             return self.finish(out, "S2", why2, past_deadline)
         # S3 - letter_fields: start only after S2 OK
         s3_first = _aware((self._rows.get("S3") or {}).get("started_at")) if c.mode == "DRY" else None
-        ok3, at3, why3 = verdict_s3(f, c, at2, min_ts=(s3_first or self.now) if c.mode == "DRY" else None)
+        sync_at = _aware(f.get("sync_done_at"))                  # D13: LIVE S3 only after today's nightly sync
+        ok3, at3, why3 = verdict_s3(f, c, at2, min_ts=(s3_first or self.now) if c.mode == "DRY" else sync_at)
+        if c.mode == "LIVE" and sync_at is None:
+            ok3, at3, why3 = False, None, "nightly tiktik-marketing-sync has not finished today (D13: S3 starts after it)"
         if not done("S3", ok3, at3, why3, {"lf": f.get("s3ok")}):
             if past_deadline:
                 return self.finish(out, "S3", why3, True)
             if now_r.time() < c.s3_not_before:
                 self.put("S3", ok=False, status="WAITING", reason=f"S2 OK; S3 not before {c.s3_not_before:%H:%M} (DRY)")
+            elif c.mode == "LIVE" and sync_at is None:
+                self.put("S3", ok=False, status="WAITING", reason=f"S2 OK; {why3}")
             elif int(f.get("plan_rows") or 0) == 0:
                 self.put("S3", ok=False, status="WAITING", reason=f"S2 OK; no shadow_send_plan rows for {c.date} yet")
             elif not self.busy("S3"):        # first start, or the last start finished without an OK row -> again
@@ -397,6 +452,8 @@ class Chain:
                 self.put("S5", ok=False, status="WAITING", reason=f"S4 OK; S5 not before {c.s5_not_before:%H:%M}")
                 out["steps"]["S5"] = f"WAITING until {c.s5_not_before:%H:%M}"
                 return out
+            if c.mode == "LIVE" and c.replay and not self.replay(c, s4_at, out):
+                return out                                           # R5: a DRY replay was started; S5 next tick
             args = ["send_day.py", "--mode=dry", "--chain-dry=1", f"--date={c.date}"] if c.mode == "DRY" else None
             self.start("S5", [("tiktik-send-day", args, {})], "S4 OK")
             out["steps"]["S5"] = "STARTED"
@@ -420,6 +477,33 @@ class Chain:
             self.alert("S5", why)
         out["steps"]["S5"] = ("OK " if ok else "FAILED ") + why
         return out
+
+    def replay(self, c, s4_at, out) -> bool:
+        """D13 R5. True = S5 may start now (the replay was judged and written - OK or not); False = wait one tick for
+        the DRY replay this call started. A disagreement / no replay alerts Raivis once and never blocks the send."""
+        r = self._rows.get("R5") or {}
+        if r.get("status") in ("OK", "DISAGREE", "NO_REPLAY"):
+            return True
+        ok, status, why, flagged = replay_verdict(self.q(replay_sql(c, s4_at)))
+        started = _aware(r.get("started_at"))
+        if status == "NO_REPLAY" and not r.get("starts"):
+            self.start("R5", [("tiktik-send-day", ["send_day.py", "--mode=dry", f"--date={c.date}"], {})],
+                       "S4 OK; no DRY send-day run after S4 - the chain starts the pre-S5 replay")
+            out["steps"]["R5"] = "STARTED"
+            return False
+        if status == "NO_REPLAY" and started and self.now - started < dt.timedelta(minutes=REPLAY_WAIT_MIN):
+            out["steps"]["R5"] = "WAITING"
+            return False
+        self.put("R5", ok=ok, status=status, reason=why, finished_at=self.now.isoformat(),
+                 evidence=json.dumps({"flagged": flagged}, default=str)[:4000])
+        out["steps"]["R5"] = f"{status} {why}"
+        if not ok:
+            text = (f"⚠️ Otrdienas ķēde {c.date:%d.%m}: pārbaude pirms sūtīšanas nesakrīt ar plānu - {why[:600]}. "
+                    f"Sūtīšana turpinās: katru kontaktu sargā savi vārti, atteiktie saņems 236. (tiktik-tuesday-chain R5)")
+            sent = self.alert_fn(text)
+            self.put("R5", alert_sent_at=self.now.isoformat() if sent else None,
+                     reason=why if sent else f"{why} | ALERT_FAILED")
+        return True
 
     def finish(self, out, step, why, past_deadline):
         if past_deadline:

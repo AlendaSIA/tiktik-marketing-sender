@@ -20,7 +20,7 @@ def facts(**kw):
          "s1r": {"n": 1411, "bad": 0, "other_mode": 0},
          "s2": {"ok": True, "reason": None, "logged_at": z(4, 20), "n": 18000}, "s2_rows": 1,
          "s3": None, "s3ok": None, "plan_rows": 7900, "flow": None, "tue": None, "tue_built": None,
-         "mirror_at": z(4, 0), "assembled_at": z(4, 5)}
+         "mirror_at": z(4, 0), "assembled_at": z(4, 5), "sync_done_at": z(4, 25)}      # D13: nightly sync finished
     f.update(kw)
     return f
 
@@ -48,6 +48,9 @@ class FakeBQ:
             step = sel.split(" AS step")[0].rsplit("'", 2)[1]
             self.log[step] = {"step": step, "_sql": sel}
             return FakeJob([])
+        if sql.startswith("-- R5 replay"):                     # D13 R5: a replay that agrees with the plan
+            return FakeJob(getattr(self, "replay_rows", [{"dry_run": "sd-dry", "email_type": "winback_1", "plan_ws": 100,
+                                                            "dry_pass": 95, "top": "DRY_WOULD_SEND"}]))
         if "FROM `jaunais-za-aizv04022026.mkt_control.send_day_run`" in sql:
             return FakeJob([self.s5run] if self.s5run else [])
         if "send_day_audience" in sql:
@@ -279,3 +282,57 @@ def test_s5_sql_orders_by_ordinal_not_an_aggregate_of_the_alias():
     c = T.Cfg({"CHAIN_MODE": "DRY", "CHAIN_DATE": "2026-10-19"}, dt.datetime.fromisoformat(z(10, 0)))
     s = T.s5_sql(c, "2026-10-19 07:52:30")
     assert "ORDER BY MAX(finished_at)" not in s and "MAX(finished_at) AS finished_at" in s and "ORDER BY 5 DESC" in s
+
+
+
+# ---- D13 (MAIN 6 21.10.2026) -------------------------------------------------------------------------------------
+def test_d13_live_s3_waits_for_the_nightly_sync_and_its_ok_run_must_follow_it():
+    run = FakeRun()
+    ch, bq = chain(facts(sync_done_at=None), (6, 0), run=run)
+    out = ch.tick()
+    assert out["waiting_on"] == "S3" and run.calls == [] and "nightly tiktik-marketing-sync" in bq.log["S3"]["_sql"]
+    run2 = FakeRun()
+    ch2, _ = chain(facts(), (6, 0), run=run2)
+    ch2.tick()
+    assert run2.calls and run2.calls[0][0] == "tiktik-letter-fields"
+    early = facts(sync_done_at=z(6, 42), s3ok={"run_id": "lf-early", "run_ts": z(6, 1), "finished_at": z(6, 3)})
+    run3 = FakeRun()
+    ch3, _ = chain(early, (6, 50), run=run3)
+    assert ch3.tick()["waiting_on"] == "S3" and run3.calls[0][0] == "tiktik-letter-fields"   # the 06:01 run is redone
+
+
+def test_d13_replay_verdict():
+    assert T.replay_verdict([])[1] == "NO_REPLAY" and not T.replay_verdict([])[0]
+    rows = [{"dry_run": "sd-x", "email_type": "winback_1_e2", "plan_ws": 477, "dry_pass": 0, "top": "S5_CARD_NE_CAB"},
+            {"dry_run": "sd-x", "email_type": "winback_1", "plan_ws": 500, "dry_pass": 470, "top": "DRY_WOULD_SEND"},
+            {"dry_run": "sd-x", "email_type": "post_purchase_feedback", "plan_ws": 90, "dry_pass": 0, "top": "D50"},
+            {"dry_run": "sd-x", "email_type": "reorder_1", "plan_ws": 10, "dry_pass": 0, "top": "L11"}]
+    ok, status, why, flagged = T.replay_verdict(rows)
+    assert not ok and status == "DISAGREE" and [f[0] for f in flagged] == ["winback_1_e2"]
+    assert "plan 987 -> would send 470" in why and "winback_1_e2 477->0 (S5_CARD_NE_CAB)" in why
+    assert T.replay_verdict(rows[1:])[0]
+
+
+def test_d13_r5_runs_before_s5_alerts_on_disagreement_and_never_blocks():
+    alerts, run = [], FakeRun()
+    ch, bq = chain(ready(), (9, 0), env={"CHAIN_S5_ENABLED": "1"}, run=run, alerts=alerts)
+    bq.replay_rows = [{"dry_run": "sd-x", "email_type": "winback_1_e2", "plan_ws": 477, "dry_pass": 0, "top": "S5_CARD_NE_CAB"}]
+    out = ch.tick()
+    assert out["steps"]["S5"] == "STARTED" and run.calls == [("tiktik-send-day", None, {})]
+    assert "DISAGREE" in bq.log["R5"]["_sql"] and len(alerts) == 1 and "winback_1_e2 477->0" in alerts[0]
+
+
+def test_d13_r5_starts_its_own_dry_replay_when_none_exists_then_s5_next_tick():
+    run = FakeRun()
+    ch, bq = chain(ready(), (9, 0), env={"CHAIN_S5_ENABLED": "1"}, run=run)
+    bq.replay_rows = []
+    out = ch.tick()
+    assert out["steps"]["R5"] == "STARTED" and "S5" not in out["steps"]
+    assert run.calls == [("tiktik-send-day", ["send_day.py", "--mode=dry", "--date=2026-10-20"], {})]
+
+
+def test_d13_r5_off_switch():
+    run = FakeRun()
+    ch, bq = chain(ready(), (9, 0), env={"CHAIN_S5_ENABLED": "1", "CHAIN_REPLAY": "0"}, run=run)
+    bq.replay_rows = []
+    assert ch.tick()["steps"]["S5"] == "STARTED" and "R5" not in bq.log

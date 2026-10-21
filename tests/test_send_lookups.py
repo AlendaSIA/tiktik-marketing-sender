@@ -465,7 +465,11 @@ class Cab1AtSend(unittest.TestCase):
         # MAIN 16:40 roles
         row = {"X": ("r2", "5.00")}
         self.assertFalse(G.cab_problem("winback_2", (("X", "5,00 €"),), row))
-        self.assertFalse(G.cab_problem("winback_3_e2", (("X", "5,00 €"),), row))
+        # D13 (MAIN 6 21.10.2026): an E2 carries its E1's roles (was r2 for every E2, MAIN 08.10 16:40)
+        self.assertTrue(G.cab_problem("winback_3_e2", (("X", "5,00 €"),), row))
+        self.assertFalse(G.cab_problem("winback_2_e2", (("X", "5,00 €"),), row))
+        self.assertFalse(G.cab_problem("winback_1_e2", (("X", "5,00 €"),), {"X": ("r1", "5.00")}))
+        self.assertTrue(G.cab_problem("winback_1_e2", (("X", "5,00 €"),), {"X": ("r1", "4.50")}))   # another price
         self.assertTrue(G.cab_problem("winback_1", (("X", "5,00 €"),), row))            # PAP label defect -> held
         self.assertTrue(G.cab_problem("winback_3", (("X", "5,00 €"),), row))
         self.assertFalse(G.cab_problem("lost_quarterly", (("X", "5,00 €"),), {"X": ("negotiated", "5")}))

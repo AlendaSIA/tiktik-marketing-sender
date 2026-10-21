@@ -107,7 +107,10 @@ def rows_sql(d: dt.date, emails, dry: bool = False) -> tuple:
     cols = ", ".join(FLOW_FIELDS)
     blocks = (f"SELECT LOWER(TRIM(email)) AS em, run_id, {cols} FROM `{M}.block_fields_today{'_dry' if dry else ''}` "
               f"WHERE LOWER(TRIM(email)) IN ({lst})")
-    slots = (f"SELECT em, name, sku, email_type FROM `{M}.letter_fields_slots` WHERE plan_date = DATE '{d}' AND em IN ({lst}) "
+    # D13 (MAIN 6 21.10.2026): an E2 letter (winback_r_e2) shows its E1's goods at TODAY's cabinet price of the E1 type -
+    # the cabinet keys those rows by winback_r, so an E2 slot is looked up as its E1 type (and ONLY that type).
+    slots = (f"SELECT em, name, sku, REGEXP_REPLACE(email_type, r'_e2$', '') AS email_type FROM `{M}.letter_fields_slots` "
+             f"WHERE plan_date = DATE '{d}' AND em IN ({lst}) "
              f"AND in_letter AND sku IS NOT NULL "
              f"AND run_id = (SELECT MAX(run_id) FROM `{M}.letter_fields_slots` WHERE plan_date = DATE '{d}')")
     cab = (f"SELECT LOWER(TRIM(email)) AS em, UPPER(TRIM(sku)) AS sku, email_type, ANY_VALUE(cabinet_price_gross) AS price "

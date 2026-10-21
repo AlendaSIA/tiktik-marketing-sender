@@ -318,6 +318,14 @@ WHERE a.kind = 'R' AND a.handle IS NOT NULL GROUP BY 1
 # cabinet has products when marketing_brevo_attrs.KABINETS_HAS_PRODUCTS IS TRUE for the address (false, NULL, no row
 # = not). The address is the one the ENGINE sends to.
 BUYER_SQL = f"SELECT DISTINCT master_key FROM `{P}.business_marts.tiktik_buyer_master` WHERE is_tiktik_buyer"
+# D13 F3: who has a written row in TODAY's ok cabinet run, per price type (the send path's CAB-1 reader rule). No ok
+# run yet -> no rows -> no plan hold (cab_ok False); the send path L7 still decides.
+CAB_PLAN_SQL = f"""SELECT LOWER(TRIM(email)) AS email, email_type, COUNT(*) AS n
+FROM `{P}.mkt_control.cabinet_price_current`
+WHERE run_id = CONCAT('cab-', FORMAT_DATE('%Y%m%d', CURRENT_DATE('Europe/Riga'))) AND status = 'written'
+  AND EXISTS (SELECT 1 FROM `{P}.mkt_control.cabinet_price_log` l
+              WHERE l.run_id = CONCAT('cab-', FORMAT_DATE('%Y%m%d', CURRENT_DATE('Europe/Riga'))) AND l.ok)
+GROUP BY 1, 2"""
 KAB_SQL = f"""SELECT LOWER(TRIM(email)) AS email FROM `{P}.business_marts.marketing_brevo_attrs`
 WHERE KABINETS_HAS_PRODUCTS IS TRUE AND email IS NOT NULL GROUP BY 1"""
 # PA3: what the weekly assignment says per person (commercial layer) - compared with the plan in the self-check.
@@ -615,6 +623,9 @@ def main():
     kab_ok = {r["email"] for r in bq.query(KAB_SQL).result()}
     if not buyers or not kab_ok:        # as the assignment's RULE_8A_SOURCE_EMPTY guard: loud, never "hold everybody"
         raise RuntimeError("PA1 / PA2 source empty (tiktik_buyer_master or marketing_brevo_attrs) - refusing to plan")
+    cab_rows = {(r["email"], r["email_type"]) for r in bq.query(CAB_PLAN_SQL).result()}    # D13 F3
+    cab_ok = bool(cab_rows)
+    d13 = {S.HOLD_D50_XSELL: 0, S.HOLD_NO_CAB_ROW: 0}
     en_src = next(iter(bq.query(EN_SOURCE_SQL).result()))
     if not en_masters or not en_src["en_addresses"]:
         raise RuntimeError("G-EN source empty - refusing to plan LV letters without the EN guard")
@@ -688,6 +699,14 @@ def main():
         hold = S.rule8a_hold(d.next_email_type, hold,
                              (f["send_email"] or "").strip().lower() in kab_ok)       # PA2
         hold = S.sendlog_hold(d.next_email_type, hold, sl_stale, mk in sl_unreviewed)  # SEND_LOG_STALE / CAMPAIGN_UNREVIEWED
+        h0 = hold                                                                       # D13 F3: forecast = sendable
+        hold = S.d50_xsell_hold(d.next_email_type, hold, _d(f["last_order"]),
+                                d.next_due_on and max(d.next_due_on, today))
+        hold = S.cab_row_hold(d.next_email_type, d.offer_rung, hold,
+                              None if not cab_ok else ((f["send_email"] or "").strip().lower(),
+                                                       S.cab_type_of(d.next_email_type)) in cab_rows)
+        if hold != h0 and hold in d13:
+            d13[hold] += 1
         s = d.state
         states.append({
             "master_key": mk, "send_email": f["send_email"], "lifecycle_stage": f["lifecycle_stage"],
@@ -916,6 +935,7 @@ def main():
         "selfcheck_failed": len(failed), "selfcheck_failed_names": ",".join(failed) or None,
         }], T_RUN, job_config=J(write_disposition="WRITE_APPEND")).result()
     log.info("SELFCHECK run=%s failed=%s %s", RUN_ID, len(failed), failed)
+    log.info("D13_F3 run=%s cabinet_run_ok=%s plan_holds=%s", RUN_ID, cab_ok, d13)
     log.info("SHADOW_DONE run=%s people=%s plan_rows=%s would_send=%s pd_would_writes=%s pd_targets=%s "
              "rung_price_built_at=%s rung_price_age_h=%s pd_persons_age_h=%s pd_pending=%s writeback_population=%s state_changes=%s "
              "interface_v1_vs_map_disagreements=%s en_pending=%s en_masters=%s en_list_snapshot_age_h=%s g15_report_only goods_run=%s goods_plan_date=%s would_be_no_priced=%s would_be_no_slot_row=%s", RUN_ID, len(states), len(plan_rows),

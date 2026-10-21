@@ -185,6 +185,39 @@ HOLD_NO_SLOT_ROW = "NO_SLOT_ROW"
 G15_OVERRIDES = {None, "NO_TEMPLATE_IN_MAP", HOLD_E2_TEMPLATE}
 
 
+# D13 F3 (MAIN 6 21.10.2026 11:38, Q3; Sūtīšanas dzinējs 13 root cause of 20.10): the plan applies the two send-time
+# refusals that are already certain when the plan is made, so would_send (the forecast) = what can be sent.
+#  * D50 (Raivis, MAIN 2 19:50): active_xsell only when the last order is at most 30 days before the send day
+#    (20.10: 549 of 707 refused at send, all planned as would_send).
+#  * the cabinet half of L7: a price letter (E1 / E2 / lost) whose contact has NO written row of its price type in TODAY's
+#    ok cabinet run cannot carry a personal price (20.10: 531 winback_1 refused L7_NO_PRICED_SLOTS, 0 cabinet rows).
+#    Unknown (today's cabinet run not ok yet) = no hold here; the send path L7 still decides.
+HOLD_D50_XSELL = "D50_XSELL_ORDER_OLD"
+D50_XSELL_MAX_DAYS = 30
+HOLD_NO_CAB_ROW = "NO_CABINET_ROW"
+
+
+def d50_xsell_hold(email_type, hold, last_order_on, send_on):
+    """D50 in the plan. send_on = the day the letter would go (max(due, plan day))."""
+    if hold is not None or email_type != XSELL or send_on is None:
+        return hold
+    if last_order_on is None or (send_on - last_order_on).days > D50_XSELL_MAX_DAYS:
+        return HOLD_D50_XSELL
+    return hold
+
+
+def cab_type_of(email_type):
+    """The cabinet keys a price letter's rows by its E1 type: winback_r_e2 -> winback_r (D13)."""
+    return email_type[:-3] if email_type and email_type.endswith("_e2") else email_type
+
+
+def cab_row_hold(email_type, offer_rung, hold, has_cab_row):
+    """L7 cabinet half in the plan. has_cab_row: True / False, or None = today's cabinet run unknown (no hold)."""
+    if hold is not None or has_cab_row is None or not is_price_letter(email_type, offer_rung):
+        return hold
+    return hold if has_cab_row else HOLD_NO_CAB_ROW
+
+
 def is_price_letter(email_type, offer_rung) -> bool:
     return email_type in LADDER_TYPES and bool(offer_rung)
 
